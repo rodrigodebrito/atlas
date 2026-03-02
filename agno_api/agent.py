@@ -702,6 +702,57 @@ def get_transactions(user_phone: str, date: str = "", month: str = "") -> str:
 
 
 @tool
+def get_category_breakdown(user_phone: str, category: str, month: str = "") -> str:
+    """
+    Mostra todas as transações de uma categoria específica com detalhe de merchant.
+    Responde perguntas como "onde gastei em Alimentação?", "quais restaurantes fui esse mês?"
+    category: ex. "Alimentação", "Transporte", "Saúde"
+    month: YYYY-MM (padrão = mês atual)
+    """
+    if not month:
+        month = datetime.now().strftime("%Y-%m")
+
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return f"Nenhuma transação em {category}."
+    user_id = row[0]
+
+    # individual transactions
+    cur.execute(
+        """SELECT merchant, amount_cents, occurred_at
+           FROM transactions
+           WHERE user_id = ? AND type = 'EXPENSE' AND category = ? AND occurred_at LIKE ?
+           ORDER BY occurred_at DESC""",
+        (user_id, category, f"{month}%"),
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        return f"Nenhuma transação em {category} em {month}."
+
+    total = sum(r[1] for r in rows)
+    lines = [f"🔍 {category} em {month} — R${total/100:.2f} total ({len(rows)} transações):"]
+
+    # group by merchant
+    merchants: dict[str, int] = {}
+    for merchant, amount, _ in rows:
+        key = merchant or "Sem nome"
+        merchants[key] = merchants.get(key, 0) + amount
+
+    for m, amt in sorted(merchants.items(), key=lambda x: -x[1]):
+        pct = amt / total * 100
+        lines.append(f"  • {m}: R${amt/100:.2f} ({pct:.0f}%)")
+
+    return "\n".join(lines)
+
+
+@tool
 def get_month_comparison(user_phone: str) -> str:
     """
     Compara o mês atual com o mês anterior por categoria.
@@ -1707,6 +1758,13 @@ DETALHES DE TRANSAÇÕES:
   Liste de forma limpa, 1 linha por transação.
   Termine com: "Quer anotar mais algum gasto?"
 
+DETALHES DE CATEGORIA (get_category_breakdown):
+  Formato: "🔍 [Categoria]: R$X total
+  • [Local A]: R$X (XX%)
+  • [Local B]: R$X (XX%)"
+  Se merchant vazio: mostre como "Sem nome registrado"
+  Termine com: "Quer ver outra categoria?"
+
 HELP / ONBOARDING:
   Apresente o ATLAS em 2 linhas. 3 exemplos de uso.
 
@@ -1803,6 +1861,8 @@ Nunca use "demo_user". Se a linha não estiver presente, use o número de sessã
 - "como foi minha semana?" / "resumo da semana": get_week_summary(user_phone=<user_phone>)
 - "quanto gastei hoje?": get_today_total(user_phone=<user_phone>)
 - Detalhes / lista de transações: get_transactions(user_phone=<user_phone>, date="YYYY-MM-DD") ou get_transactions(user_phone=<user_phone>, month="YYYY-MM")
+- "onde gastei em X?" / "quais [lugares] em X?" / "detalhes de [categoria]": get_category_breakdown(user_phone=<user_phone>, category="<categoria>")
+  Exemplos: "onde gastei em Alimentação?" → category="Alimentação" | "quais restaurantes fui?" → category="Alimentação"
 - "minhas parcelas" / "quanto tenho parcelado": get_installments_summary(user_phone=<user_phone>)
 
 ## CORREÇÕES
@@ -1859,7 +1919,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=10,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover],
     add_datetime_to_context=True,
     markdown=True,
 )
