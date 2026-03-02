@@ -1,0 +1,37 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Environment variables — NUNCA commitar
+.env
+.env.*
+!.env.example
+
+# Alembic
+alembic/versions/*.py
+
+# IDE
+.DS_Store
+.vscode/
+*.pyc
+
+# Docker
+*.log
+
+# Banco de dados local
+data/
+*.db
+*.sqlite
+
+# Arquivo de env local (sem extensão)
+env
+
+# Claude Code — configurações locais do agente
+.claude/
