@@ -11,6 +11,7 @@ dependencies = [
     # Banco de dados
     "sqlalchemy[asyncio]>=2.0.0",
     "asyncpg>=0.30.0",
+    "psycopg2-binary>=2.9.0",
     "alembic>=1.14.0",
     # Validação e config
     "pydantic>=2.10.0",
