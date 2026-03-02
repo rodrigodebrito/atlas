@@ -2543,7 +2543,8 @@ Responda com este menu formatado — sem chamar nenhum tool:
 • "gastei 45 no iFood"
 • "paguei 120 no Mercado Extra"
 • "uber 18 pro aeroporto"
-• "tênis 300 em 3x no Nubank"
+• "tênis 300 em 3x no Nubank" _(lança no cartão Nubank)_
+• "paguei 200 no débito"
 
 💰 *Lançar receitas:*
 • "recebi 4500 de salário"
@@ -2560,6 +2561,15 @@ Responda com este menu formatado — sem chamar nenhum tool:
 • "qual minha fatura do Nubank?"
 • "próxima fatura do Nubank"
 • "paguei o cartão Inter"
+
+📌 *Cadastrar cartão:*
+• "quero cadastrar meu cartão Nubank"
+  → ATLAS vai perguntar: dia de fechamento, vencimento, limite e fatura atual
+
+📌 *Registrar fatura de meses futuros:*
+• "minha fatura de abril no Nubank é 800"
+• "fatura de maio no Itaú vai ser 1200"
+  → Use quando você já tem compras no cartão antes de começar a usar o ATLAS
 
 📋 *Gastos fixos:*
 • "tenho aluguel 1500 todo dia 5"
