@@ -32,7 +32,7 @@ load_dotenv()
 # BANCO — SQLite local ou PostgreSQL no Render
 # ============================================================
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip() or None
 
 if DATABASE_URL:
     from agno.db.postgres import PostgresDb
