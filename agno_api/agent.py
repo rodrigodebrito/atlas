@@ -209,30 +209,37 @@ def _get_conn():
 def save_transaction(
     user_phone: str,
     transaction_type: str,
-    amount_cents: int,
+    amount: float,
     category: str,
     merchant: str = "",
     payment_method: str = "",
     notes: str = "",
     installments: int = 1,
-    total_amount_cents: int = 0,
+    total_amount: float = 0,
 ) -> str:
     """
     Salva uma transação financeira no banco de dados.
     transaction_type: EXPENSE ou INCOME
-    amount_cents: valor da PARCELA em centavos (se à vista = valor total)
+    amount: valor da PARCELA em reais (se à vista = valor total).
+            Ex: "gastei 45" → amount=45, "R$1.200" → amount=1200
     installments: número de parcelas (1 = à vista)
-    total_amount_cents: valor total da compra em centavos (preencher se parcelado)
+    total_amount: valor TOTAL da compra em reais (preencher se parcelado)
 
     Categorias EXPENSE: Alimentação | Transporte | Moradia | Saúde | Lazer |
                         Educação | Assinaturas | Vestuário | Investimento | Outros
     Categorias INCOME:  Salário | Freelance | Aluguel Recebido |
                         Investimentos | Benefício | Venda | Outros
 
-    Exemplos de parcelamento:
-    - "tênis 1200 em 12x" → amount_cents=10000, installments=12, total_amount_cents=120000
-    - "notebook 3000 em 6x" → amount_cents=50000, installments=6, total_amount_cents=300000
+    Exemplos:
+    - "gastei 45 no iFood" → amount=45, installments=1
+    - "paguei 120 no mercado" → amount=120, installments=1
+    - "tênis 1200 em 12x" → amount=100, installments=12, total_amount=1200
+    - "notebook 3000 em 6x" → amount=500, installments=6, total_amount=3000
     """
+    # converter reais → centavos
+    amount_cents = round(amount * 100)
+    total_amount_cents = round(total_amount * 100)
+
     conn = _get_conn()
     cur = conn.cursor()
 
@@ -383,11 +390,12 @@ def update_user_name(user_phone: str, name: str) -> str:
 
 
 @tool
-def update_user_income(user_phone: str, monthly_income_cents: int) -> str:
+def update_user_income(user_phone: str, monthly_income: float) -> str:
     """
-    Salva a renda mensal do usuário em centavos.
-    Exemplo: R$3.500 = 350000
+    Salva a renda mensal do usuário em reais.
+    Exemplo: R$3.500 → monthly_income=3500
     """
+    monthly_income_cents = round(monthly_income * 100)
     conn = _get_conn()
     cur = conn.cursor()
     cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
@@ -517,12 +525,12 @@ def update_last_transaction(
     installments: int = 0,
     payment_method: str = "",
     category: str = "",
-    amount_cents: int = 0,
+    amount: float = 0,
 ) -> str:
     """
     Corrige a última transação registrada.
     Para corrigir parcelamento: passe APENAS installments (ex: installments=10).
-    Para corrigir valor: passe APENAS amount_cents com o valor TOTAL.
+    Para corrigir valor: passe APENAS amount com o valor TOTAL em reais (ex: amount=150).
     Para corrigir outros campos: passe payment_method ou category.
     """
     try:
@@ -546,6 +554,8 @@ def update_last_transaction(
         if not row:
             conn.close()
             return "ERRO: nenhuma transação encontrada."
+
+        amount_cents = round(amount * 100)
 
         tx_id, curr_amount, curr_total, curr_inst = row
         curr_total = curr_total or 0
@@ -584,7 +594,7 @@ def update_last_transaction(
         if installments > 0:
             parts.append(f"{installments}x de R${(base_total // installments)/100:.2f} (R${base_total/100:.2f} total)")
         elif amount_cents > 0:
-            parts.append(f"valor: R${amount_cents/100:.2f}")
+            parts.append(f"valor: R${amount:.2f}")
         if payment_method:
             parts.append(f"pagamento: {payment_method}")
         if category:
@@ -835,12 +845,13 @@ def get_week_summary(user_phone: str) -> str:
 
 
 @tool
-def can_i_buy(user_phone: str, amount_cents: int, description: str = "") -> str:
+def can_i_buy(user_phone: str, amount: float, description: str = "") -> str:
     """
     Analisa se o usuário pode fazer uma compra.
-    amount_cents: valor da compra em centavos
+    amount: valor da compra em reais (ex: R$250 → amount=250)
     description: o que é a compra (ex: "tênis", "jantar fora", "notebook")
     """
+    amount_cents = round(amount * 100)
     today = datetime.now()
     current_month = today.strftime("%Y-%m")
     days_in_month = 30
@@ -1035,15 +1046,16 @@ def _progress_bar(current: int, target: int, width: int = 16) -> str:
 def create_goal(
     user_phone: str,
     name: str,
-    target_amount_cents: int,
+    target_amount: float,
     is_emergency_fund: bool = False,
 ) -> str:
     """
     Cria uma meta financeira.
     name: nome da meta (ex: "Viagem Europa", "Reserva de emergência")
-    target_amount_cents: valor alvo em centavos (ex: R$5.000 = 500000)
+    target_amount: valor alvo em reais (ex: R$5.000 → target_amount=5000)
     is_emergency_fund: True se for reserva de emergência
     """
+    target_amount_cents = round(target_amount * 100)
     conn = _get_conn()
     cur = conn.cursor()
 
@@ -1113,12 +1125,13 @@ def get_goals(user_phone: str) -> str:
 
 
 @tool
-def add_to_goal(user_phone: str, goal_name: str, amount_cents: int) -> str:
+def add_to_goal(user_phone: str, goal_name: str, amount: float) -> str:
     """
     Adiciona valor a uma meta existente.
     goal_name: nome (ou parte do nome) da meta
-    amount_cents: valor em centavos a adicionar
+    amount: valor em reais a adicionar (ex: R$500 → amount=500)
     """
+    amount_cents = round(amount * 100)
     conn = _get_conn()
     cur = conn.cursor()
 
@@ -1769,10 +1782,10 @@ SEMPRE use user_phone="demo_user" em TODAS as chamadas de tool.
 
 ## FLUXO FINANCEIRO (após onboarding)
 
-- ADD_EXPENSE à vista: save_transaction(user_phone="demo_user", transaction_type="EXPENSE", amount_cents=<total>, installments=1, ...)
-- ADD_EXPENSE parcelado: save_transaction(user_phone="demo_user", transaction_type="EXPENSE", amount_cents=<parcela>, installments=<n>, total_amount_cents=<total>, ...)
-  Exemplo "tênis 1200 em 12x": amount_cents=10000, installments=12, total_amount_cents=120000
-- ADD_INCOME: save_transaction(user_phone="demo_user", transaction_type="INCOME", ...)
+- ADD_EXPENSE à vista: save_transaction(user_phone="demo_user", transaction_type="EXPENSE", amount=<valor_reais>, installments=1, ...)
+- ADD_EXPENSE parcelado: save_transaction(user_phone="demo_user", transaction_type="EXPENSE", amount=<parcela_reais>, installments=<n>, total_amount=<total_reais>, ...)
+  Exemplo "tênis 1200 em 12x": amount=100, installments=12, total_amount=1200
+- ADD_INCOME: save_transaction(user_phone="demo_user", transaction_type="INCOME", amount=<valor_reais>, ...)
 - SUMMARY / "quanto gastei?" / "resumo do mês": get_month_summary(user_phone="demo_user")
 - "como evoluí?" / "comparado ao mês passado": get_month_comparison(user_phone="demo_user")
 - "como foi minha semana?" / "resumo da semana": get_week_summary(user_phone="demo_user")
@@ -1790,16 +1803,16 @@ Quando usuário disser "espera", "errei", "corrige", "na verdade", "foi parcelad
 Exemplos:
 - "foi parcelado em 6x" → update_last_transaction(user_phone="demo_user", installments=6)
 - "foi no débito" → update_last_transaction(user_phone="demo_user", payment_method="DEBIT")
-- "foi 150 não 200" → update_last_transaction(user_phone="demo_user", amount_cents=15000)
+- "foi 150 não 200" → update_last_transaction(user_phone="demo_user", amount=150)
 - "foi em Alimentação" → update_last_transaction(user_phone="demo_user", category="Alimentação")
 
-IMPORTANTE: nunca passe installments e amount_cents juntos a menos que o usuário corrija os dois ao mesmo tempo.
+IMPORTANTE: nunca passe installments e amount juntos a menos que o usuário corrija os dois ao mesmo tempo.
 Ao corrigir parcelamento, passe APENAS installments — o valor total é calculado automaticamente.
-- "posso comprar X?" / "tenho dinheiro pra Y?": can_i_buy(user_phone="demo_user", amount_cents=<valor>, description="<item>")
-- "quero guardar X pra Y" / "criar meta": create_goal(user_phone="demo_user", name="<nome>", target_amount_cents=<valor>)
+- "posso comprar X?" / "tenho dinheiro pra Y?": can_i_buy(user_phone="demo_user", amount=<valor_reais>, description="<item>")
+- "quero guardar X pra Y" / "criar meta": create_goal(user_phone="demo_user", name="<nome>", target_amount=<valor_reais>)
 - "quero reserva de emergência": create_goal(..., is_emergency_fund=True)
 - "ver minhas metas" / "como estão minhas metas?": get_goals(user_phone="demo_user")
-- "guardei X pra meta Y" / "adicionei X na meta": add_to_goal(user_phone="demo_user", goal_name="<nome parcial>", amount_cents=<valor>)
+- "guardei X pra meta Y" / "adicionei X na meta": add_to_goal(user_phone="demo_user", goal_name="<nome parcial>", amount=<valor_reais>)
 - "qual meu score?" / "saúde financeira" / "como estou?": get_financial_score(user_phone="demo_user")
 
 ## CICLO DE SALÁRIO (CLT / PF)
