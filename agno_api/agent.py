@@ -954,9 +954,9 @@ def get_cards(user_phone: str) -> str:
         (user_id,)
     )
     cards = cur.fetchall()
-    conn.close()
 
     if not cards:
+        conn.close()
         return "Nenhum cartão cadastrado. Use register_card para adicionar."
 
     today = datetime.now()
@@ -967,15 +967,12 @@ def get_cards(user_phone: str) -> str:
         if last_paid and last_paid > period_start:
             period_start = last_paid
 
-        conn2 = _get_conn()
-        cur2 = conn2.cursor()
-        cur2.execute(
+        cur.execute(
             """SELECT SUM(amount_cents) FROM transactions
                WHERE user_id = ? AND card_id = ? AND occurred_at >= ?""",
             (user_id, card_id, period_start)
         )
-        row = cur2.fetchone()
-        conn2.close()
+        row = cur.fetchone()
 
         new_purchases = row[0] or 0
         bill_total = (opening_cents or 0) + new_purchases
@@ -996,6 +993,7 @@ def get_cards(user_phone: str) -> str:
             f"   Vencimento: dia {due_day}"
         )
 
+    conn.close()
     return "\n".join(lines)
 
 
