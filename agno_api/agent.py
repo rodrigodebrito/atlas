@@ -514,7 +514,22 @@ def update_user_income(user_phone: str, monthly_income: float) -> str:
         )
     conn.commit()
     conn.close()
-    return f"Renda mensal de R${monthly_income_cents/100:.2f} salva com sucesso."
+    return (
+        f"Renda mensal de R${monthly_income_cents/100:.2f} salva. "
+        "Agora envie esta mensagem de boas-vindas EXATAMENTE como está abaixo (substitua [nome] pelo nome do usuário):\n\n"
+        "Tudo certo, [nome]! 🎉 Pode me mandar seus gastos assim:\n\n"
+        "💸 *Gastos do dia a dia:*\n"
+        '• _"almocei 35 no Restaurante Talentos — PIX"_\n'
+        '• _"mercado 120 no Supermercado Deville — débito"_\n'
+        '• _"uber 18 pro aeroporto — crédito"_\n\n'
+        "💳 *Compras no cartão:*\n"
+        '• _"comprei tênis 300 no Nubank"_\n'
+        '• _"notebook 3000 em 6x no Inter"_\n\n'
+        "📊 *Ver como está:*\n"
+        '• _"como tá meu mês?"_\n'
+        '• _"posso comprar um tênis de 200?"_\n\n'
+        "Digite *ajuda* a qualquer hora pra ver tudo que sei fazer 🎯"
+    )
 
 
 @tool
@@ -2498,16 +2513,14 @@ Pra começar, qual é o seu nome?"
 
    ETAPA C — Após receber a renda (ou pulo explícito com "pular", "não sei", "depois"):
    - Se informou renda: chame update_user_income(user_phone=<user_phone>, monthly_income=<valor em reais>)
-   - Se pulou: ok, siga sem renda.
-   - IMPORTANTE: NÃO registre nenhuma transação agora. Os textos abaixo são EXEMPLOS DE FORMATO para ensinar o usuário — não são gastos reais.
-   - Envie esta mensagem de boas-vindas (substitua [nome] pelo nome do usuário):
-
-"Tudo certo, [nome]! 🎉 Pode começar a me mandar seus gastos assim:
+     O retorno do tool já contém a mensagem de boas-vindas formatada. Envie ela ao usuário substituindo [nome] pelo nome real.
+   - Se pulou sem informar renda: envie diretamente:
+"Tudo certo, [nome]! 🎉 Pode me mandar seus gastos assim:
 
 💸 *Gastos do dia a dia:*
-• _"gastei 45 no iFood"_
-• _"paguei 120 no mercado"_
-• _"uber 18 pra academia"_
+• _"almocei 35 no Restaurante Talentos — PIX"_
+• _"mercado 120 no Supermercado Deville — débito"_
+• _"uber 18 pro aeroporto — crédito"_
 
 💳 *Compras no cartão:*
 • _"comprei tênis 300 no Nubank"_
