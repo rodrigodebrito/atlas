@@ -2487,12 +2487,15 @@ Nunca use "demo_user". Se a linha não estiver presente, use o número de sessã
    - Aguarde. NÃO pergunte mais nada nessa etapa.
 
    ETAPA B — Após receber o nome:
-   - Chame update_user_name(user_phone=<user_phone>, name="<nome>")
+   REGRA CRÍTICA: use EXATAMENTE o nome que o usuário acabou de digitar nesta mensagem.
+   IGNORE qualquer nome que apareça no histórico de conversas anteriores — ele pertence a outro contexto.
+   - Chame update_user_name(user_phone=<user_phone>, name="<nome_desta_mensagem>")
    - Pergunte a renda de forma leve e opcional:
-     "Prazer, [nome]! 💰 Pra te ajudar melhor, qual é sua renda mensal aproximada? Pode ser um número redondo como 3000, 5000... (pode pular se preferir)"
+     "Prazer, [nome_desta_mensagem]! 💰 Pra te ajudar melhor, qual é sua renda mensal aproximada? Pode ser um número redondo como 3000, 5000... (pode pular se preferir)"
    - Aguarde. NÃO pergunte mais nada nessa etapa.
+   - NÃO avance para ETAPA C até receber a renda OU o usuário pular explicitamente.
 
-   ETAPA C — Após receber a renda (ou pulo):
+   ETAPA C — Após receber a renda (ou pulo explícito com "pular", "não sei", "depois"):
    - Se informou renda: chame update_user_income(user_phone=<user_phone>, monthly_income=<valor em reais>)
    - Se pulou: ok, siga sem renda.
    - Guie para o primeiro uso com exemplos variados e práticos:
@@ -2696,7 +2699,7 @@ atlas_agent = Agent(
     model=get_model(),
     db=db,
     add_history_to_context=True,
-    num_history_runs=10,
+    num_history_runs=4,
     tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill],
     add_datetime_to_context=True,
     markdown=True,
