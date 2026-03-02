@@ -102,6 +102,58 @@ def _init_sqlite_tables():
 if DB_TYPE == "sqlite":
     _init_sqlite_tables()
 
+
+def _init_postgres_tables():
+    """Cria as tabelas financeiras no PostgreSQL se não existirem."""
+    import psycopg2
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            phone TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            monthly_income_cents INTEGER DEFAULT 0,
+            salary_day INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS transactions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            amount_cents INTEGER NOT NULL,
+            total_amount_cents INTEGER DEFAULT 0,
+            installments INTEGER DEFAULT 1,
+            installment_number INTEGER DEFAULT 1,
+            category TEXT NOT NULL,
+            merchant TEXT,
+            payment_method TEXT,
+            notes TEXT,
+            occurred_at TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS financial_goals (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            target_amount_cents INTEGER NOT NULL,
+            current_amount_cents INTEGER DEFAULT 0,
+            is_emergency_fund INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+if DB_TYPE == "postgres":
+    _init_postgres_tables()
+
 # ============================================================
 # MODELOS
 # ============================================================
@@ -116,12 +168,41 @@ def get_fast_model():
 # TOOLS FINANCEIRAS — leitura/escrita no banco
 # ============================================================
 
+class _PGCursor:
+    """Cursor wrapper que converte placeholders ? → %s para PostgreSQL."""
+    def __init__(self, cur):
+        self._cur = cur
+
+    def execute(self, sql, params=()):
+        self._cur.execute(sql.replace("?", "%s"), params)
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+
+class _PGConn:
+    """Connection wrapper que retorna cursors adaptados para PostgreSQL."""
+    def __init__(self, conn):
+        self._conn = conn
+
+    def cursor(self):
+        return _PGCursor(self._conn.cursor())
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
+
+
 def _get_conn():
     if DB_TYPE == "sqlite":
         return sqlite3.connect("data/atlas.db")
-    # PostgreSQL — usar psycopg2 em produção
     import psycopg2
-    return psycopg2.connect(DATABASE_URL)
+    return _PGConn(psycopg2.connect(DATABASE_URL))
 
 
 @tool
@@ -783,13 +864,17 @@ def can_i_buy(user_phone: str, amount_cents: int, description: str = "") -> str:
 
     # receitas reais registradas no mês (prioridade sobre campo estático)
     cur.execute(
-        """SELECT SUM(amount_cents), GROUP_CONCAT(DISTINCT category) FROM transactions
+        """SELECT SUM(amount_cents) FROM transactions
            WHERE user_id = ? AND type = 'INCOME' AND occurred_at LIKE ?""",
         (user_id, f"{current_month}%"),
     )
-    income_row = cur.fetchone()
-    income_real = income_row[0] or 0
-    income_sources = income_row[1] or ""
+    income_real = cur.fetchone()[0] or 0
+    cur.execute(
+        """SELECT DISTINCT category FROM transactions
+           WHERE user_id = ? AND type = 'INCOME' AND occurred_at LIKE ?""",
+        (user_id, f"{current_month}%"),
+    )
+    income_sources = ", ".join(r[0] for r in cur.fetchall())
 
     # usa receita real se disponível, senão fallback para campo estático
     income_cents = income_real if income_real > 0 else income_static
