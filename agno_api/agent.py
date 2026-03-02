@@ -114,6 +114,15 @@ def _init_sqlite_tables():
             active INTEGER DEFAULT 1,
             created_at TEXT DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS card_bill_snapshots (
+            id TEXT PRIMARY KEY,
+            card_id TEXT NOT NULL,
+            bill_month TEXT NOT NULL,
+            opening_cents INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(card_id, bill_month)
+        );
     """)
     conn.commit()
     # Migrations
@@ -200,6 +209,16 @@ def _init_postgres_tables():
             day_of_month INTEGER NOT NULL,
             active INTEGER DEFAULT 1,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS card_bill_snapshots (
+            id TEXT PRIMARY KEY,
+            card_id TEXT NOT NULL,
+            bill_month TEXT NOT NULL,
+            opening_cents INTEGER NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(card_id, bill_month)
         )
     """)
     # Migrations
@@ -1132,6 +1151,76 @@ def deactivate_recurring(user_phone: str, name: str) -> str:
 
 
 @tool
+def set_future_bill(
+    user_phone: str,
+    card_name: str,
+    bill_month: str,
+    amount: float,
+) -> str:
+    """
+    Registra o saldo pré-existente de uma fatura futura do cartão.
+    Usar quando o usuário informar compromissos já existentes antes de adotar o ATLAS.
+
+    card_name: nome do cartão (ex: "Nubank")
+    bill_month: mês da fatura no formato YYYY-MM (ex: "2026-04")
+    amount: valor já comprometido naquela fatura em reais (ex: 400)
+
+    Exemplos de fala do usuário:
+    - "minha fatura de abril no Nubank já está em 400" → bill_month="2026-04", amount=400
+    - "em maio tenho 150 no Inter" → bill_month="2026-05", amount=150
+    - "Nubank: março 500, abril 400, maio 150" → chamar 3x, uma por mês
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "Usuário não encontrado."
+
+    card = _find_card(cur, user_id, card_name)
+    if not card:
+        conn.close()
+        return f"Cartão '{card_name}' não encontrado. Cadastre primeiro com register_card."
+
+    card_id = card[0]
+    amount_cents = round(amount * 100)
+    snapshot_id = str(uuid.uuid4())
+
+    # INSERT OR REPLACE para permitir atualização
+    if DB_TYPE == "sqlite":
+        cur.execute(
+            """INSERT OR REPLACE INTO card_bill_snapshots (id, card_id, bill_month, opening_cents)
+               VALUES (
+                 COALESCE((SELECT id FROM card_bill_snapshots WHERE card_id=? AND bill_month=?), ?),
+                 ?, ?, ?
+               )""",
+            (card_id, bill_month, snapshot_id, card_id, bill_month, amount_cents)
+        )
+    else:
+        cur.execute(
+            """INSERT INTO card_bill_snapshots (id, card_id, bill_month, opening_cents)
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT (card_id, bill_month) DO UPDATE SET opening_cents = EXCLUDED.opening_cents""",
+            (snapshot_id, card_id, bill_month, amount_cents)
+        )
+
+    conn.commit()
+    conn.close()
+
+    month_label = bill_month
+    try:
+        dt = datetime.strptime(bill_month, "%Y-%m")
+        months_pt = ["", "jan", "fev", "mar", "abr", "mai", "jun",
+                     "jul", "ago", "set", "out", "nov", "dez"]
+        month_label = f"{months_pt[dt.month]}/{dt.year}"
+    except Exception:
+        pass
+
+    return f"Registrado: fatura de {month_label} do {card[1]} — R${amount:.2f} de compromisso pré-existente."
+
+
+@tool
 def get_next_bill(user_phone: str, card_name: str) -> str:
     """
     Estima a próxima fatura do cartão com base em:
@@ -1176,17 +1265,27 @@ def get_next_bill(user_phone: str, card_name: str) -> str:
     )
     recurring_rows = cur.fetchall()
 
+    # Snapshots de faturas futuras pré-existentes (registrados com set_future_bill)
+    # Próximo mês
+    if today.month == 12:
+        next_month = f"{today.year + 1}-01"
+    else:
+        next_month = f"{today.year}-{today.month + 1:02d}"
+
+    cur.execute(
+        "SELECT opening_cents FROM card_bill_snapshots WHERE card_id = ? AND bill_month = ?",
+        (card_id, next_month)
+    )
+    snapshot_row = cur.fetchone()
+    snapshot_cents = snapshot_row[0] if snapshot_row else 0
+
     conn.close()
 
-    # Dias até fechamento e vencimento do PRÓXIMO ciclo
+    # Dias até fechamento do PRÓXIMO ciclo
     if today.day < closing_day:
         days_to_close = closing_day - today.day
     else:
         days_to_close = (30 - today.day) + closing_day
-
-    # Vencimento do próximo ciclo
-    next_due_approx = closing_day + (due_day - closing_day) if due_day > closing_day else due_day
-    days_to_due = days_to_close + (due_day - closing_day if due_day > closing_day else 30 - closing_day + due_day)
 
     # Calcular parcelas que caem no próximo ciclo
     installment_items = []
@@ -1198,9 +1297,7 @@ def get_next_bill(user_phone: str, card_name: str) -> str:
         cy, cm = today.year, today.month
         months_elapsed = (cy - py) * 12 + (cm - pm)
 
-        # installment que aparece no ciclo ATUAL (mês atual)
         current_inst = months_elapsed + 1
-        # installment que aparece no PRÓXIMO ciclo
         next_inst = current_inst + 1
 
         if next_inst <= n_parcelas:
@@ -1210,24 +1307,29 @@ def get_next_bill(user_phone: str, card_name: str) -> str:
             total_installments += parcela
 
     total_recurring = sum(r[1] for r in recurring_rows)
-    total_next = total_installments + total_recurring
+    total_next = snapshot_cents + total_installments + total_recurring
 
-    lines = [f"📅 Próxima fatura estimada — {name}"]
+    lines = [f"📅 Próxima fatura estimada — {name} ({next_month})"]
     lines.append(f"   Fecha em ~{days_to_close} dias (dia {closing_day}) • Vence dia {due_day}")
     lines.append("")
 
-    if not installment_items and not recurring_rows:
+    if snapshot_cents > 0:
+        lines.append(f"📌 Compromissos anteriores ao ATLAS: R${snapshot_cents/100:.2f}")
+
+    if not installment_items and not recurring_rows and snapshot_cents == 0:
         lines.append("Nenhuma parcela ou gasto fixo programado para a próxima fatura.")
         return "\n".join(lines)
 
     if installment_items:
+        if snapshot_cents > 0:
+            lines.append("")
         lines.append("💳 Parcelas:")
         for nome, parcela, inst_num, total_inst, restantes in installment_items:
-            suffix = f" — ainda faltam {restantes} depois" if restantes > 0 else " — última parcela!"
+            suffix = f" — ainda faltam {restantes} depois" if restantes > 0 else " — última parcela! 🎉"
             lines.append(f"  • {nome}: R${parcela/100:.2f} ({inst_num}/{total_inst}){suffix}")
 
     if recurring_rows:
-        if installment_items:
+        if installment_items or snapshot_cents > 0:
             lines.append("")
         lines.append("📋 Gastos fixos no cartão:")
         for rec_name, rec_amount, rec_cat, rec_day in recurring_rows:
@@ -2544,6 +2646,12 @@ Pagar fatura: "paguei a fatura do Nubank" / "quitei o Inter" / "paguei o cartão
 Próxima fatura: "quanto vai ser minha próxima fatura do Nubank?" / "o que cai no mês que vem no Inter?" / "próxima fatura"
 → get_next_bill(user_phone=<user_phone>, card_name="Nubank")
 
+Registrar compromissos pré-existentes no cartão (faturas já acumuladas ANTES do ATLAS):
+"minha fatura de abril no Nubank já está em 400" / "em maio tenho 150 no Inter" / "Nubank: março 500, abril 400, maio 150"
+→ set_future_bill(user_phone=<user_phone>, card_name="Nubank", bill_month="2026-04", amount=400)
+   Se o usuário informar múltiplos meses de uma vez, chame set_future_bill UMA VEZ POR MÊS.
+   bill_month sempre no formato YYYY-MM (ex: "2026-04").
+
 ## GASTOS FIXOS / RECORRENTES
 
 Cadastrar gasto fixo: "tenho aluguel 1500 todo dia 5" / "pago Netflix 55 todo dia 15" / "parcela do carro 800 no Nubank todo dia 10"
@@ -2581,7 +2689,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=10,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill],
     add_datetime_to_context=True,
     markdown=True,
 )
