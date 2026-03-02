@@ -634,18 +634,24 @@ def get_today_total(user_phone: str) -> str:
 
     user_id = row[0]
     cur.execute(
-        """SELECT SUM(amount_cents), COUNT(*) FROM transactions
-           WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?""",
+        """SELECT category, merchant, amount_cents FROM transactions
+           WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?
+           ORDER BY occurred_at DESC""",
         (user_id, f"{today}%"),
     )
-    result = cur.fetchone()
+    rows = cur.fetchall()
     conn.close()
 
-    total = result[0] or 0
-    qtd = result[1] or 0
-    if qtd == 0:
+    if not rows:
         return "Nenhum gasto registrado hoje ainda."
-    return f"Hoje: R${total/100:.2f} em {qtd} transação{'ões' if qtd > 1 else ''}."
+
+    total = sum(r[2] for r in rows)
+    items = []
+    for cat, merchant, amount in rows:
+        label = merchant if merchant else cat
+        items.append(f"R${amount/100:.2f} em {label}")
+
+    return f"Hoje: R${total/100:.2f} — {' | '.join(items)}"
 
 
 @tool
