@@ -89,14 +89,43 @@ def _init_sqlite_tables():
             is_emergency_fund INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS credit_cards (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            closing_day INTEGER NOT NULL,
+            due_day INTEGER NOT NULL,
+            limit_cents INTEGER DEFAULT 0,
+            current_bill_opening_cents INTEGER DEFAULT 0,
+            last_bill_paid_at TEXT DEFAULT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS recurring_transactions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            amount_cents INTEGER NOT NULL,
+            category TEXT NOT NULL,
+            merchant TEXT DEFAULT '',
+            card_id TEXT DEFAULT NULL,
+            day_of_month INTEGER NOT NULL,
+            active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
     """)
     conn.commit()
-    # Migration: adiciona salary_day se a tabela já existia antes
-    try:
-        conn.execute("ALTER TABLE users ADD COLUMN salary_day INTEGER DEFAULT 0")
-        conn.commit()
-    except Exception:
-        pass  # coluna já existe
+    # Migrations
+    for migration in [
+        "ALTER TABLE users ADD COLUMN salary_day INTEGER DEFAULT 0",
+        "ALTER TABLE transactions ADD COLUMN card_id TEXT DEFAULT NULL",
+    ]:
+        try:
+            conn.execute(migration)
+            conn.commit()
+        except Exception:
+            pass
     conn.close()
 
 if DB_TYPE == "sqlite":
@@ -146,6 +175,41 @@ def _init_postgres_tables():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS credit_cards (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            closing_day INTEGER NOT NULL,
+            due_day INTEGER NOT NULL,
+            limit_cents INTEGER DEFAULT 0,
+            current_bill_opening_cents INTEGER DEFAULT 0,
+            last_bill_paid_at TEXT DEFAULT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS recurring_transactions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            amount_cents INTEGER NOT NULL,
+            category TEXT NOT NULL,
+            merchant TEXT DEFAULT '',
+            card_id TEXT DEFAULT NULL,
+            day_of_month INTEGER NOT NULL,
+            active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    # Migrations
+    for migration in [
+        "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS card_id TEXT DEFAULT NULL",
+    ]:
+        try:
+            cur.execute(migration)
+        except Exception:
+            pass
     conn.commit()
     cur.close()
     conn.close()
@@ -216,6 +280,7 @@ def save_transaction(
     notes: str = "",
     installments: int = 1,
     total_amount: float = 0,
+    card_name: str = "",
 ) -> str:
     """
     Salva uma transação financeira no banco de dados.
@@ -224,6 +289,7 @@ def save_transaction(
             Ex: "gastei 45" → amount=45, "R$1.200" → amount=1200
     installments: número de parcelas (1 = à vista)
     total_amount: valor TOTAL da compra em reais (preencher se parcelado)
+    card_name: nome do cartão de crédito se usado (ex: "Nubank"). Deixar vazio para débito/PIX/dinheiro.
 
     Categorias EXPENSE: Alimentação | Transporte | Moradia | Saúde | Lazer |
                         Educação | Assinaturas | Vestuário | Investimento | Outros
@@ -233,8 +299,8 @@ def save_transaction(
     Exemplos:
     - "gastei 45 no iFood" → amount=45, installments=1
     - "paguei 120 no mercado" → amount=120, installments=1
-    - "tênis 1200 em 12x" → amount=100, installments=12, total_amount=1200
-    - "notebook 3000 em 6x" → amount=500, installments=6, total_amount=3000
+    - "tênis 1200 em 12x no Nubank" → amount=100, installments=12, total_amount=1200, card_name="Nubank"
+    - "notebook 3000 em 6x no Inter" → amount=500, installments=6, total_amount=3000, card_name="Inter"
     """
     # converter reais → centavos
     amount_cents = round(amount * 100)
@@ -258,15 +324,24 @@ def save_transaction(
     if installments > 1 and total_amount_cents == 0:
         total_amount_cents = amount_cents * installments
 
+    # Resolve card_id
+    card_id = None
+    if card_name:
+        card = _find_card(cur, user_id, card_name)
+        if card:
+            card_id = card[0]
+            if not payment_method:
+                payment_method = "CREDIT"
+
     tx_id = str(uuid.uuid4())
     now = datetime.now().isoformat()
     cur.execute(
         """INSERT INTO transactions
            (id, user_id, type, amount_cents, total_amount_cents, installments, installment_number,
-            category, merchant, payment_method, notes, occurred_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            category, merchant, payment_method, notes, occurred_at, card_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (tx_id, user_id, transaction_type, amount_cents, total_amount_cents,
-         installments, 1, category, merchant, payment_method, notes, now),
+         installments, 1, category, merchant, payment_method, notes, now, card_id),
     )
     conn.commit()
     conn.close()
@@ -758,6 +833,304 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
     return "\n".join(lines)
 
 
+# ============================================================
+# HELPERS — cartões e recorrentes
+# ============================================================
+
+def _get_user_id(cur, user_phone: str):
+    cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _find_card(cur, user_id: str, card_name: str):
+    """Busca cartão por nome (case-insensitive, parcial)."""
+    cur.execute("SELECT id, name, closing_day, due_day, limit_cents, current_bill_opening_cents, last_bill_paid_at FROM credit_cards WHERE user_id = ?", (user_id,))
+    cards = cur.fetchall()
+    name_lower = card_name.lower()
+    for card in cards:
+        if name_lower in card[1].lower() or card[1].lower() in name_lower:
+            return card
+    return None
+
+
+def _bill_period_start(closing_day: int) -> str:
+    """Calcula a data de início do período de fatura atual."""
+    today = datetime.now()
+    if today.day >= closing_day:
+        start = today.replace(day=closing_day, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        # Mês anterior
+        if today.month == 1:
+            start = today.replace(year=today.year - 1, month=12, day=closing_day)
+        else:
+            start = today.replace(month=today.month - 1, day=closing_day)
+    return start.isoformat()
+
+
+@tool
+def register_card(
+    user_phone: str,
+    name: str,
+    closing_day: int,
+    due_day: int,
+    limit: float = 0,
+    current_bill: float = 0,
+) -> str:
+    """
+    Cadastra um cartão de crédito do usuário.
+    name: nome do cartão (ex: "Nubank", "Inter", "Bradesco")
+    closing_day: dia do fechamento da fatura (1-31)
+    due_day: dia do vencimento (1-31)
+    limit: limite total em reais (ex: 10000)
+    current_bill: fatura já acumulada ANTES de começar a rastrear, em reais (ex: 2000)
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "ERRO: usuário não encontrado."
+
+    # Verifica se já existe
+    existing = _find_card(cur, user_id, name)
+    if existing:
+        # Atualiza
+        cur.execute(
+            """UPDATE credit_cards SET closing_day=?, due_day=?, limit_cents=?, current_bill_opening_cents=? WHERE id=?""",
+            (closing_day, due_day, round(limit * 100), round(current_bill * 100), existing[0])
+        )
+        conn.commit()
+        conn.close()
+        return f"Cartão {existing[1]} atualizado. Fecha dia {closing_day}, vence dia {due_day}, limite R${limit:.0f}."
+
+    card_id = str(uuid.uuid4())
+    cur.execute(
+        """INSERT INTO credit_cards (id, user_id, name, closing_day, due_day, limit_cents, current_bill_opening_cents)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (card_id, user_id, name, closing_day, due_day, round(limit * 100), round(current_bill * 100))
+    )
+    conn.commit()
+    conn.close()
+
+    bill_str = f" | Fatura atual: R${current_bill:.0f}" if current_bill > 0 else ""
+    return f"Cartão {name} cadastrado! Fecha dia {closing_day}, vence dia {due_day}, limite R${limit:.0f}{bill_str}."
+
+
+@tool
+def get_cards(user_phone: str) -> str:
+    """
+    Lista todos os cartões do usuário com fatura atual e limite disponível.
+    Use quando o usuário perguntar sobre faturas, cartões ou limite disponível.
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "Nenhum cartão cadastrado."
+
+    cur.execute(
+        "SELECT id, name, closing_day, due_day, limit_cents, current_bill_opening_cents, last_bill_paid_at FROM credit_cards WHERE user_id = ?",
+        (user_id,)
+    )
+    cards = cur.fetchall()
+    conn.close()
+
+    if not cards:
+        return "Nenhum cartão cadastrado. Use register_card para adicionar."
+
+    today = datetime.now()
+    lines = [f"💳 Seus cartões ({today.strftime('%d/%m/%Y')}):"]
+    for card_id, name, closing_day, due_day, limit_cents, opening_cents, last_paid in cards:
+        # Calcula período da fatura atual
+        period_start = _bill_period_start(closing_day)
+        if last_paid and last_paid > period_start:
+            period_start = last_paid
+
+        conn2 = _get_conn()
+        cur2 = conn2.cursor()
+        cur2.execute(
+            """SELECT SUM(amount_cents) FROM transactions
+               WHERE user_id = ? AND card_id = ? AND occurred_at >= ?""",
+            (user_id, card_id, period_start)
+        )
+        row = cur2.fetchone()
+        conn2.close()
+
+        new_purchases = row[0] or 0
+        bill_total = (opening_cents or 0) + new_purchases
+        available = (limit_cents or 0) - bill_total
+
+        # Dias para fechar/vencer
+        if today.day < closing_day:
+            days_to_close = closing_day - today.day
+        else:
+            # Próximo mês
+            days_to_close = (30 - today.day) + closing_day
+
+        limit_str = f" | Limite: R${limit_cents/100:.0f}" if limit_cents else ""
+        avail_str = f" | Disponível: R${available/100:.0f}" if limit_cents else ""
+        lines.append(
+            f"\n💳 {name}\n"
+            f"   Fatura: R${bill_total/100:.2f} (fecha em {days_to_close} dias — dia {closing_day}){limit_str}{avail_str}\n"
+            f"   Vencimento: dia {due_day}"
+        )
+
+    return "\n".join(lines)
+
+
+@tool
+def close_bill(user_phone: str, card_name: str) -> str:
+    """
+    Registra o pagamento da fatura do cartão — zera a fatura atual.
+    Chamar quando o usuário disser "paguei a fatura do X".
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "ERRO: usuário não encontrado."
+
+    card = _find_card(cur, user_id, card_name)
+    if not card:
+        conn.close()
+        return f"Cartão '{card_name}' não encontrado. Verifique o nome com get_cards."
+
+    cur.execute(
+        "UPDATE credit_cards SET current_bill_opening_cents=0, last_bill_paid_at=? WHERE id=?",
+        (datetime.now().isoformat(), card[0])
+    )
+    conn.commit()
+    conn.close()
+    return f"Fatura do {card[1]} zerada! Novo ciclo iniciado."
+
+
+@tool
+def register_recurring(
+    user_phone: str,
+    name: str,
+    amount: float,
+    category: str,
+    day_of_month: int,
+    merchant: str = "",
+    card_name: str = "",
+) -> str:
+    """
+    Cadastra um gasto fixo/recorrente mensal.
+    name: nome do gasto (ex: "Aluguel", "Parcela Carro", "Netflix")
+    amount: valor em reais
+    category: Moradia | Transporte | Assinaturas | Saúde | Educação | Outros
+    day_of_month: dia do mês que vence ou é debitado (1-31)
+    merchant: estabelecimento (opcional)
+    card_name: nome do cartão se for no crédito (opcional, ex: "Nubank")
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "ERRO: usuário não encontrado."
+
+    card_id = None
+    if card_name:
+        card = _find_card(cur, user_id, card_name)
+        if card:
+            card_id = card[0]
+
+    # Verifica se já existe com esse nome
+    cur.execute("SELECT id FROM recurring_transactions WHERE user_id = ? AND LOWER(name) = LOWER(?)", (user_id, name))
+    existing = cur.fetchone()
+    if existing:
+        cur.execute(
+            "UPDATE recurring_transactions SET amount_cents=?, category=?, merchant=?, card_id=?, day_of_month=?, active=1 WHERE id=?",
+            (round(amount * 100), category, merchant, card_id, day_of_month, existing[0])
+        )
+        conn.commit()
+        conn.close()
+        return f"Gasto fixo '{name}' atualizado: R${amount:.0f} todo dia {day_of_month}."
+
+    rec_id = str(uuid.uuid4())
+    cur.execute(
+        """INSERT INTO recurring_transactions (id, user_id, name, amount_cents, category, merchant, card_id, day_of_month)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (rec_id, user_id, name, round(amount * 100), category, merchant, card_id, day_of_month)
+    )
+    conn.commit()
+    conn.close()
+
+    card_str = f" no {card_name}" if card_name else ""
+    return f"Gasto fixo cadastrado: {name} — R${amount:.0f} todo dia {day_of_month}{card_str}."
+
+
+@tool
+def get_recurring(user_phone: str) -> str:
+    """
+    Lista todos os gastos fixos/recorrentes cadastrados com total mensal.
+    Use quando o usuário perguntar sobre gastos fixos, compromissos mensais ou contas fixas.
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "Nenhum gasto fixo cadastrado."
+
+    cur.execute(
+        """SELECT r.name, r.amount_cents, r.category, r.day_of_month, r.merchant, c.name
+           FROM recurring_transactions r
+           LEFT JOIN credit_cards c ON r.card_id = c.id
+           WHERE r.user_id = ? AND r.active = 1
+           ORDER BY r.day_of_month""",
+        (user_id,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        return "Nenhum gasto fixo cadastrado. Use register_recurring para adicionar."
+
+    total = sum(r[1] for r in rows)
+    today = datetime.now().day
+    lines = [f"📋 Gastos fixos mensais — Total: R${total/100:.2f}"]
+    for name, amount, category, day, merchant, card_name in rows:
+        paid = "✅" if day < today else "⏳"
+        card_str = f" ({card_name})" if card_name else ""
+        merch_str = f" — {merchant}" if merchant else ""
+        lines.append(f"  {paid} Dia {day:02d}: {name}{merch_str} — R${amount/100:.2f} [{category}]{card_str}")
+
+    return "\n".join(lines)
+
+
+@tool
+def deactivate_recurring(user_phone: str, name: str) -> str:
+    """
+    Desativa um gasto fixo (quando o usuário cancelou uma assinatura, quitou parcela, etc).
+    name: nome do gasto a desativar (parcial, case-insensitive)
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "ERRO: usuário não encontrado."
+
+    cur.execute(
+        "SELECT id, name FROM recurring_transactions WHERE user_id = ? AND active = 1 AND LOWER(name) LIKE LOWER(?)",
+        (user_id, f"%{name}%")
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return f"Gasto fixo '{name}' não encontrado."
+
+    cur.execute("UPDATE recurring_transactions SET active = 0 WHERE id = ?", (row[0],))
+    conn.commit()
+    conn.close()
+    return f"'{row[1]}' desativado dos gastos fixos."
+
+
 @tool
 def get_month_comparison(user_phone: str) -> str:
     """
@@ -978,6 +1351,29 @@ def can_i_buy(user_phone: str, amount: float, description: str = "") -> str:
     installments_row = cur.fetchone()
     active_installments_monthly = installments_row[0] or 0
     active_installments_count = installments_row[1] or 0
+
+    # Gastos fixos ainda por vir esse mês (recurring não lançados)
+    upcoming_recurring = 0
+    try:
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM recurring_transactions WHERE user_id = ? AND active = 1 AND day_of_month > ?",
+            (user_id, today.day)
+        )
+        upcoming_recurring = cur.fetchone()[0] or 0
+    except Exception:
+        pass
+
+    # Fatura de cartão pré-rastreamento (saldo anterior à adoção do ATLAS)
+    card_pretracking_cents = 0
+    try:
+        cur.execute(
+            "SELECT COALESCE(SUM(current_bill_opening_cents), 0) FROM credit_cards WHERE user_id = ?",
+            (user_id,)
+        )
+        card_pretracking_cents = cur.fetchone()[0] or 0
+    except Exception:
+        pass
+
     conn.close()
 
     item_label = f'"{description}"' if description else f"R${amount_cents/100:.2f}"
@@ -995,7 +1391,8 @@ def can_i_buy(user_phone: str, amount: float, description: str = "") -> str:
         return "\n".join(lines)
 
     # --- com renda ---
-    budget_remaining = income_cents - expenses_cents
+    fixed_commitments = upcoming_recurring + card_pretracking_cents
+    budget_remaining = income_cents - expenses_cents - fixed_commitments
     budget_after = budget_remaining - amount_cents
     pct_income = amount_cents / income_cents * 100
     savings_rate_before = max(budget_remaining / income_cents * 100, 0)
@@ -1034,7 +1431,11 @@ def can_i_buy(user_phone: str, amount: float, description: str = "") -> str:
     lines.append(f"💸 Gastos este mês: R${expenses_cents/100:.2f}")
     if active_installments_monthly > 0:
         lines.append(f"💳 Parcelas ativas: R${active_installments_monthly/100:.2f}/mês ({active_installments_count} compra{'s' if active_installments_count > 1 else ''})")
-    lines.append(f"📊 Saldo atual: R${budget_remaining/100:.2f} → após compra: R${budget_after/100:.2f}")
+    if upcoming_recurring > 0:
+        lines.append(f"📋 Gastos fixos a vencer: R${upcoming_recurring/100:.2f}")
+    if card_pretracking_cents > 0:
+        lines.append(f"💳 Saldo anterior cartões: R${card_pretracking_cents/100:.2f}")
+    lines.append(f"📊 Saldo real: R${budget_remaining/100:.2f} → após compra: R${budget_after/100:.2f}")
     lines.append(f"📈 Taxa de poupança: {savings_rate_before:.0f}% → {savings_rate_after:.0f}%")
 
     if verdict == "YES":
@@ -1058,12 +1459,6 @@ def can_i_buy(user_phone: str, amount: float, description: str = "") -> str:
 # ============================================================
 # TOOLS — METAS FINANCEIRAS
 # ============================================================
-
-def _get_user_id(cur, user_phone: str) -> str | None:
-    cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
-    row = cur.fetchone()
-    return row[0] if row else None
-
 
 def _get_cycle_dates(salary_day: int) -> tuple:
     """
@@ -1794,6 +2189,23 @@ POSSO COMPRAR? (can_i_buy):
   Linha 3: insight contextual (ex: "Isso é X% da sua renda" ou "Vai sobrar pouco até o fim do mês")
   UMA sugestão final (ex: "Quer parcelar pra não pesar tanto?")
 
+CARTÃO DE CRÉDITO — cadastro:
+  "Cartão [Nome] cadastrado! Fecha dia [X], vence dia [Y], limite R$[Z]."
+  Se fatura informada: "Fatura atual: R$X registrada como saldo anterior."
+  Sugestão: "Quer registrar seus gastos fixos também?"
+
+FATURAS (get_cards):
+  Use o formato retornado pela tool — não reescreva.
+  Termine com: "Quer ver os gastos em algum cartão específico?"
+
+GASTOS FIXOS — cadastro:
+  "Anotado! [Nome] — R$X todo dia [Y]. Total fixo mensal: R$Z." (se puder calcular)
+  Ou simplesmente: "Gasto fixo cadastrado: [Nome] R$X todo dia [Y]."
+
+GASTOS FIXOS (get_recurring):
+  Use o formato retornado — não reescreva.
+  Termine com: "Quer ver quanto ainda vai sair esse mês?"
+
 CICLO DE SALÁRIO:
   Blocos: renda / gasto / orçamento diário / projeção.
   Termine com: "Quer ver o que vai sobrar até o fim do ciclo?"
@@ -1930,6 +2342,36 @@ Ao corrigir parcelamento, passe APENAS installments — o valor total é calcula
 - "guardei X pra meta Y" / "adicionei X na meta": add_to_goal(user_phone=<user_phone>, goal_name="<nome parcial>", amount=<valor_reais>)
 - "qual meu score?" / "saúde financeira" / "como estou?": get_financial_score(user_phone=<user_phone>)
 
+## CARTÕES DE CRÉDITO
+
+Cadastrar cartão: "tenho Nubank, fecha dia 25, vence dia 10, limite 10000" / "minha fatura do Inter já está em 2000"
+→ register_card(user_phone=<user_phone>, name="Nubank", closing_day=25, due_day=10, limit=10000)
+→ register_card(user_phone=<user_phone>, name="Inter", closing_day=X, due_day=Y, current_bill=2000)
+   Se fechamento/vencimento não informados, pergunte: "Qual o dia de fechamento e vencimento do [nome]?"
+
+Gasto no cartão: "comprei X no Nubank" / "gastei 300 no Inter" / "parcelei no Bradesco"
+→ save_transaction(..., card_name="Nubank")
+   Se cartão informado mas não cadastrado: "Você tem o [nome] cadastrado? Me passa o dia de fechamento e limite pra eu rastrear a fatura."
+
+Ver faturas: "como estão minhas faturas?" / "fatura do Nubank" / "quanto está no cartão?"
+→ get_cards(user_phone=<user_phone>)
+
+Pagar fatura: "paguei a fatura do Nubank" / "quitei o Inter" / "paguei o cartão"
+→ close_bill(user_phone=<user_phone>, card_name="Nubank")
+
+## GASTOS FIXOS / RECORRENTES
+
+Cadastrar gasto fixo: "tenho aluguel 1500 todo dia 5" / "pago Netflix 55 todo dia 15" / "parcela do carro 800 no Nubank todo dia 10"
+→ register_recurring(user_phone=<user_phone>, name="Aluguel", amount=1500, category="Moradia", day_of_month=5)
+→ register_recurring(user_phone=<user_phone>, name="Netflix", amount=55, category="Assinaturas", day_of_month=15)
+→ register_recurring(user_phone=<user_phone>, name="Parcela Carro", amount=800, category="Transporte", day_of_month=10, card_name="Nubank")
+
+Ver gastos fixos: "quais meus gastos fixos?" / "minhas contas mensais" / "meus compromissos" / "o que pago todo mês?"
+→ get_recurring(user_phone=<user_phone>)
+
+Cancelar gasto fixo: "cancelei a Netflix" / "quitei o parcela do carro" / "não tenho mais academia"
+→ deactivate_recurring(user_phone=<user_phone>, name="Netflix")
+
 ## CICLO DE SALÁRIO (CLT / PF)
 
 - "meu salário é todo dia X" / "recebo no dia X" / "salário cai dia X":
@@ -1954,7 +2396,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=10,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, register_recurring, get_recurring, deactivate_recurring],
     add_datetime_to_context=True,
     markdown=True,
 )
