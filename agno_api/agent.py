@@ -309,6 +309,13 @@ def get_month_summary(user_phone: str, month: str = "") -> str:
         (user_id, f"{month}%"),
     )
     rows = cur.fetchall()
+
+    # Check if there's data from any month before the requested month
+    cur.execute(
+        "SELECT COUNT(*) FROM transactions WHERE user_id = ? AND occurred_at < ?",
+        (user_id, f"{month}-01"),
+    )
+    has_previous_data = cur.fetchone()[0] > 0
     conn.close()
 
     if not rows:
@@ -318,7 +325,7 @@ def get_month_summary(user_phone: str, month: str = "") -> str:
     expenses = sum(r[2] for r in rows if r[0] == "EXPENSE")
     balance = income - expenses
 
-    lines = [f"📊 Resumo {month}"]
+    lines = [f"📊 Resumo {month} | has_previous_data={has_previous_data}"]
     lines.append(f"💰 Receitas: R${income/100:.2f}")
     lines.append(f"💸 Gastos:   R${expenses/100:.2f}")
     lines.append(f"{'✅' if balance >= 0 else '⚠️'} Saldo:    R${balance/100:.2f}")
@@ -1684,7 +1691,9 @@ SALDO / "qual meu saldo?":
 RESUMO MENSAL:
   Mostre totais por categoria com emoji (1 linha por categoria).
   Se não tiver receita lançada mas tiver renda cadastrada: mencione "Sua renda cadastrada é R$X.XXX — ainda não lançou salário esse mês?"
-  Termine com: "Quer comparar com o mês passado?"
+  Sugestão final — baseada em has_previous_data:
+  - has_previous_data=True → "Quer comparar com o mês passado?"
+  - has_previous_data=False → "Quer anotar mais algum gasto?" (não sugira comparativo — não há histórico)
 
 COMPARATIVO MENSAL:
   Destaque variações (↑ subiu, ↓ caiu). Alertas ⚠️ em evidência.
