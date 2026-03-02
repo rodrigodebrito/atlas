@@ -1132,6 +1132,118 @@ def deactivate_recurring(user_phone: str, name: str) -> str:
 
 
 @tool
+def get_next_bill(user_phone: str, card_name: str) -> str:
+    """
+    Estima a próxima fatura do cartão com base em:
+    1. Parcelas de compras anteriores que caem no próximo ciclo
+    2. Gastos fixos recorrentes vinculados a esse cartão
+    Use quando o usuário perguntar "quanto vai ser minha próxima fatura do X?",
+    "o que vai cair no próximo mês no cartão?", "próxima fatura do Nubank".
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "Usuário não encontrado."
+
+    card = _find_card(cur, user_id, card_name)
+    if not card:
+        conn.close()
+        return f"Cartão '{card_name}' não encontrado. Use get_cards para ver seus cartões."
+
+    card_id, name, closing_day, due_day, limit_cents, opening_cents, last_paid = card
+
+    today = datetime.now()
+
+    # Parcelas ativas vinculadas a este cartão
+    cur.execute(
+        """SELECT merchant, category, amount_cents, installments, occurred_at
+           FROM transactions
+           WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND installments > 1
+           ORDER BY occurred_at""",
+        (user_id, card_id)
+    )
+    installment_rows = cur.fetchall()
+
+    # Gastos fixos vinculados a este cartão
+    cur.execute(
+        """SELECT name, amount_cents, category, day_of_month
+           FROM recurring_transactions
+           WHERE user_id = ? AND card_id = ? AND active = 1""",
+        (user_id, card_id)
+    )
+    recurring_rows = cur.fetchall()
+
+    conn.close()
+
+    # Dias até fechamento e vencimento do PRÓXIMO ciclo
+    if today.day < closing_day:
+        days_to_close = closing_day - today.day
+    else:
+        days_to_close = (30 - today.day) + closing_day
+
+    # Vencimento do próximo ciclo
+    next_due_approx = closing_day + (due_day - closing_day) if due_day > closing_day else due_day
+    days_to_due = days_to_close + (due_day - closing_day if due_day > closing_day else 30 - closing_day + due_day)
+
+    # Calcular parcelas que caem no próximo ciclo
+    installment_items = []
+    total_installments = 0
+
+    for merchant, category, parcela, n_parcelas, occurred_at in installment_rows:
+        purchase_date = datetime.fromisoformat(occurred_at[:19])
+        py, pm = purchase_date.year, purchase_date.month
+        cy, cm = today.year, today.month
+        months_elapsed = (cy - py) * 12 + (cm - pm)
+
+        # installment que aparece no ciclo ATUAL (mês atual)
+        current_inst = months_elapsed + 1
+        # installment que aparece no PRÓXIMO ciclo
+        next_inst = current_inst + 1
+
+        if next_inst <= n_parcelas:
+            parcelas_restantes = n_parcelas - next_inst
+            nome = merchant or category
+            installment_items.append((nome, parcela, next_inst, n_parcelas, parcelas_restantes))
+            total_installments += parcela
+
+    total_recurring = sum(r[1] for r in recurring_rows)
+    total_next = total_installments + total_recurring
+
+    lines = [f"📅 Próxima fatura estimada — {name}"]
+    lines.append(f"   Fecha em ~{days_to_close} dias (dia {closing_day}) • Vence dia {due_day}")
+    lines.append("")
+
+    if not installment_items and not recurring_rows:
+        lines.append("Nenhuma parcela ou gasto fixo programado para a próxima fatura.")
+        return "\n".join(lines)
+
+    if installment_items:
+        lines.append("💳 Parcelas:")
+        for nome, parcela, inst_num, total_inst, restantes in installment_items:
+            suffix = f" — ainda faltam {restantes} depois" if restantes > 0 else " — última parcela!"
+            lines.append(f"  • {nome}: R${parcela/100:.2f} ({inst_num}/{total_inst}){suffix}")
+
+    if recurring_rows:
+        if installment_items:
+            lines.append("")
+        lines.append("📋 Gastos fixos no cartão:")
+        for rec_name, rec_amount, rec_cat, rec_day in recurring_rows:
+            lines.append(f"  • {rec_name}: R${rec_amount/100:.2f} (dia {rec_day})")
+
+    lines.append("")
+    lines.append(f"💰 Total estimado: R${total_next/100:.2f}")
+
+    if limit_cents and total_next > 0:
+        available = limit_cents - total_next
+        lines.append(f"📊 Limite disponível após: R${available/100:.0f}")
+
+    return "\n".join(lines)
+
+
+@tool
 def get_month_comparison(user_phone: str) -> str:
     """
     Compara o mês atual com o mês anterior por categoria.
@@ -2203,6 +2315,11 @@ FATURAS (get_cards):
   Use o formato retornado pela tool — não reescreva.
   Termine com: "Quer ver os gastos em algum cartão específico?"
 
+PRÓXIMA FATURA (get_next_bill):
+  Use o formato retornado. Destaque o total estimado em negrito.
+  Se tiver parcela marcada como "última parcela!", mencione: "O [nome] quita na próxima fatura!"
+  Termine com: "Quer ver a fatura atual também?"
+
 GASTOS FIXOS — cadastro:
   "Anotado! [Nome] — R$X todo dia [Y]. Total fixo mensal: R$Z." (se puder calcular)
   Ou simplesmente: "Gasto fixo cadastrado: [Nome] R$X todo dia [Y]."
@@ -2341,6 +2458,7 @@ Responda com este menu formatado — sem chamar nenhum tool:
 
 💳 *Cartões:*
 • "qual minha fatura do Nubank?"
+• "próxima fatura do Nubank"
 • "paguei o cartão Inter"
 
 📋 *Gastos fixos:*
@@ -2423,6 +2541,9 @@ Ver faturas: "como estão minhas faturas?" / "fatura do Nubank" / "quanto está 
 Pagar fatura: "paguei a fatura do Nubank" / "quitei o Inter" / "paguei o cartão"
 → close_bill(user_phone=<user_phone>, card_name="Nubank")
 
+Próxima fatura: "quanto vai ser minha próxima fatura do Nubank?" / "o que cai no mês que vem no Inter?" / "próxima fatura"
+→ get_next_bill(user_phone=<user_phone>, card_name="Nubank")
+
 ## GASTOS FIXOS / RECORRENTES
 
 Cadastrar gasto fixo: "tenho aluguel 1500 todo dia 5" / "pago Netflix 55 todo dia 15" / "parcela do carro 800 no Nubank todo dia 10"
@@ -2460,7 +2581,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=10,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, register_recurring, get_recurring, deactivate_recurring],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill],
     add_datetime_to_context=True,
     markdown=True,
 )
