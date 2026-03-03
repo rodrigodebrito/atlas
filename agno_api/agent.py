@@ -911,14 +911,26 @@ def delete_last_transaction(user_phone: str) -> str:
 
 
 @tool
-def get_today_total(user_phone: str, filter_type: str = "EXPENSE") -> str:
+def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1) -> str:
     """
-    Retorna movimentações de hoje com lançamentos por categoria.
+    Retorna movimentações de hoje (ou dos últimos N dias) com lançamentos por categoria.
     filter_type: "EXPENSE" (padrão, só gastos), "INCOME" (só receitas), "ALL" (tudo).
+    days: 1 = só hoje (padrão), 3 = últimos 3 dias, 7 = últimos 7 dias, etc.
+    Exemplos: "gastos dos últimos 3 dias" → days=3, "o que gastei ontem" → days=2 filter_type=EXPENSE
     """
     today = _now_br()
-    today_str = today.strftime("%Y-%m-%d")
-    today_label = today.strftime("%d/%m/%Y")
+
+    # Gera lista de datas (hoje até N dias atrás)
+    date_list = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+
+    if days == 1:
+        period_label = f"hoje ({today.strftime('%d/%m/%Y')})"
+    elif days == 2:
+        yesterday = (today - timedelta(days=1)).strftime("%d/%m")
+        period_label = f"ontem e hoje ({yesterday} a {today.strftime('%d/%m')})"
+    else:
+        start = date_list[-1]
+        period_label = f"últimos {days} dias ({start[8:10]}/{start[5:7]} a {today.strftime('%d/%m')})"
 
     conn = _get_conn()
     cur = conn.cursor()
@@ -927,23 +939,26 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE") -> str:
     row = cur.fetchone()
     if not row:
         conn.close()
-        return "Nenhuma movimentação registrada hoje ainda."
+        return "Nenhuma movimentação registrada ainda."
 
     user_id, user_name = row
+
+    date_conditions = " OR ".join(["occurred_at LIKE ?" for _ in date_list])
+    date_params = tuple(f"{d}%" for d in date_list)
 
     type_filter = "" if filter_type == "ALL" else f"AND type = '{filter_type}'"
     cur.execute(
         f"""SELECT type, category, merchant, amount_cents FROM transactions
-           WHERE user_id = ? {type_filter} AND occurred_at LIKE ?
+           WHERE user_id = ? {type_filter} AND ({date_conditions})
            ORDER BY amount_cents DESC""",
-        (user_id, f"{today_str}%"),
+        (user_id,) + date_params,
     )
     rows = cur.fetchall()
     conn.close()
 
     if not rows:
         label_map = {"EXPENSE": "gastos", "INCOME": "receitas", "ALL": "movimentações"}
-        return f"Nenhum(a) {label_map.get(filter_type, 'movimentação')} registrado(a) hoje ({today_label}) ainda."
+        return f"Nenhum(a) {label_map.get(filter_type, 'movimentação')} nos {period_label}."
 
     from collections import defaultdict
     cat_emoji = {
@@ -957,7 +972,7 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE") -> str:
     inc_rows = [(r[1], r[2], r[3]) for r in rows if r[0] == "INCOME"]
 
     filter_label = {"EXPENSE": " — apenas gastos", "INCOME": " — apenas receitas", "ALL": ""}.get(filter_type, "")
-    lines = [f"*{user_name}*, suas movimentações de hoje ({today_label}){filter_label}:"]
+    lines = [f"*{user_name}*, suas movimentações — {period_label}{filter_label}:"]
     lines.append("")
 
     def build_cat_block(tx_list, ref_total):
@@ -3245,11 +3260,14 @@ SEMANA:
 - "gastos semanais" / "só os gastos da semana" → get_week_summary(user_phone=<user_phone>, filter_type="EXPENSE")
 - "receitas da semana" → get_week_summary(user_phone=<user_phone>, filter_type="INCOME")
 
-HOJE:
-- "quanto gastei hoje?" / "gastos de hoje" / "me mostre os gastos de hoje" / "mostre meus gastos de hoje" / "o que gastei hoje?" → get_today_total(user_phone=<user_phone>, filter_type="EXPENSE")
-- "movimentações de hoje" / "tudo de hoje" / "minhas transações de hoje" → get_today_total(user_phone=<user_phone>, filter_type="ALL")
-- "receitas de hoje" / "entrou algo hoje" → get_today_total(user_phone=<user_phone>, filter_type="INCOME")
-IMPORTANTE: "gastos de hoje" ou qualquer variação → SEMPRE get_today_total, NUNCA get_transactions.
+HOJE / ÚLTIMOS N DIAS:
+- "quanto gastei hoje?" / "gastos de hoje" / "me mostre os gastos de hoje" → get_today_total(filter_type="EXPENSE", days=1)
+- "movimentações de hoje" / "tudo de hoje" → get_today_total(filter_type="ALL", days=1)
+- "receitas de hoje" / "entrou algo hoje" → get_today_total(filter_type="INCOME", days=1)
+- "gastos dos últimos 3 dias" / "o que gastei nos últimos 3 dias" → get_today_total(filter_type="EXPENSE", days=3)
+- "últimos 5 dias" / "nos últimos 7 dias" → get_today_total(filter_type="ALL", days=N)
+- "ontem e hoje" / "o que gastei ontem" → get_today_total(filter_type="EXPENSE", days=2)
+IMPORTANTE: qualquer pergunta sobre "hoje", "ontem" ou "últimos N dias" → SEMPRE get_today_total com days=N, NUNCA get_transactions.
 
 OUTROS:
 - "como evoluí?" / "comparado ao mês passado" → get_month_comparison(user_phone=<user_phone>)
