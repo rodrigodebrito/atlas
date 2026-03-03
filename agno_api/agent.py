@@ -426,13 +426,54 @@ def save_transaction(
                 f"Ex: _\"fecha 25 vence 10\"_ — prometo que não pergunto mais 😄"
             )
 
-    if installments > 1:
-        parcela = f"R${amount_cents/100:.2f}/mês"
-        total = f"R${total_amount_cents/100:.2f} total"
-        return f"Transação salva: {parcela} × {installments}x ({total}) em {category}{' (' + merchant + ')' if merchant else ''}{card_suffix}.{next_bill_warning}{ask_closing}"
+    # Calcula label de data
+    tx_date = now[:10]  # YYYY-MM-DD
+    today_str = _now_br().strftime("%Y-%m-%d")
+    yesterday_str = (_now_br() - timedelta(days=1)).strftime("%Y-%m-%d")
+    if tx_date == today_str:
+        date_label = f"{tx_date[8:10]}/{tx_date[5:7]}/{tx_date[:4]} (hoje)"
+    elif tx_date == yesterday_str:
+        date_label = f"{tx_date[8:10]}/{tx_date[5:7]}/{tx_date[:4]} (ontem)"
+    else:
+        date_label = f"{tx_date[8:10]}/{tx_date[5:7]}/{tx_date[:4]}"
 
-    valor = f"R${amount_cents/100:.2f}"
-    return f"Transação salva: {valor} em {category}{' (' + merchant + ')' if merchant else ''}{card_suffix}.{next_bill_warning}{ask_closing}"
+    # Linha de merchant/cartão
+    merchant_parts = []
+    if merchant:
+        merchant_parts.append(merchant)
+    if card_name:
+        merchant_parts.append(card_display_name)
+
+    # Monta resposta WhatsApp formatada
+    if transaction_type == "INCOME":
+        lines = [f"💰 *R${amount_cents/100:,.2f}* registrado — {category}".replace(",", ".")]
+        if merchant:
+            lines[0] += f" ({merchant})"
+    elif installments > 1:
+        parcela_fmt = f"R${amount_cents/100:,.2f}".replace(",", ".")
+        total_fmt = f"R${total_amount_cents/100:,.2f}".replace(",", ".")
+        lines = [f"✅ *{parcela_fmt}/mês × {installments}x* — {category}"]
+        detail_parts = merchant_parts + [f"_{total_fmt} total_"]
+        lines.append("📍 " + "  •  ".join(detail_parts))
+        lines.append(f"📅 {date_label}")
+        lines.append('_Errou? → "corrige" ou "apaga"_')
+    else:
+        lines = [f"✅ *R${amount_cents/100:,.2f} — {category}*".replace(",", ".")]
+        if merchant_parts:
+            lines.append("📍 " + "  •  ".join(merchant_parts))
+        lines.append(f"📅 {date_label}")
+        lines.append('_Errou? → "corrige" ou "apaga"_')
+
+    result = "\n".join(lines)
+
+    if next_bill_warning:
+        result += next_bill_warning
+    if ask_closing:
+        result += ask_closing
+    if card_is_new and not ask_closing:
+        result += f"\n_Cartão {card_display_name} criado automaticamente. Para rastrear a fatura, diga o fechamento e vencimento._"
+
+    return result
 
 
 @tool
@@ -2781,9 +2822,15 @@ parse_agent = Agent(
 RESPONSE_INSTRUCTIONS = """
 ⛔ REGRA ABSOLUTA — LEIA ANTES DE QUALQUER COISA:
 NUNCA termine nenhuma resposta com pergunta ou sugestão.
-PROIBIDO: "Quer ver X?", "Posso ajudar com mais algo?", "Quer anotar mais algum?", "Quer verificar X?", "Quer fazer outra anotação?", "Alguma outra dúvida?".
+PROIBIDO: "Quer ver X?", "Posso ajudar com mais algo?", "Quer anotar mais algum?", "Quer verificar X?", "Quer fazer outra anotação?", "Alguma outra dúvida?", "Quer ver o total de hoje?", "Quer verificar o total?".
 Responda o que foi pedido e PARE. Ponto final. Sem pergunta. Sem sugestão. Zero.
 ⛔ FIM DA REGRA ABSOLUTA.
+
+⛔ REGRA DE FORMATO — TRANSAÇÕES (save_transaction):
+A tool save_transaction já retorna o texto FORMATADO para WhatsApp.
+Apresente o retorno da tool DIRETAMENTE, sem reescrever, sem adicionar nada.
+NÃO reformule. NÃO resuma. NÃO acrescente frases antes ou depois.
+⛔ FIM DA REGRA DE FORMATO.
 
 Você é o ATLAS — assistente financeiro via WhatsApp.
 Tom: amigável, direto, informal. Português brasileiro natural.
@@ -3187,9 +3234,10 @@ SEMANA:
 - "receitas da semana" → get_week_summary(user_phone=<user_phone>, filter_type="INCOME")
 
 HOJE:
-- "quanto gastei hoje?" / "gastos de hoje" → get_today_total(user_phone=<user_phone>, filter_type="EXPENSE")
-- "movimentações de hoje" / "tudo de hoje" → get_today_total(user_phone=<user_phone>, filter_type="ALL")
+- "quanto gastei hoje?" / "gastos de hoje" / "me mostre os gastos de hoje" / "mostre meus gastos de hoje" / "o que gastei hoje?" → get_today_total(user_phone=<user_phone>, filter_type="EXPENSE")
+- "movimentações de hoje" / "tudo de hoje" / "minhas transações de hoje" → get_today_total(user_phone=<user_phone>, filter_type="ALL")
 - "receitas de hoje" / "entrou algo hoje" → get_today_total(user_phone=<user_phone>, filter_type="INCOME")
+IMPORTANTE: "gastos de hoje" ou qualquer variação → SEMPRE get_today_total, NUNCA get_transactions.
 
 OUTROS:
 - "como evoluí?" / "comparado ao mês passado" → get_month_comparison(user_phone=<user_phone>)
@@ -3307,7 +3355,13 @@ Por padrão, avisa 3 dias antes. O usuário pode configurar:
 - "vai sobrar?" / "vai ter dinheiro até o fim do mês?" / "vai faltar?" / "quanto vai sobrar?":
     will_i_have_leftover(user_phone=<user_phone>)
 
-Após salvar: confirme com feedback curto + insight se relevante.
+APÓS SALVAR TRANSAÇÃO (save_transaction):
+Apresente o texto retornado pela tool DIRETAMENTE, sem alterar nada, sem acrescentar perguntas.
+A tool já retorna o formato correto para WhatsApp (✅, 📍, 📅, _Errou?_).
+
+APÓS CONSULTAS (get_today_total, get_week_summary, get_month_summary):
+Apresente o texto retornado pela tool DIRETAMENTE. Adicione apenas UMA linha de insight se relevante.
+
 Se get_month_comparison ou get_week_summary retornar alertas (⚠️), destaque-os na resposta.
 NUNCA mostre JSON. SEMPRE PT-BR informal.
 """
