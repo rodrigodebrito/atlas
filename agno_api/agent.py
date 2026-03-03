@@ -3382,12 +3382,21 @@ OUTROS:
 - "como evoluí?" / "comparado ao mês passado" → get_month_comparison(user_phone=<user_phone>)
 - Detalhes / lista de transações → get_transactions(user_phone=<user_phone>, date="YYYY-MM-DD") ou get_transactions(user_phone=<user_phone>, month="YYYY-MM")
 - "onde gastei em X?" / "detalhes de [categoria]" → get_category_breakdown(user_phone=<user_phone>, category="<categoria>")
-- Qualquer menção a estabelecimento/loja/local específico:
-  "quanto gastei no X?" / "me mostra os gastos no X" / "gastos no X" / "o que comprei na X" /
-  "X esse mês" / "histórico do X" / "transações no X" / "mostra o X" / "gasto no X":
+- Qualquer menção a estabelecimento/loja/local específico — usar get_transactions_by_merchant:
+  • "quanto gastei no/na X?" / "quanto foi no X?"
+  • "me mostra os gastos no/na X" / "mostra o X" / "mostra os gastos no X"
+  • "gastos no/na X" / "gasto no/na X" / "gasto com X"
+  • "o que comprei no/na X?" / "o que tem no X?"
+  • "X esse mês" / "X essa semana" / "X hoje"
+  • "histórico do/da/no X" / "transações no/na X"
+  • "compras no/na X" / "fatura do X"
+  • "busca X" / "pesquisa X" / "filtra X"
+  • "vezes no X" / "quantas vezes no X?"
+  REGRA: se o usuário mencionar um nome próprio de lugar/loja/app/serviço
+         (ex: Deville, iFood, Uber, Herbalife, Talentos, Nubank, Amazon, Netflix...)
+         → SEMPRE chamar get_transactions_by_merchant, NÃO get_today_total nem get_transactions
     → get_transactions_by_merchant(user_phone=<user_phone>, merchant_query="<nome do lugar>")
     → Se mencionar mês: add month="YYYY-MM"
-    Exemplos: "Deville" / "Talentos" / "iFood" / "Herbalife" / "Nike" / "Nubank" / "mercado"
 - "minhas parcelas" / "quanto tenho parcelado" → get_installments_summary(user_phone=<user_phone>)
 
 COMPROMISSOS FUTUROS:
