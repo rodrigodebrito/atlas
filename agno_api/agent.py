@@ -1802,6 +1802,14 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     Resumo da semana atual (segunda a hoje) com lançamentos por categoria.
     filter_type: "ALL" (padrão), "EXPENSE" (só gastos), "INCOME" (só receitas).
     """
+    try:
+        return _get_week_summary_impl(user_phone, filter_type)
+    except Exception as e:
+        import traceback
+        return f"ERRO_DEBUG: {type(e).__name__}: {e}\n{traceback.format_exc()[-500:]}"
+
+
+def _get_week_summary_impl(user_phone: str, filter_type: str = "ALL") -> str:
     from collections import defaultdict
     today = _now_br()
     days_since_monday = today.weekday()
