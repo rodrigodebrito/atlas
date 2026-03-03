@@ -1907,10 +1907,8 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
         lines.append("🔔 *Alertas:*")
         lines.extend(alertas)
 
-    if cat_totals:
-        top_cat = max(cat_totals, key=lambda x: cat_totals[x])
-        top_pct = cat_totals[top_cat] / week_total * 100
-        lines.append(f"__top_category:{top_cat}:{top_pct:.0f}%")
+    if top_cat_name:
+        lines.append(f"__top_category:{top_cat_name}:{top_pct_val:.0f}%")
 
     return "\n".join(lines)
 
