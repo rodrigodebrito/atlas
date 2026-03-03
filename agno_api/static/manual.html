@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ATLAS — Como usar</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f0f2f5;
+      color: #111b21;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    header {
+      background: #128c7e;
+      color: #fff;
+      padding: 20px 16px 16px;
+      text-align: center;
+    }
+    header h1 { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
+    header p  { font-size: 13px; opacity: .85; margin-top: 4px; }
+
+    nav {
+      display: flex;
+      overflow-x: auto;
+      gap: 8px;
+      padding: 12px 16px;
+      background: #fff;
+      border-bottom: 1px solid #e9edef;
+      scrollbar-width: none;
+    }
+    nav::-webkit-scrollbar { display: none; }
+    nav a {
+      white-space: nowrap;
+      text-decoration: none;
+      color: #128c7e;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 5px 12px;
+      border: 1.5px solid #128c7e;
+      border-radius: 20px;
+      transition: background .15s;
+    }
+    nav a:hover { background: #128c7e; color: #fff; }
+
+    main { max-width: 600px; margin: 0 auto; padding: 16px; }
+
+    section {
+      background: #fff;
+      border-radius: 12px;
+      margin-bottom: 16px;
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,.08);
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 16px;
+      background: #f7faf9;
+      border-bottom: 1px solid #e9edef;
+    }
+    .section-header .icon { font-size: 22px; }
+    .section-header h2 { font-size: 16px; font-weight: 700; color: #128c7e; }
+
+    .section-body { padding: 14px 16px; }
+    .section-body p { color: #54656f; font-size: 13px; margin-bottom: 12px; }
+
+    /* Chat bubbles */
+    .chat { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+
+    .bubble {
+      max-width: 82%;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 14px;
+      line-height: 1.45;
+      position: relative;
+    }
+    .bubble.user {
+      align-self: flex-end;
+      background: #dcf8c6;
+      border-radius: 8px 0 8px 8px;
+    }
+    .bubble.atlas {
+      align-self: flex-start;
+      background: #fff;
+      border: 1px solid #e9edef;
+      border-radius: 0 8px 8px 8px;
+    }
+    .bubble strong { font-weight: 700; }
+    .bubble em { font-style: normal; color: #667781; }
+    .bubble .tick { font-size: 11px; color: #667781; float: right; margin-left: 8px; margin-top: 2px; }
+
+    .label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: #667781;
+      margin-bottom: 4px;
+    }
+
+    .tip {
+      background: #fff3cd;
+      border-left: 4px solid #ffc107;
+      border-radius: 0 8px 8px 0;
+      padding: 10px 12px;
+      font-size: 13px;
+      margin-top: 10px;
+    }
+    .tip strong { color: #856404; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .grid-item {
+      background: #f7faf9;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+    }
+    .grid-item .gi-label { font-weight: 700; color: #128c7e; margin-bottom: 4px; }
+
+    @media (max-width: 400px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>💚 ATLAS</h1>
+  <p>Seu assistente financeiro no WhatsApp</p>
+</header>
+
+<nav>
+  <a href="#gastos">💸 Gastos</a>
+  <a href="#receitas">💰 Receitas</a>
+  <a href="#cartoes">💳 Cartões</a>
+  <a href="#fixos">📋 Fixos</a>
+  <a href="#analises">📊 Análises</a>
+  <a href="#metas">🎯 Metas</a>
+  <a href="#score">🏆 Score</a>
+</nav>
+
+<main>
+
+  <!-- GASTOS -->
+  <section id="gastos">
+    <div class="section-header">
+      <span class="icon">💸</span>
+      <h2>Lançar gastos</h2>
+    </div>
+    <div class="section-body">
+      <p>Fale naturalmente — ATLAS entende categoria, forma de pagamento e data.</p>
+
+      <div class="label">Gasto simples</div>
+      <div class="chat">
+        <div class="bubble user">almocei 35 no Talentos<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">✅ <strong>R$35,00 — Alimentação</strong><br>📍 Talentos &nbsp;• &nbsp;hoje<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="label">Com forma de pagamento</div>
+      <div class="chat">
+        <div class="bubble user">mercado 120 débito<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">✅ <strong>R$120,00 — Alimentação</strong><br>📍 Mercado &nbsp;• &nbsp;débito &nbsp;• &nbsp;hoje<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="label">Data no passado</div>
+      <div class="chat">
+        <div class="bubble user">gastei ontem 50 no posto<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">✅ <strong>R$50,00 — Transporte</strong><br>📍 Posto &nbsp;• &nbsp;ontem<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="label">Vários gastos de uma vez</div>
+      <div class="chat">
+        <div class="bubble user">gastei 30 no iFood e 20 no Spotify<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">✅ <strong>R$30,00 — Alimentação</strong> • iFood<br>✅ <strong>R$20,00 — Lazer</strong> • Spotify<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="tip"><strong>💡 Dica:</strong> Não precisa de formato exato. "uber 18", "farmácia 42", "academia 89" — ATLAS entende tudo.</div>
+    </div>
+  </section>
+
+  <!-- RECEITAS -->
+  <section id="receitas">
+    <div class="section-header">
+      <span class="icon">💰</span>
+      <h2>Lançar receitas</h2>
+    </div>
+    <div class="section-body">
+      <p>Registre salário, freelas, aluguéis ou qualquer entrada de dinheiro.</p>
+
+      <div class="chat">
+        <div class="bubble user">recebi 5000 de salário<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">💰 <strong>R$5.000,00</strong> registrado — Salário<br>Boa! Mês começa bem 💪<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="chat">
+        <div class="bubble user">entrou 1200 de freela<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">💰 <strong>R$1.200,00</strong> registrado — Renda Extra<span class="tick">✓✓</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CARTÕES -->
+  <section id="cartoes">
+    <div class="section-header">
+      <span class="icon">💳</span>
+      <h2>Cartões de crédito</h2>
+    </div>
+    <div class="section-body">
+      <p>ATLAS rastreia seus cartões automaticamente. Basta mencionar o nome.</p>
+
+      <div class="label">Compra no crédito</div>
+      <div class="chat">
+        <div class="bubble user">tênis 300 no Nubank<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">✅ <strong>R$300,00 — Vestuário</strong><br>📍 &nbsp;• &nbsp;Nubank<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="label">Parcelado</div>
+      <div class="chat">
+        <div class="bubble user">notebook 3000 em 6x no Inter<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">✅ <strong>R$500,00/mês × 6x</strong> — Tecnologia<br>📍 &nbsp;• &nbsp;Inter &nbsp;• &nbsp;<em>R$3.000,00 total</em><span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="label">Ver fatura atual</div>
+      <div class="chat">
+        <div class="bubble user">fatura do Nubank<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">💳 <strong>Nubank — Fatura atual</strong><br>R$1.250,00 acumulados<br><em>Fecha dia 15 &nbsp;• &nbsp;Vence dia 22</em><span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="label">Pagar fatura</div>
+      <div class="chat">
+        <div class="bubble user">paguei o cartão Nubank<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">✅ Fatura do Nubank zerada! Novo ciclo aberto.<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="tip"><strong>💡 Cadastrar cartão:</strong> Diga "quero cadastrar meu cartão Nubank" — ATLAS pede as informações necessárias (fechamento, vencimento, limite).</div>
+    </div>
+  </section>
+
+  <!-- GASTOS FIXOS -->
+  <section id="fixos">
+    <div class="section-header">
+      <span class="icon">📋</span>
+      <h2>Gastos fixos e compromissos</h2>
+    </div>
+    <div class="section-body">
+      <p>Registre contas recorrentes. ATLAS te avisa antes do vencimento.</p>
+
+      <div class="chat">
+        <div class="bubble user">aluguel 1500 todo dia 5<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">📋 Aluguel registrado! <strong>R$1.500,00</strong> todo dia 5.<br>Vou te avisar 3 dias antes 🔔<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="chat">
+        <div class="bubble user">quais meus gastos fixos?<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">📋 <strong>Seus gastos fixos:</strong><br>• Aluguel — R$1.500 • dia 5<br>• Netflix — R$45 • dia 10<br>• Academia — R$89 • dia 15<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="tip"><strong>💡 Lembretes:</strong> Por padrão ATLAS avisa 3 dias antes. Mude com: "me avisa 1 dia antes dos meus compromissos".</div>
+    </div>
+  </section>
+
+  <!-- ANÁLISES -->
+  <section id="analises">
+    <div class="section-header">
+      <span class="icon">📊</span>
+      <h2>Análises e consultas</h2>
+    </div>
+    <div class="section-body">
+
+      <div class="label">Resumo do mês</div>
+      <div class="chat">
+        <div class="bubble user">como tá meu mês?<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">📊 <strong>Março/2026</strong><br><br>💰 Receitas: <strong>R$5.000,00</strong><br>💸 Gastos: <strong>R$1.800,00</strong><br>✅ Saldo: <strong>R$3.200,00</strong><br><br>🍽️ Alimentação: R$600 (33%)<br>🚗 Transporte: R$400 (22%)<br>🎮 Lazer: R$300 (17%)<br>📦 Outros: R$500 (28%)<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="label">Posso comprar?</div>
+      <div class="chat">
+        <div class="bubble user">posso comprar um tênis de 300?<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">✅ <strong>Sim, você pode!</strong><br>Saldo atual: R$3.200 &nbsp;• &nbsp;Após: R$2.900<br><em>Ficará com 58% da renda livre — tudo bem 👍</em><span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="label">Projeção até o fim do mês</div>
+      <div class="chat">
+        <div class="bubble user">vai sobrar até o fim do mês?<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">📈 No ritmo atual sobram <strong>R$2.100</strong> até dia 31.<br><em>Restam R$800 em gastos fixos previstos.</em><span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="label">Comparar com mês anterior</div>
+      <div class="chat">
+        <div class="bubble user">compara com fevereiro<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">📊 <strong>Março vs Fevereiro</strong><br>Gastos: R$1.800 ↑ +R$200 vs fev<br>Alimentação: +R$80 &nbsp;• &nbsp;Lazer: −R$50<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="grid">
+        <div class="grid-item">
+          <div class="gi-label">Outras consultas</div>
+          "quanto gastei hoje?"<br>
+          "gastos de ontem"<br>
+          "onde gastei em Lazer?"<br>
+          "últimas 5 transações"
+        </div>
+        <div class="grid-item">
+          <div class="gi-label">Por período</div>
+          "gastos essa semana"<br>
+          "resumo de fevereiro"<br>
+          "mês passado"<br>
+          "últimos 3 meses"
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- METAS -->
+  <section id="metas">
+    <div class="section-header">
+      <span class="icon">🎯</span>
+      <h2>Metas financeiras</h2>
+    </div>
+    <div class="section-body">
+      <p>Crie metas e registre seu progresso — ATLAS mostra o quanto falta.</p>
+
+      <div class="chat">
+        <div class="bubble user">quero guardar 5000 pra viagem<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">🎯 Meta criada! <strong>Viagem — R$5.000</strong><br>Quanto você já tem guardado para começar?<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="chat">
+        <div class="bubble user">guardei 500 na meta viagem<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">🎯 <strong>Viagem</strong><br>████░░░░░░ R$500 / R$5.000 (10%)<br>Faltam R$4.500 — continue assim! 💪<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="chat">
+        <div class="bubble user">ver minhas metas<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">🎯 <strong>Suas metas:</strong><br>• Viagem: R$500/R$5.000 (10%)<br>• Reserva emergência: R$2.000/R$10.000 (20%)<span class="tick">✓✓</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SCORE -->
+  <section id="score">
+    <div class="section-header">
+      <span class="icon">🏆</span>
+      <h2>Score financeiro ATLAS</h2>
+    </div>
+    <div class="section-body">
+      <p>O AFHS (ATLAS Financial Health Score) mede sua saúde financeira de 0 a 100.</p>
+
+      <div class="chat">
+        <div class="bubble user">qual meu score?<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">🏆 <strong>Score ATLAS: 72 — B+</strong><br><br>💚 Pontos fortes:<br>• Taxa de poupança: 22% (ótimo!)<br>• Consistência de registros: 18/31 dias<br><br>💛 Para melhorar:<br>• Volatilidade em Lazer (+40% vs mês ant.)<br><br>Continue assim para chegar ao A! 🎯<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="grid">
+        <div class="grid-item">
+          <div class="gi-label">Grade A+–F</div>
+          A+ (90–100) Excelente<br>
+          A (80–89) Muito bom<br>
+          B+ (70–79) Bom<br>
+          B (60–69) Regular<br>
+          C (40–59) Atenção<br>
+          D–F (&lt;40) Crítico
+        </div>
+        <div class="grid-item">
+          <div class="gi-label">Componentes</div>
+          Taxa de poupança (30%)<br>
+          Consistência (20%)<br>
+          Adesão às metas (25%)<br>
+          Volatilidade (15%)<br>
+          Dívidas/fixos (10%)
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div style="text-align:center; padding: 24px 0 32px; color:#667781; font-size:13px;">
+    ATLAS — Assistente financeiro via WhatsApp<br>
+    <span style="color:#128c7e; font-weight:600;">atlas-m3wb.onrender.com</span>
+  </div>
+
+</main>
+</body>
+</html>
