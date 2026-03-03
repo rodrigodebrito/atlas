@@ -322,7 +322,8 @@ def save_transaction(
                  "ontem" → calcule ontem, "anteontem" → 2 dias atrás, "segunda" → última segunda, etc.
 
     Categorias EXPENSE: Alimentação | Transporte | Moradia | Saúde | Lazer |
-                        Educação | Assinaturas | Vestuário | Investimento | Outros
+                        Educação | Assinaturas | Vestuário | Investimento | Pets | Outros
+    Pets: remédio veterinário, consulta vet, ração, petshop, banho/tosa — qualquer gasto com animal
     Categorias INCOME:  Salário | Freelance | Aluguel Recebido |
                         Investimentos | Benefício | Venda | Outros
 
@@ -969,7 +970,8 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     cat_emoji = {
         "Alimentação": "🍽️", "Transporte": "🚗", "Saúde": "💊",
         "Moradia": "🏠", "Lazer": "🎮", "Assinaturas": "📱",
-        "Educação": "📚", "Vestuário": "👟", "Investimento": "📈", "Outros": "📦",
+        "Educação": "📚", "Vestuário": "👟", "Investimento": "📈",
+        "Pets": "🐾", "Outros": "📦",
     }
 
     # Separate by type
@@ -1882,7 +1884,8 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     cat_emoji = {
         "Alimentação": "🍽️", "Transporte": "🚗", "Saúde": "💊",
         "Moradia": "🏠", "Lazer": "🎮", "Assinaturas": "📱",
-        "Educação": "📚", "Vestuário": "👟", "Investimento": "📈", "Outros": "📦",
+        "Educação": "📚", "Vestuário": "👟", "Investimento": "📈",
+        "Pets": "🐾", "Outros": "📦",
     }
 
     exp_rows = [(r[1], r[2], r[3]) for r in tx_rows if r[0] == "EXPENSE"]
@@ -2756,7 +2759,7 @@ class ParsedMessage(BaseModel):
     merchant: Optional[str] = Field(None, description="Nome do estabelecimento")
     category_hint: Optional[str] = Field(None, description=(
         "Alimentação | Transporte | Moradia | Saúde | Lazer | Educação | "
-        "Assinaturas | Vestuário | Investimento | Renda | Outros"
+        "Assinaturas | Vestuário | Investimento | Pets | Outros"
     ))
     payment_method: Optional[str] = Field(None, description="CREDIT | DEBIT | PIX | CASH | TED")
     occurred_at: Optional[str] = Field(None, description="ISO 8601. None = agora.")
@@ -2854,9 +2857,17 @@ parse_agent = Agent(
 RESPONSE_INSTRUCTIONS = """
 ⛔ REGRA ABSOLUTA — LEIA ANTES DE QUALQUER COISA:
 NUNCA termine nenhuma resposta com pergunta ou sugestão.
-PROIBIDO: "Quer ver X?", "Posso ajudar com mais algo?", "Quer anotar mais algum?", "Quer verificar X?", "Quer fazer outra anotação?", "Alguma outra dúvida?", "Quer ver o total de hoje?", "Quer verificar o total?".
+PROIBIDO: "Quer ver X?", "Posso ajudar com mais algo?", "Quer anotar mais algum?", "Quer verificar X?", "Quer fazer outra anotação?", "Alguma outra dúvida?", "Quer ver o total de hoje?", "Quer verificar o total?", "Quer adicionar mais algum gasto?", "Deseja registrar mais algum?".
 Responda o que foi pedido e PARE. Ponto final. Sem pergunta. Sem sugestão. Zero.
 ⛔ FIM DA REGRA ABSOLUTA.
+
+⛔ REGRA CRÍTICA — "não" / "nao" / "n" NUNCA É COMANDO DE APAGAR:
+Se o usuário responder apenas "não", "nao", "n", "nope", "nada" ou similar:
+- Isso significa que ele está recusando algo (uma pergunta anterior, uma sugestão) — NÃO é pedido para apagar transação.
+- NUNCA chame delete_last_transaction em resposta a "não"/"nao"/"n" sozinhos.
+- Resposta correta: "Ok!" ou "Tudo bem!" e pare.
+- delete_last_transaction só deve ser chamado quando o usuário EXPLICITAMENTE pedir: "apaga", "deleta", "remove", "exclui" + contexto de transação.
+⛔ FIM DA REGRA.
 
 ⛔ REGRA DE FORMATO — TRANSAÇÕES (save_transaction):
 A tool save_transaction já retorna o texto FORMATADO para WhatsApp.
