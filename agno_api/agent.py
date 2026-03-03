@@ -349,16 +349,24 @@ def save_transaction(
 
     # Resolve card_id — cria cartão automaticamente se não existir
     card_id = None
+    card_is_new = False
+    card_closing_day = 0
+    card_due_day = 0
+    card_display_name = card_name
     if card_name:
         card = _find_card(cur, user_id, card_name)
         if card:
             card_id = card[0]
+            card_display_name = card[1]
+            card_closing_day = card[2]
+            card_due_day = card[3]
         else:
             card_id = str(uuid.uuid4())
             cur.execute(
                 "INSERT INTO credit_cards (id, user_id, name, closing_day, due_day) VALUES (?, ?, ?, 0, 0)",
                 (card_id, user_id, card_name)
             )
+            card_is_new = True
         if not payment_method:
             payment_method = "CREDIT"
 
@@ -375,13 +383,37 @@ def save_transaction(
     conn.commit()
     conn.close()
 
+    # Monta sufixo do cartão
+    card_suffix = ""
+    next_bill_warning = ""
+    ask_closing = ""
+
+    if card_name:
+        card_suffix = f" ({card_display_name})"
+        today_day = _now_br().day
+        if card_closing_day > 0:
+            # Detecta se cai na fatura atual ou próxima
+            if today_day > card_closing_day:
+                next_bill_warning = f"\n⚠️ Atenção: fatura do {card_display_name} já fechou (dia {card_closing_day}) — cai na *próxima fatura*."
+            # Aviso de vencimento próximo (dentro de 5 dias)
+            elif card_due_day > 0:
+                days_to_due = card_due_day - today_day
+                if 0 <= days_to_due <= 5:
+                    next_bill_warning = f"\n🔔 Lembrete: fatura do {card_display_name} vence em {days_to_due} dia(s) (dia {card_due_day})."
+        elif card_is_new:
+            ask_closing = (
+                f"\n\nPara rastrear sua fatura certinho, me diz:\n"
+                f"📅 Qual o fechamento e vencimento do {card_display_name}?\n"
+                f"Ex: _\"fecha 25 vence 10\"_ — prometo que não pergunto mais 😄"
+            )
+
     if installments > 1:
         parcela = f"R${amount_cents/100:.2f}/mês"
         total = f"R${total_amount_cents/100:.2f} total"
-        return f"Transação salva: {parcela} × {installments}x ({total}) em {category}{' (' + merchant + ')' if merchant else ''}."
+        return f"Transação salva: {parcela} × {installments}x ({total}) em {category}{' (' + merchant + ')' if merchant else ''}{card_suffix}.{next_bill_warning}{ask_closing}"
 
     valor = f"R${amount_cents/100:.2f}"
-    return f"Transação salva: {valor} em {category}{' (' + merchant + ')' if merchant else ''}."
+    return f"Transação salva: {valor} em {category}{' (' + merchant + ')' if merchant else ''}{card_suffix}.{next_bill_warning}{ask_closing}"
 
 
 @tool
@@ -2770,9 +2802,13 @@ Registrar fatura de meses futuros: "em abril tenho 400 no Nubank" / "maio Inter 
 Pagar fatura: "paguei o Nubank" / "quitei o Inter" / "paguei o cartão"
 → close_bill(user_phone=<user_phone>, card_name="Nubank")
 
-Configuração avançada (opcional — só se usuário pedir):
-"Nubank fecha dia 25 vence dia 10 limite 5000" → register_card(user_phone=<user_phone>, name="Nubank", closing_day=25, due_day=10, limit=5000)
-Use register_card APENAS quando usuário explicitamente quiser configurar fechamento/vencimento/limite.
+Configurar fechamento e vencimento (após pergunta automática do sistema ou por iniciativa do usuário):
+"fecha 25 vence 10" / "Nubank fecha 25 vence 10" / "fecha dia 14 vence dia 20"
+→ register_card(user_phone=<user_phone>, name="<nome do cartão em contexto>", closing_day=25, due_day=10)
+Após confirmar: "Perfeito! Agora sei exatamente quando sua fatura fecha e vence 📅"
+
+Configuração de limite (opcional):
+"limite do Nubank é 5000" → register_card(user_phone=<user_phone>, name="Nubank", closing_day=<existente>, due_day=<existente>, limit=5000)
 
 ## GASTOS FIXOS / RECORRENTES
 
