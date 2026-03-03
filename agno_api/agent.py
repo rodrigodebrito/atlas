@@ -436,9 +436,10 @@ def save_transaction(
 
 
 @tool
-def get_month_summary(user_phone: str, month: str = "") -> str:
+def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL") -> str:
     """
     Retorna resumo financeiro do mês. month no formato YYYY-MM (ex: 2026-03).
+    filter_type: "ALL" (padrão), "EXPENSE" (só gastos), "INCOME" (só receitas/ganhos).
     Se não informado, usa o mês atual.
     """
     if not month:
@@ -528,27 +529,39 @@ def get_month_summary(user_phone: str, month: str = "") -> str:
         "Outros": "📦",
     }
 
-    lines = [f"*{user_name}*, seu resumo de *{month_label}*{date_label}:"]
+    # Filter type label
+    filter_label = {"EXPENSE": " — apenas gastos", "INCOME": " — apenas receitas", "ALL": ""}.get(filter_type, "")
+    lines = [f"*{user_name}*, seu resumo de *{month_label}*{date_label}{filter_label}:"]
     lines.append("")
 
     expense_rows = [(r[1], r[2]) for r in rows if r[0] == "EXPENSE"]
-    for cat, total in sorted(expense_rows, key=lambda x: -x[1]):
-        pct = total / expenses * 100 if expenses else 0
-        emoji = cat_emoji.get(cat, "💸")
-        lines.append(f"{emoji} *{cat}* — R${total/100:,.2f} ({pct:.0f}%)".replace(",", "."))
-        for label, amt in cat_txs.get(cat, []):
-            lines.append(f"  • {label}: R${amt/100:,.2f}".replace(",", "."))
-        lines.append("")
+    income_rows_detail = [(r[1], r[2]) for r in rows if r[0] == "INCOME"]
 
-    lines.append(f"💸 *Total gasto: R${expenses/100:,.2f}*".replace(",", "."))
-    if income > 0:
-        lines.append(f"💰 Receitas: R${income/100:,.2f}".replace(",", "."))
-    lines.append(f"{'✅' if balance >= 0 else '⚠️'} Saldo: *R${balance/100:,.2f}*".replace(",", "."))
+    if filter_type in ("ALL", "EXPENSE") and expense_rows:
+        for cat, total in sorted(expense_rows, key=lambda x: -x[1]):
+            pct = total / expenses * 100 if expenses else 0
+            emoji = cat_emoji.get(cat, "💸")
+            lines.append(f"{emoji} *{cat}* — R${total/100:,.2f} ({pct:.0f}%)".replace(",", "."))
+            for label, amt in cat_txs.get(cat, []):
+                lines.append(f"  • {label}: R${amt/100:,.2f}".replace(",", "."))
+            lines.append("")
+        lines.append(f"💸 *Total gasto: R${expenses/100:,.2f}*".replace(",", "."))
+
+    if filter_type in ("ALL", "INCOME") and income_rows_detail:
+        lines.append("")
+        for cat, total in sorted(income_rows_detail, key=lambda x: -x[1]):
+            lines.append(f"💰 *{cat}* — R${total/100:,.2f}".replace(",", "."))
+        lines.append(f"💰 *Total recebido: R${income/100:,.2f}*".replace(",", "."))
+
+    if filter_type == "ALL":
+        lines.append(f"{'✅' if balance >= 0 else '⚠️'} Saldo: *R${balance/100:,.2f}*".replace(",", "."))
 
     # Largest category for model insight
-    if expense_rows:
-        top_cat, top_total = sorted(expense_rows, key=lambda x: -x[1])[0]
-        top_pct = top_total / expenses * 100 if expenses else 0
+    top_rows = expense_rows if filter_type in ("ALL", "EXPENSE") else income_rows_detail
+    if top_rows:
+        top_cat, top_total = sorted(top_rows, key=lambda x: -x[1])[0]
+        ref_total = expenses if filter_type in ("ALL", "EXPENSE") else income
+        top_pct = top_total / ref_total * 100 if ref_total else 0
         lines.append(f"__top_category:{top_cat}:{top_pct:.0f}%")
 
     return "\n".join(lines)
@@ -857,8 +870,11 @@ def delete_last_transaction(user_phone: str) -> str:
 
 
 @tool
-def get_today_total(user_phone: str) -> str:
-    """Retorna o total gasto hoje com lançamentos por categoria."""
+def get_today_total(user_phone: str, filter_type: str = "EXPENSE") -> str:
+    """
+    Retorna movimentações de hoje com lançamentos por categoria.
+    filter_type: "EXPENSE" (padrão, só gastos), "INCOME" (só receitas), "ALL" (tudo).
+    """
     today = _now_br()
     today_str = today.strftime("%Y-%m-%d")
     today_label = today.strftime("%d/%m/%Y")
@@ -870,12 +886,14 @@ def get_today_total(user_phone: str) -> str:
     row = cur.fetchone()
     if not row:
         conn.close()
-        return "Nenhum gasto registrado hoje ainda."
+        return "Nenhuma movimentação registrada hoje ainda."
 
     user_id, user_name = row
+
+    type_filter = "" if filter_type == "ALL" else f"AND type = '{filter_type}'"
     cur.execute(
-        """SELECT category, merchant, amount_cents FROM transactions
-           WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?
+        f"""SELECT type, category, merchant, amount_cents FROM transactions
+           WHERE user_id = ? {type_filter} AND occurred_at LIKE ?
            ORDER BY amount_cents DESC""",
         (user_id, f"{today_str}%"),
     )
@@ -883,41 +901,64 @@ def get_today_total(user_phone: str) -> str:
     conn.close()
 
     if not rows:
-        return f"Nenhum gasto registrado hoje ({today_label}) ainda."
+        label_map = {"EXPENSE": "gastos", "INCOME": "receitas", "ALL": "movimentações"}
+        return f"Nenhum(a) {label_map.get(filter_type, 'movimentação')} registrado(a) hoje ({today_label}) ainda."
 
-    total = sum(r[2] for r in rows)
-
+    from collections import defaultdict
     cat_emoji = {
         "Alimentação": "🍽️", "Transporte": "🚗", "Saúde": "💊",
         "Moradia": "🏠", "Lazer": "🎮", "Assinaturas": "📱",
         "Educação": "📚", "Vestuário": "👟", "Investimento": "📈", "Outros": "📦",
     }
 
-    from collections import defaultdict
-    cat_totals: dict = defaultdict(int)
-    cat_txs: dict = defaultdict(list)
-    for cat, merchant, amount in rows:
-        cat_totals[cat] += amount
-        label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
-        cat_txs[cat].append((label, amount))
+    # Separate by type
+    exp_rows = [(r[1], r[2], r[3]) for r in rows if r[0] == "EXPENSE"]
+    inc_rows = [(r[1], r[2], r[3]) for r in rows if r[0] == "INCOME"]
 
-    lines = [f"*{user_name}*, seus gastos de hoje ({today_label}):"]
+    filter_label = {"EXPENSE": " — apenas gastos", "INCOME": " — apenas receitas", "ALL": ""}.get(filter_type, "")
+    lines = [f"*{user_name}*, suas movimentações de hoje ({today_label}){filter_label}:"]
     lines.append("")
 
-    for cat, total_cat in sorted(cat_totals.items(), key=lambda x: -x[1]):
-        pct = total_cat / total * 100
-        emoji = cat_emoji.get(cat, "💸")
-        lines.append(f"{emoji} *{cat}* — R${total_cat/100:,.2f} ({pct:.0f}%)".replace(",", "."))
-        for label, amt in cat_txs[cat]:
-            lines.append(f"  • {label}: R${amt/100:,.2f}".replace(",", "."))
+    def build_cat_block(tx_list, ref_total):
+        cat_totals: dict = defaultdict(int)
+        cat_txs: dict = defaultdict(list)
+        for cat, merchant, amount in tx_list:
+            cat_totals[cat] += amount
+            label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
+            cat_txs[cat].append((label, amount))
+        result = []
+        for cat, total_cat in sorted(cat_totals.items(), key=lambda x: -x[1]):
+            pct = total_cat / ref_total * 100 if ref_total else 0
+            emoji = cat_emoji.get(cat, "💸")
+            result.append(f"{emoji} *{cat}* — R${total_cat/100:,.2f} ({pct:.0f}%)".replace(",", "."))
+            for label, amt in cat_txs[cat]:
+                result.append(f"  • {label}: R${amt/100:,.2f}".replace(",", "."))
+            result.append("")
+        return cat_totals, result
+
+    top_cat_name, top_pct_val = "", 0.0
+
+    if filter_type in ("ALL", "EXPENSE") and exp_rows:
+        total_exp = sum(r[2] for r in exp_rows)
+        cat_totals_exp, exp_block = build_cat_block(exp_rows, total_exp)
+        lines.extend(exp_block)
+        lines.append(f"💸 *Total gastos: R${total_exp/100:,.2f}*".replace(",", "."))
+        if cat_totals_exp:
+            tc = max(cat_totals_exp, key=lambda x: cat_totals_exp[x])
+            top_cat_name, top_pct_val = tc, cat_totals_exp[tc] / total_exp * 100
+
+    if filter_type in ("ALL", "INCOME") and inc_rows:
+        total_inc = sum(r[2] for r in inc_rows)
         lines.append("")
+        cat_totals_inc, inc_block = build_cat_block(inc_rows, total_inc)
+        lines.extend(inc_block)
+        lines.append(f"💰 *Total recebido: R${total_inc/100:,.2f}*".replace(",", "."))
+        if filter_type == "INCOME" and cat_totals_inc:
+            tc = max(cat_totals_inc, key=lambda x: cat_totals_inc[x])
+            top_cat_name, top_pct_val = tc, cat_totals_inc[tc] / total_inc * 100
 
-    lines.append(f"💸 *Total hoje: R${total/100:,.2f}*".replace(",", "."))
-
-    if cat_totals:
-        top_cat = max(cat_totals, key=lambda x: cat_totals[x])
-        top_pct = cat_totals[top_cat] / total * 100
-        lines.append(f"__top_category:{top_cat}:{top_pct:.0f}%")
+    if top_cat_name:
+        lines.append(f"__top_category:{top_cat_name}:{top_pct_val:.0f}%")
 
     return "\n".join(lines)
 
@@ -1639,9 +1680,86 @@ def get_month_comparison(user_phone: str) -> str:
 
 
 @tool
-def get_week_summary(user_phone: str) -> str:
+def get_upcoming_commitments(user_phone: str, days: int = 30) -> str:
+    """
+    Lista compromissos financeiros nos próximos N dias:
+    gastos fixos recorrentes e faturas de cartão que vencem nesse período.
+    days: número de dias à frente (padrão 30). Use 7 para "próxima semana", 90 para "3 meses".
+    """
+    today = _now_br()
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id, name FROM users WHERE phone = ?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return "Usuário não encontrado."
+    user_id, user_name = row
+
+    # Build list of upcoming dates
+    items = []
+    for offset in range(1, days + 1):
+        target = today + timedelta(days=offset)
+        target_day = target.day
+        target_date_label = target.strftime("%d/%m")
+
+        # Recurring fixed expenses
+        cur.execute(
+            "SELECT name, amount_cents FROM recurring_transactions WHERE user_id = ? AND active = 1 AND day_of_month = ?",
+            (user_id, target_day),
+        )
+        for rec_name, amount_cents in cur.fetchall():
+            items.append((target, target_date_label, "📋", rec_name, amount_cents))
+
+        # Credit card bills due
+        cur.execute(
+            "SELECT id, name, closing_day, current_bill_opening_cents FROM credit_cards WHERE user_id = ? AND due_day = ?",
+            (user_id, target_day),
+        )
+        for card_id, card_name, closing_day, opening_cents in cur.fetchall():
+            period_start = _bill_period_start(closing_day)
+            cur.execute(
+                "SELECT SUM(amount_cents) FROM transactions WHERE user_id = ? AND card_id = ? AND occurred_at >= ?",
+                (user_id, card_id, period_start),
+            )
+            new_purchases = cur.fetchone()[0] or 0
+            bill_total = (opening_cents or 0) + new_purchases
+            if bill_total > 0:
+                items.append((target, target_date_label, "💳", f"Fatura {card_name}", bill_total))
+
+    conn.close()
+
+    if not items:
+        return f"Nenhum compromisso encontrado nos próximos {days} dias."
+
+    # Sort by date
+    items.sort(key=lambda x: x[0])
+
+    total = sum(i[4] for i in items)
+    period_label = f"próximos {days} dias" if days != 7 else "próxima semana"
+    lines = [f"*{user_name}*, seus compromissos nos {period_label}:"]
+    lines.append("")
+
+    current_month_label = ""
+    for target, date_label, emoji, name, amount_cents in items:
+        month_label = target.strftime("%B/%Y").capitalize()
+        if month_label != current_month_label:
+            lines.append(f"📅 *{month_label}*")
+            current_month_label = month_label
+        lines.append(f"  {emoji} {date_label} — {name}: *R${amount_cents/100:,.2f}*".replace(",", "."))
+
+    lines.append("")
+    lines.append(f"💸 *Total previsto: R${total/100:,.2f}*".replace(",", "."))
+
+    return "\n".join(lines)
+
+
+@tool
+def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     """
     Resumo da semana atual (segunda a hoje) com lançamentos por categoria.
+    filter_type: "ALL" (padrão), "EXPENSE" (só gastos), "INCOME" (só receitas).
     """
     from collections import defaultdict
     today = _now_br()
@@ -1665,17 +1783,17 @@ def get_week_summary(user_phone: str) -> str:
         return "Nenhum dado encontrado."
     user_id, user_name = row
 
-    # Individual transactions this week
+    type_filter = "" if filter_type == "ALL" else f"AND type = '{filter_type}'"
     cur.execute(
-        """SELECT category, merchant, amount_cents, occurred_at
+        f"""SELECT type, category, merchant, amount_cents
            FROM transactions
-           WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at >= ?
+           WHERE user_id = ? {type_filter} AND occurred_at >= ?
            ORDER BY amount_cents DESC""",
         (user_id, f"{start_of_week}T00:00:00"),
     )
     tx_rows = cur.fetchall()
 
-    # Monthly totals per category (for alerts)
+    # Monthly expense totals for alerts
     cur.execute(
         """SELECT category, SUM(amount_cents) FROM transactions
            WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?
@@ -1686,7 +1804,8 @@ def get_week_summary(user_phone: str) -> str:
     conn.close()
 
     if not tx_rows:
-        return "Nenhum gasto registrado essa semana ainda."
+        label_map = {"EXPENSE": "gastos", "INCOME": "receitas", "ALL": "movimentações"}
+        return f"Nenhum(a) {label_map.get(filter_type, 'movimentação')} essa semana ainda."
 
     cat_emoji = {
         "Alimentação": "🍽️", "Transporte": "🚗", "Saúde": "💊",
@@ -1694,36 +1813,53 @@ def get_week_summary(user_phone: str) -> str:
         "Educação": "📚", "Vestuário": "👟", "Investimento": "📈", "Outros": "📦",
     }
 
-    cat_totals: dict = defaultdict(int)
-    cat_txs: dict = defaultdict(list)
-    for cat, merchant, amount, _ in tx_rows:
-        cat_totals[cat] += amount
-        label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
-        cat_txs[cat].append((label, amount))
+    exp_rows = [(r[1], r[2], r[3]) for r in tx_rows if r[0] == "EXPENSE"]
+    inc_rows = [(r[1], r[2], r[3]) for r in tx_rows if r[0] == "INCOME"]
 
-    week_total = sum(cat_totals.values())
-
+    filter_label = {"EXPENSE": " — apenas gastos", "INCOME": " — apenas receitas", "ALL": ""}.get(filter_type, "")
     period = f"{start_label}" if start_label == end_label else f"{start_label} a {end_label}"
-    lines = [f"*{user_name}*, sua semana ({period}):"]
+    lines = [f"*{user_name}*, sua semana ({period}){filter_label}:"]
     lines.append("")
 
+    top_cat_name, top_pct_val = "", 0.0
     alertas = []
-    for cat, total_cat in sorted(cat_totals.items(), key=lambda x: -x[1]):
-        pct = total_cat / week_total * 100
-        emoji = cat_emoji.get(cat, "💸")
-        lines.append(f"{emoji} *{cat}* — R${total_cat/100:,.2f} ({pct:.0f}%)".replace(",", "."))
-        for label, amt in cat_txs[cat]:
-            lines.append(f"  • {label}: R${amt/100:,.2f}".replace(",", "."))
-        lines.append("")
-        # Alert if pace is 40%+ above monthly average
-        month_val = month_totals.get(cat, 0)
-        if month_val > 0:
-            daily_avg = month_val / days_in_month
-            if days_elapsed > 0 and (total_cat / days_elapsed) > daily_avg * 1.4:
+
+    def add_cat_block(rows_list, ref_total):
+        cat_totals: dict = defaultdict(int)
+        cat_txs: dict = defaultdict(list)
+        for cat, merchant, amount in rows_list:
+            cat_totals[cat] += amount
+            label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
+            cat_txs[cat].append((label, amount))
+        for cat, total_cat in sorted(cat_totals.items(), key=lambda x: -x[1]):
+            pct = total_cat / ref_total * 100 if ref_total else 0
+            emoji = cat_emoji.get(cat, "💸")
+            lines.append(f"{emoji} *{cat}* — R${total_cat/100:,.2f} ({pct:.0f}%)".replace(",", "."))
+            for label, amt in cat_txs[cat]:
+                lines.append(f"  • {label}: R${amt/100:,.2f}".replace(",", "."))
+            lines.append("")
+            month_val = month_totals.get(cat, 0)
+            if month_val > 0 and days_elapsed > 0 and (total_cat / days_elapsed) > (month_val / days_in_month) * 1.4:
                 proj = total_cat / days_elapsed * 30
                 alertas.append(f"⚠️ {cat}: ritmo de R${proj/100:.0f}/mês — acima da média")
+        return cat_totals
 
-    lines.append(f"💸 *Total da semana: R${week_total/100:,.2f}*".replace(",", "."))
+    if filter_type in ("ALL", "EXPENSE") and exp_rows:
+        total_exp = sum(r[2] for r in exp_rows)
+        ct = add_cat_block(exp_rows, total_exp)
+        lines.append(f"💸 *Total gastos: R${total_exp/100:,.2f}*".replace(",", "."))
+        if ct:
+            tc = max(ct, key=lambda x: ct[x])
+            top_cat_name, top_pct_val = tc, ct[tc] / total_exp * 100
+
+    if filter_type in ("ALL", "INCOME") and inc_rows:
+        total_inc = sum(r[2] for r in inc_rows)
+        lines.append("")
+        ct = add_cat_block(inc_rows, total_inc)
+        lines.append(f"💰 *Total recebido: R${total_inc/100:,.2f}*".replace(",", "."))
+        if filter_type == "INCOME" and ct:
+            tc = max(ct, key=lambda x: ct[x])
+            top_cat_name, top_pct_val = tc, ct[tc] / total_inc * 100
 
     if alertas:
         lines.append("")
@@ -3031,14 +3167,39 @@ Pergunte primeiro: "R$18 em quê?" — salve só após a resposta.
 - ADD_EXPENSE parcelado: save_transaction(user_phone=<user_phone>, transaction_type="EXPENSE", amount=<parcela_reais>, installments=<n>, total_amount=<total_reais>, ...)
   Exemplo "tênis 1200 em 12x": save imediatamente → amount=100, installments=12, total_amount=1200
 - ADD_INCOME: save_transaction(user_phone=<user_phone>, transaction_type="INCOME", amount=<valor_reais>, ...)
-- SUMMARY / "quanto gastei?" / "resumo do mês": get_month_summary(user_phone=<user_phone>)
-- "como evoluí?" / "comparado ao mês passado": get_month_comparison(user_phone=<user_phone>)
-- "como foi minha semana?" / "resumo da semana": get_week_summary(user_phone=<user_phone>)
-- "quanto gastei hoje?": get_today_total(user_phone=<user_phone>)
-- Detalhes / lista de transações: get_transactions(user_phone=<user_phone>, date="YYYY-MM-DD") ou get_transactions(user_phone=<user_phone>, month="YYYY-MM")
-- "onde gastei em X?" / "quais [lugares] em X?" / "detalhes de [categoria]": get_category_breakdown(user_phone=<user_phone>, category="<categoria>")
-  Exemplos: "onde gastei em Alimentação?" → category="Alimentação" | "quais restaurantes fui?" → category="Alimentação"
-- "minhas parcelas" / "quanto tenho parcelado": get_installments_summary(user_phone=<user_phone>)
+## RESUMOS — mapeamento de intenção → tool + filter_type
+
+Regra de filter_type:
+- "só gastos" / "somente gastos" / "gastos da semana" / "o que gastei" → filter_type="EXPENSE"
+- "só receitas" / "meus ganhos" / "entradas" / "o que recebi" → filter_type="INCOME"
+- "movimentações" / "tudo" / "resumo completo" / sem especificar → filter_type="ALL"
+
+MÊS:
+- "como tá meu mês?" / "resumo do mês" → get_month_summary(user_phone=<user_phone>, filter_type="ALL")
+- "só os gastos de março" / "gastos deste mês" → get_month_summary(user_phone=<user_phone>, filter_type="EXPENSE")
+- "meus ganhos do mês" / "o que recebi" → get_month_summary(user_phone=<user_phone>, filter_type="INCOME")
+
+SEMANA:
+- "como foi minha semana?" → get_week_summary(user_phone=<user_phone>, filter_type="ALL")
+- "gastos semanais" / "só os gastos da semana" → get_week_summary(user_phone=<user_phone>, filter_type="EXPENSE")
+- "receitas da semana" → get_week_summary(user_phone=<user_phone>, filter_type="INCOME")
+
+HOJE:
+- "quanto gastei hoje?" / "gastos de hoje" → get_today_total(user_phone=<user_phone>, filter_type="EXPENSE")
+- "movimentações de hoje" / "tudo de hoje" → get_today_total(user_phone=<user_phone>, filter_type="ALL")
+- "receitas de hoje" / "entrou algo hoje" → get_today_total(user_phone=<user_phone>, filter_type="INCOME")
+
+OUTROS:
+- "como evoluí?" / "comparado ao mês passado" → get_month_comparison(user_phone=<user_phone>)
+- Detalhes / lista de transações → get_transactions(user_phone=<user_phone>, date="YYYY-MM-DD") ou get_transactions(user_phone=<user_phone>, month="YYYY-MM")
+- "onde gastei em X?" / "detalhes de [categoria]" → get_category_breakdown(user_phone=<user_phone>, category="<categoria>")
+- "minhas parcelas" / "quanto tenho parcelado" → get_installments_summary(user_phone=<user_phone>)
+
+COMPROMISSOS FUTUROS:
+- "compromissos futuros" / "o que vence" / "próximos X dias" / "próximo mês" / "próximos 3 meses":
+    get_upcoming_commitments(user_phone=<user_phone>, days=<N>)
+  Exemplos: "próxima semana" → days=7 | "próximo mês" → days=30 | "próximos 3 meses" → days=90
+  Mostra gastos fixos recorrentes + faturas de cartão que vencem no período
 
 ## CORREÇÕES
 
@@ -3157,7 +3318,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=6,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, delete_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, delete_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments],
     add_datetime_to_context=True,
     markdown=True,
 )
