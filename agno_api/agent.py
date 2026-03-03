@@ -624,12 +624,14 @@ def get_user(user_phone: str) -> str:
     row = cur.fetchone()
     if not row:
         conn.close()
-        msg = (
+        # Retorna APENAS o texto de boas-vindas — modelo deve enviar literalmente, sem alterar.
+        return (
             "Oi! 👋 Sou o *ATLAS*, seu assistente financeiro no WhatsApp.\n"
-            "Anoto seus gastos, receitas e te ajudo a entender pra onde vai seu dinheiro — tudo aqui na conversa, sem precisar de app.\n"
-            "Pra começar, qual é o seu nome?"
+            "Anoto seus gastos, receitas e te ajudo a entender pra onde vai seu dinheiro "
+            "— tudo aqui na conversa, sem precisar de app.\n"
+            "Pra começar, qual é o seu nome?\n"
+            "__status:new_user"
         )
-        return f"is_new=True | name=None | has_income=False | monthly_income=0 | transaction_count=0 | salary_day=0\nMENSAGEM_ETAPA_A:{msg}"
 
     user_id, name, income, salary_day = row
     cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id = ?", (user_id,))
@@ -3108,12 +3110,15 @@ Nunca use "demo_user". Se a linha não estiver presente, use o número de sessã
 
 1. Chame get_user(user_phone=<user_phone extraído da 1ª linha>) SEMPRE na primeira mensagem.
 
-2. Se is_new=True (usuário novo) — fluxo em 3 etapas:
+2. Quando get_user retornar texto que termina com "__status:new_user" — fluxo em 3 etapas:
 
    ETAPA A — Apresentação + nome:
-   ⚠️ O retorno de get_user inclui "MENSAGEM_ETAPA_A:" seguido do texto.
-   Envie ao usuário EXATAMENTE o texto após "MENSAGEM_ETAPA_A:" — palavra por palavra, sem alterar nada.
-   ❌ PROIBIDO criar texto próprio, resumir ou adaptar.
+   ⚠️ O retorno de get_user JÁ É a mensagem de boas-vindas pronta.
+   Copie o retorno de get_user LITERALMENTE (exceto a linha "__status:new_user" — essa não mostre).
+   ❌ PROIBIDO criar texto próprio, parafrasear, resumir ou adaptar.
+   ❌ ERRADO: "Oi! Tudo bem? Qual é o seu nome?"
+   ❌ ERRADO: "Oi! 👋 Prazer em te ajudar com suas finanças. Qual é o seu nome?"
+   ✅ CERTO: copiar as 3 linhas do retorno do tool, removendo apenas "__status:new_user"
    - Aguarde. NÃO pergunte mais nada nessa etapa.
 
    ETAPA B — Após receber o nome:
