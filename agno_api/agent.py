@@ -1839,7 +1839,21 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     )
     tx_rows = cur.fetchall()
 
+    # Totais do mês ANTERIOR por categoria (para alertas com histórico real)
+    prev_month_dt = (today.replace(day=1) - timedelta(days=1))
+    prev_month = prev_month_dt.strftime("%Y-%m")
+    prev_days_in_month = prev_month_dt.day  # dias reais do mês anterior
+    cur.execute(
+        """SELECT category, SUM(amount_cents) FROM transactions
+           WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?
+           GROUP BY category""",
+        (user_id, f"{prev_month}%"),
+    )
+    prev_month_totals = {r[0]: r[1] for r in cur.fetchall()}
+
     conn.close()
+
+    days_elapsed = days_since_monday + 1
 
     if not tx_rows:
         label_map = {"EXPENSE": "gastos", "INCOME": "receitas", "ALL": "movimentações"}
@@ -1860,6 +1874,7 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     lines.append("")
 
     top_cat_name, top_pct_val = "", 0.0
+    alertas = []
 
     def add_cat_block(rows_list, ref_total):
         cat_totals: dict = defaultdict(int)
@@ -1875,6 +1890,14 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
             for label, amt in cat_txs[cat]:
                 lines.append(f"  • {label}: R${amt/100:,.2f}".replace(",", "."))
             lines.append("")
+            # Alerta só se houver histórico do mês anterior para comparar
+            prev_val = prev_month_totals.get(cat, 0)
+            if prev_val > 0 and days_elapsed > 0:
+                daily_pace = total_cat / days_elapsed
+                prev_daily_avg = prev_val / prev_days_in_month
+                if daily_pace > prev_daily_avg * 1.4:
+                    proj = daily_pace * 30
+                    alertas.append(f"⚠️ {cat}: ritmo R${proj/100:.0f}/mês vs R${prev_val/100:.0f} em {prev_month_dt.strftime('%b')}")
         return cat_totals
 
     if filter_type in ("ALL", "EXPENSE") and exp_rows:
@@ -1893,6 +1916,10 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
         if filter_type == "INCOME" and ct:
             tc = max(ct, key=lambda x: ct[x])
             top_cat_name, top_pct_val = tc, ct[tc] / total_inc * 100
+
+    if alertas:
+        lines.append("🔔 *Alertas:*")
+        lines.extend(alertas)
 
     if top_cat_name:
         lines.append(f"__top_category:{top_cat_name}:{top_pct_val:.0f}%")
