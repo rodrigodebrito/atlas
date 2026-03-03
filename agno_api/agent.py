@@ -447,16 +447,17 @@ def get_month_summary(user_phone: str, month: str = "") -> str:
     conn = _get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+    cur.execute("SELECT id, name FROM users WHERE phone = ?", (user_phone,))
     row = cur.fetchone()
     if not row:
         conn.close()
         return "Nenhuma transação encontrada. Comece registrando um gasto!"
 
-    user_id = row[0]
+    user_id, user_name = row
 
+    # Totals per category
     cur.execute(
-        """SELECT type, category, SUM(amount_cents) as total, COUNT(*) as qtd
+        """SELECT type, category, SUM(amount_cents) as total
            FROM transactions
            WHERE user_id = ? AND occurred_at LIKE ?
            GROUP BY type, category
@@ -465,12 +466,23 @@ def get_month_summary(user_phone: str, month: str = "") -> str:
     )
     rows = cur.fetchall()
 
-    # Check if there's data from any month before the requested month
+    # Individual transactions per expense category
     cur.execute(
-        "SELECT COUNT(*) FROM transactions WHERE user_id = ? AND occurred_at < ?",
-        (user_id, f"{month}-01"),
+        """SELECT category, merchant, amount_cents, occurred_at
+           FROM transactions
+           WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?
+           ORDER BY category, amount_cents DESC""",
+        (user_id, f"{month}%"),
     )
-    has_previous_data = cur.fetchone()[0] > 0
+    tx_rows = cur.fetchall()
+
+    # Date range of the month's transactions
+    cur.execute(
+        "SELECT MIN(occurred_at), MAX(occurred_at) FROM transactions WHERE user_id = ? AND occurred_at LIKE ?",
+        (user_id, f"{month}%"),
+    )
+    date_range = cur.fetchone()
+
     conn.close()
 
     if not rows:
@@ -480,35 +492,64 @@ def get_month_summary(user_phone: str, month: str = "") -> str:
     expenses = sum(r[2] for r in rows if r[0] == "EXPENSE")
     balance = income - expenses
 
-    # Converte mês para nome legível (ex: "2026-03" → "Março/2026")
+    # Month label
     months_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
                  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
     try:
-        y, m = map(int, month.split("-"))
-        month_label = f"{months_pt[m]}/{y}"
+        y, m_num = map(int, month.split("-"))
+        month_label = f"{months_pt[m_num]}/{y}"
     except Exception:
         month_label = month
 
-    lines = [f"📊 *{month_label}*"]
-    lines.append(f"💰 Receitas: *R${income/100:,.2f}*".replace(",", "."))
-    lines.append(f"💸 Gastos: *R${expenses/100:,.2f}*".replace(",", "."))
+    # Date range label
+    date_label = ""
+    if date_range and date_range[0] and date_range[1]:
+        d_start = date_range[0][:10]
+        d_end = date_range[1][:10]
+        try:
+            d1 = f"{d_start[8:10]}/{d_start[5:7]}"
+            d2 = f"{d_end[8:10]}/{d_end[5:7]}"
+            date_label = f" ({d1} a {d2})"
+        except Exception:
+            pass
+
+    # Group individual transactions by category
+    from collections import defaultdict
+    cat_txs: dict = defaultdict(list)
+    for cat, merchant, amount, occurred in tx_rows:
+        label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
+        cat_txs[cat].append((label, amount))
+
+    # Category emoji map
+    cat_emoji = {
+        "Alimentação": "🍽️", "Transporte": "🚗", "Saúde": "💊",
+        "Moradia": "🏠", "Lazer": "🎮", "Assinaturas": "📱",
+        "Educação": "📚", "Vestuário": "👟", "Investimento": "📈",
+        "Outros": "📦",
+    }
+
+    lines = [f"*{user_name}*, seu resumo de *{month_label}*{date_label}:"]
+    lines.append("")
+
+    expense_rows = [(r[1], r[2]) for r in rows if r[0] == "EXPENSE"]
+    for cat, total in sorted(expense_rows, key=lambda x: -x[1]):
+        pct = total / expenses * 100 if expenses else 0
+        emoji = cat_emoji.get(cat, "💸")
+        lines.append(f"{emoji} *{cat}* — R${total/100:,.2f} ({pct:.0f}%)".replace(",", "."))
+        for label, amt in cat_txs.get(cat, []):
+            lines.append(f"  • {label}: R${amt/100:,.2f}".replace(",", "."))
+        lines.append("")
+
+    lines.append(f"💸 *Total gasto: R${expenses/100:,.2f}*".replace(",", "."))
+    if income > 0:
+        lines.append(f"💰 Receitas: R${income/100:,.2f}".replace(",", "."))
     lines.append(f"{'✅' if balance >= 0 else '⚠️'} Saldo: *R${balance/100:,.2f}*".replace(",", "."))
 
-    income_rows = [(r[1], r[2], r[3]) for r in rows if r[0] == "INCOME"]
-    if income_rows:
-        lines.append("\n💚 *Receitas por fonte:*")
-        for cat, total, qtd in sorted(income_rows, key=lambda x: -x[1]):
-            lines.append(f"  • {cat}: R${total/100:,.2f}".replace(",", "."))
-
-    expense_rows = [(r[1], r[2], r[3]) for r in rows if r[0] == "EXPENSE"]
+    # Largest category for model insight
     if expense_rows:
-        lines.append("\n📋 *Gastos por categoria:*")
-        for cat, total, qtd in sorted(expense_rows, key=lambda x: -x[1]):
-            pct = total / expenses * 100 if expenses else 0
-            lines.append(f"  • {cat}: R${total/100:,.2f} ({pct:.0f}%)".replace(",", "."))
-
-    # Marcador interno — NÃO mostrar ao usuário, só para lógica de sugestão final
-    lines.append(f"__has_previous_data:{has_previous_data}")
+        top_cat, top_total = sorted(expense_rows, key=lambda x: -x[1])[0]
+        top_pct = top_total / expenses * 100 if expenses else 0
+        lines.append(f"__top_category:{top_cat}:{top_pct:.0f}%")
 
     return "\n".join(lines)
 
@@ -2617,20 +2658,20 @@ NUNCA adicione perguntas junto com o insight.
 
 ## FORMATO: RESUMO MENSAL (get_month_summary)
 
-```
-📊 *Março/2026*
+A tool já retorna o dado formatado com nome, período, categorias e lançamentos.
+Apresente o dado retornado DIRETAMENTE — não reformate nem resuma.
+Apenas adicione UMA linha de insight ao final, baseada nos dados reais:
 
-💸 Gastos: *R$88,33*
-• 🍽️ Alimentação: R$55,00 (62%)
-• 👟 Vestuário: R$33,33 (38%)
+Regras do insight:
+- Use `__top_category:X:Y%` (metadata interna, nunca mostre) para saber a categoria dominante
+- Insight deve ser pessoal e direto: ex: "Alimentação dominou o mês com 60% dos gastos."
+- Se saldo negativo: mencione isso no insight
+- Se saldo muito positivo (>50% da renda): parabenize
+- NUNCA invente dados — baseie-se só no que a tool retornou
+- A linha `__top_category:...` é metadata INTERNA — remova-a da resposta, use apenas para o insight
 
-💰 Receitas: *R$13.000,00*  •  Saldo: *R$12.912*
-```
-
-REGRA IMPORTANTE: a última linha do dado retornado pela tool contém `__has_previous_data:True` ou `__has_previous_data:False`.
-Isso é metadata INTERNA — NÃO mostre ao usuário. Ignore — não use para nada.
-
-Se não tiver receita lançada mas tiver renda cadastrada: mencione "Sua renda cadastrada é R$X.XXX — ainda não lançou salário esse mês?"
+Se renda cadastrada mas sem receita lançada no mês: adicione após o insight:
+"_(Sua renda de R$X.XXX ainda não foi lançada esse mês)_"
 
 ## FORMATO: COMPARATIVO MENSAL
 
