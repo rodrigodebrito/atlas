@@ -313,8 +313,8 @@ def save_transaction(
     """
     Salva uma transação financeira no banco de dados.
     transaction_type: EXPENSE ou INCOME
-    amount: valor da PARCELA em reais (se à vista = valor total).
-            Ex: "gastei 45" → amount=45, "R$1.200" → amount=1200
+    amount: valor da PARCELA em reais (se à vista = valor total). PRESERVE centavos.
+            Ex: "gastei 45" → amount=45, "R$1.200" → amount=1200, "42,54" → amount=42.54, "R$8,90" → amount=8.9
     installments: número de parcelas (1 = à vista)
     total_amount: valor TOTAL da compra em reais (preencher se parcelado)
     card_name: nome do cartão de crédito se usado (ex: "Nubank"). Deixar vazio para débito/PIX/dinheiro.
@@ -331,6 +331,8 @@ def save_transaction(
     - "gastei 45 no iFood" → amount=45, installments=1
     - "gastei ontem 30 no restaurante" → amount=30, occurred_at="2026-03-02" (data de ontem)
     - "paguei 120 no mercado" → amount=120, installments=1
+    - "paguei 42,54 no mercado" → amount=42.54  ← NUNCA arredonde centavos
+    - "gastei R$8,90 no café" → amount=8.9      ← NUNCA arredonde centavos
     - "tênis 1200 em 12x no Nubank" → amount=100, installments=12, total_amount=1200, card_name="Nubank"
     - "notebook 3000 em 6x no Inter" → amount=500, installments=6, total_amount=3000, card_name="Inter"
     """
@@ -3264,6 +3266,12 @@ Confirme todos de uma vez na resposta: "Anotado! R$30 Restaurante Talentos, R$85
 EXCEÇÃO — Gasto sem contexto algum ("gastei 18", "saiu 50"):
 Se não há NENHUMA pista do que foi (sem item, sem local, sem categoria), NÃO salve.
 Pergunte primeiro: "R$18 em quê?" — salve só após a resposta.
+
+⛔ REGRA DE VALOR — NUNCA ARREDONDE CENTAVOS:
+"42,54" → amount=42.54 (NÃO 43)
+"R$8,90" → amount=8.9  (NÃO 9)
+"R$1.234,56" → amount=1234.56
+Preserve os centavos exatamente como o usuário informou.
 
 - ADD_EXPENSE à vista: save_transaction(user_phone=<user_phone>, transaction_type="EXPENSE", amount=<valor_reais>, installments=1, ...)
 - ADD_EXPENSE parcelado: save_transaction(user_phone=<user_phone>, transaction_type="EXPENSE", amount=<parcela_reais>, installments=<n>, total_amount=<total_reais>, ...)
