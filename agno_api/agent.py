@@ -521,7 +521,7 @@ def update_user_income(user_phone: str, monthly_income: float) -> str:
         "💸 *Gastos do dia a dia:*\n"
         '• _"almocei 35 no Restaurante Talentos — PIX"_\n'
         '• _"mercado 120 no Supermercado Deville — débito"_\n'
-        '• _"uber 18 pro aeroporto — crédito"_\n\n'
+        '• _"uber 18 pro aeroporto — débito"_\n\n'
         "💳 *Compras no cartão:*\n"
         '• _"comprei tênis 300 no Nubank"_\n'
         '• _"notebook 3000 em 6x no Inter"_\n\n'
@@ -2520,7 +2520,7 @@ Pra começar, qual é o seu nome?"
 💸 *Gastos do dia a dia:*
 • _"almocei 35 no Restaurante Talentos — PIX"_
 • _"mercado 120 no Supermercado Deville — débito"_
-• _"uber 18 pro aeroporto — crédito"_
+• _"uber 18 pro aeroporto — débito"_
 
 💳 *Compras no cartão:*
 • _"comprei tênis 300 no Nubank"_
