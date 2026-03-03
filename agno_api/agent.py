@@ -858,37 +858,68 @@ def delete_last_transaction(user_phone: str) -> str:
 
 @tool
 def get_today_total(user_phone: str) -> str:
-    """Retorna o total gasto hoje."""
-    today = _now_br().strftime("%Y-%m-%d")
+    """Retorna o total gasto hoje com lançamentos por categoria."""
+    today = _now_br()
+    today_str = today.strftime("%Y-%m-%d")
+    today_label = today.strftime("%d/%m/%Y")
+
     conn = _get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+    cur.execute("SELECT id, name FROM users WHERE phone = ?", (user_phone,))
     row = cur.fetchone()
     if not row:
         conn.close()
         return "Nenhum gasto registrado hoje ainda."
 
-    user_id = row[0]
+    user_id, user_name = row
     cur.execute(
         """SELECT category, merchant, amount_cents FROM transactions
            WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?
-           ORDER BY occurred_at DESC""",
-        (user_id, f"{today}%"),
+           ORDER BY amount_cents DESC""",
+        (user_id, f"{today_str}%"),
     )
     rows = cur.fetchall()
     conn.close()
 
     if not rows:
-        return "Nenhum gasto registrado hoje ainda."
+        return f"Nenhum gasto registrado hoje ({today_label}) ainda."
 
     total = sum(r[2] for r in rows)
-    items = []
-    for cat, merchant, amount in rows:
-        label = merchant if merchant else cat
-        items.append(f"R${amount/100:.2f} em {label}")
 
-    return f"Hoje: R${total/100:.2f} — {' | '.join(items)}"
+    cat_emoji = {
+        "Alimentação": "🍽️", "Transporte": "🚗", "Saúde": "💊",
+        "Moradia": "🏠", "Lazer": "🎮", "Assinaturas": "📱",
+        "Educação": "📚", "Vestuário": "👟", "Investimento": "📈", "Outros": "📦",
+    }
+
+    from collections import defaultdict
+    cat_totals: dict = defaultdict(int)
+    cat_txs: dict = defaultdict(list)
+    for cat, merchant, amount in rows:
+        cat_totals[cat] += amount
+        label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
+        cat_txs[cat].append((label, amount))
+
+    lines = [f"*{user_name}*, seus gastos de hoje ({today_label}):"]
+    lines.append("")
+
+    for cat, total_cat in sorted(cat_totals.items(), key=lambda x: -x[1]):
+        pct = total_cat / total * 100
+        emoji = cat_emoji.get(cat, "💸")
+        lines.append(f"{emoji} *{cat}* — R${total_cat/100:,.2f} ({pct:.0f}%)".replace(",", "."))
+        for label, amt in cat_txs[cat]:
+            lines.append(f"  • {label}: R${amt/100:,.2f}".replace(",", "."))
+        lines.append("")
+
+    lines.append(f"💸 *Total hoje: R${total/100:,.2f}*".replace(",", "."))
+
+    if cat_totals:
+        top_cat = max(cat_totals, key=lambda x: cat_totals[x])
+        top_pct = cat_totals[top_cat] / total * 100
+        lines.append(f"__top_category:{top_cat}:{top_pct:.0f}%")
+
+    return "\n".join(lines)
 
 
 @tool
@@ -1610,73 +1641,99 @@ def get_month_comparison(user_phone: str) -> str:
 @tool
 def get_week_summary(user_phone: str) -> str:
     """
-    Resumo e alertas da semana atual (segunda a hoje).
-    Detecta categorias com gasto acima do ritmo esperado para o mês.
+    Resumo da semana atual (segunda a hoje) com lançamentos por categoria.
     """
+    from collections import defaultdict
     today = _now_br()
-    # início da semana (segunda-feira)
-    start_of_week = today.strftime("%Y-%m-%d")
-    days_since_monday = today.weekday()  # 0 = segunda
-    if days_since_monday > 0:
-        from datetime import timedelta
-        start_of_week = (today - timedelta(days=days_since_monday)).strftime("%Y-%m-%d")
+    days_since_monday = today.weekday()
+    start_of_week = (today - timedelta(days=days_since_monday)).strftime("%Y-%m-%d")
+    today_str = today.strftime("%Y-%m-%d")
+    start_label = f"{start_of_week[8:10]}/{start_of_week[5:7]}"
+    end_label = f"{today_str[8:10]}/{today_str[5:7]}"
+    days_elapsed = days_since_monday + 1
 
     current_month = today.strftime("%Y-%m")
-    days_in_month = 30  # aproximação
+    days_in_month = 30
 
     conn = _get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+    cur.execute("SELECT id, name FROM users WHERE phone = ?", (user_phone,))
     row = cur.fetchone()
     if not row:
         conn.close()
         return "Nenhum dado encontrado."
-    user_id = row[0]
+    user_id, user_name = row
 
-    # gastos da semana
+    # Individual transactions this week
     cur.execute(
-        """SELECT category, SUM(amount_cents), COUNT(*)
+        """SELECT category, merchant, amount_cents, occurred_at
            FROM transactions
            WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at >= ?
-           GROUP BY category ORDER BY SUM(amount_cents) DESC""",
+           ORDER BY amount_cents DESC""",
         (user_id, f"{start_of_week}T00:00:00"),
     )
-    week_rows = cur.fetchall()
+    tx_rows = cur.fetchall()
 
-    # média diária do mês para comparar
+    # Monthly totals per category (for alerts)
     cur.execute(
-        """SELECT category, SUM(amount_cents)
-           FROM transactions
+        """SELECT category, SUM(amount_cents) FROM transactions
            WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?
            GROUP BY category""",
         (user_id, f"{current_month}%"),
     )
-    month_rows = {r[0]: r[1] for r in cur.fetchall()}
+    month_totals = {r[0]: r[1] for r in cur.fetchall()}
     conn.close()
 
-    if not week_rows:
+    if not tx_rows:
         return "Nenhum gasto registrado essa semana ainda."
 
-    week_total = sum(r[1] for r in week_rows)
-    days_elapsed = days_since_monday + 1  # dias desde segunda incluindo hoje
+    cat_emoji = {
+        "Alimentação": "🍽️", "Transporte": "🚗", "Saúde": "💊",
+        "Moradia": "🏠", "Lazer": "🎮", "Assinaturas": "📱",
+        "Educação": "📚", "Vestuário": "👟", "Investimento": "📈", "Outros": "📦",
+    }
 
-    lines = [f"📅 Semana atual ({start_of_week} → hoje)"]
-    lines.append(f"💸 Total: R${week_total/100:.2f} em {days_elapsed} dia{'s' if days_elapsed > 1 else ''}")
+    cat_totals: dict = defaultdict(int)
+    cat_txs: dict = defaultdict(list)
+    for cat, merchant, amount, _ in tx_rows:
+        cat_totals[cat] += amount
+        label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
+        cat_txs[cat].append((label, amount))
+
+    week_total = sum(cat_totals.values())
+
+    period = f"{start_label}" if start_label == end_label else f"{start_label} a {end_label}"
+    lines = [f"*{user_name}*, sua semana ({period}):"]
     lines.append("")
 
     alertas = []
-    for cat, week_val, qtd in week_rows:
-        month_val = month_rows.get(cat, 0)
-        daily_avg = month_val / days_in_month if month_val else 0
-        expected_week = daily_avg * 7
-        lines.append(f"  • {cat}: R${week_val/100:.2f} ({qtd}x)")
-        if expected_week > 0 and week_val > expected_week * 1.4:
-            alertas.append(f"  ⚠️  {cat}: no ritmo de R${week_val / days_elapsed * 30 / 100:.0f}/mês (acima da média)")
+    for cat, total_cat in sorted(cat_totals.items(), key=lambda x: -x[1]):
+        pct = total_cat / week_total * 100
+        emoji = cat_emoji.get(cat, "💸")
+        lines.append(f"{emoji} *{cat}* — R${total_cat/100:,.2f} ({pct:.0f}%)".replace(",", "."))
+        for label, amt in cat_txs[cat]:
+            lines.append(f"  • {label}: R${amt/100:,.2f}".replace(",", "."))
+        lines.append("")
+        # Alert if pace is 40%+ above monthly average
+        month_val = month_totals.get(cat, 0)
+        if month_val > 0:
+            daily_avg = month_val / days_in_month
+            if days_elapsed > 0 and (total_cat / days_elapsed) > daily_avg * 1.4:
+                proj = total_cat / days_elapsed * 30
+                alertas.append(f"⚠️ {cat}: ritmo de R${proj/100:.0f}/mês — acima da média")
+
+    lines.append(f"💸 *Total da semana: R${week_total/100:,.2f}*".replace(",", "."))
 
     if alertas:
-        lines.append("\n🔔 Alertas:")
+        lines.append("")
+        lines.append("🔔 *Alertas:*")
         lines.extend(alertas)
+
+    if cat_totals:
+        top_cat = max(cat_totals, key=lambda x: cat_totals[x])
+        top_pct = cat_totals[top_cat] / week_total * 100
+        lines.append(f"__top_category:{top_cat}:{top_pct:.0f}%")
 
     return "\n".join(lines)
 
@@ -2673,13 +2730,23 @@ Regras do insight:
 Se renda cadastrada mas sem receita lançada no mês: adicione após o insight:
 "_(Sua renda de R$X.XXX ainda não foi lançada esse mês)_"
 
+## FORMATO: RESUMO SEMANAL (get_week_summary)
+
+A tool já retorna o dado formatado com nome, período, categorias e lançamentos.
+Apresente o dado retornado DIRETAMENTE — não reformate nem resuma.
+Adicione UMA linha de insight ao final usando `__top_category` (mesma regra do mensal).
+Remova a linha `__top_category:...` da resposta final.
+
+## FORMATO: RESUMO DIÁRIO (get_today_total)
+
+A tool já retorna o dado formatado com nome, data, categorias e lançamentos.
+Apresente o dado retornado DIRETAMENTE — não reformate nem resuma.
+Adicione UMA linha de insight ao final usando `__top_category` (mesma regra do mensal).
+Remova a linha `__top_category:...` da resposta final.
+
 ## FORMATO: COMPARATIVO MENSAL
 
 Destaque variações com ↑ ↓. Alertas ⚠️ em evidência. Pare aí.
-
-## FORMATO: RESUMO SEMANAL
-
-Total da semana + alertas se houver. Pare aí.
 
 ## FORMATO: SALDO RÁPIDO ("qual meu saldo?")
 
