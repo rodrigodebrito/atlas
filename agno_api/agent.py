@@ -3382,10 +3382,12 @@ OUTROS:
 - "como evoluí?" / "comparado ao mês passado" → get_month_comparison(user_phone=<user_phone>)
 - Detalhes / lista de transações → get_transactions(user_phone=<user_phone>, date="YYYY-MM-DD") ou get_transactions(user_phone=<user_phone>, month="YYYY-MM")
 - "onde gastei em X?" / "detalhes de [categoria]" → get_category_breakdown(user_phone=<user_phone>, category="<categoria>")
-- "quanto gastei no [estabelecimento]?" / "o que comprei na [loja]?" / "iFood esse mês?" / "histórico do [lugar]":
-    → get_transactions_by_merchant(user_phone=<user_phone>, merchant_query="<nome>")
-    → Se mencionar mês: get_transactions_by_merchant(user_phone=<user_phone>, merchant_query="<nome>", month="YYYY-MM")
-    Exemplos: "Talentos" / "iFood" / "Herbalife" / "Nike" / "Nubank"
+- Qualquer menção a estabelecimento/loja/local específico:
+  "quanto gastei no X?" / "me mostra os gastos no X" / "gastos no X" / "o que comprei na X" /
+  "X esse mês" / "histórico do X" / "transações no X" / "mostra o X" / "gasto no X":
+    → get_transactions_by_merchant(user_phone=<user_phone>, merchant_query="<nome do lugar>")
+    → Se mencionar mês: add month="YYYY-MM"
+    Exemplos: "Deville" / "Talentos" / "iFood" / "Herbalife" / "Nike" / "Nubank" / "mercado"
 - "minhas parcelas" / "quanto tenho parcelado" → get_installments_summary(user_phone=<user_phone>)
 
 COMPROMISSOS FUTUROS:
