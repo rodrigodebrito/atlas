@@ -15,7 +15,7 @@ import os
 import sqlite3
 import uuid
 import calendar
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -45,6 +45,10 @@ else:
     DB_TYPE = "sqlite"
 
 print(f"[ATLAS] Banco: {DB_TYPE}")
+
+def _now_br() -> datetime:
+    """Retorna datetime atual no fuso de Brasília (UTC-3)."""
+    return datetime.now(timezone.utc) - timedelta(hours=3)
 
 # ============================================================
 # TABELAS FINANCEIRAS — criadas automaticamente no SQLite
@@ -353,7 +357,7 @@ def save_transaction(
                 payment_method = "CREDIT"
 
     tx_id = str(uuid.uuid4())
-    now = datetime.now().isoformat()
+    now = _now_br().isoformat()
     cur.execute(
         """INSERT INTO transactions
            (id, user_id, type, amount_cents, total_amount_cents, installments, installment_number,
@@ -381,7 +385,7 @@ def get_month_summary(user_phone: str, month: str = "") -> str:
     Se não informado, usa o mês atual.
     """
     if not month:
-        month = datetime.now().strftime("%Y-%m")
+        month = _now_br().strftime("%Y-%m")
 
     conn = _get_conn()
     cur = conn.cursor()
@@ -566,7 +570,7 @@ def get_installments_summary(user_phone: str) -> str:
 
     for merchant, category, parcela, total, n_parcelas, occurred_at in rows:
         purchase_month = occurred_at[:7]
-        current_month = datetime.now().strftime("%Y-%m")
+        current_month = _now_br().strftime("%Y-%m")
 
         # meses desde a compra
         py, pm = map(int, purchase_month.split("-"))
@@ -731,7 +735,7 @@ def update_last_transaction(
 @tool
 def get_today_total(user_phone: str) -> str:
     """Retorna o total gasto hoje."""
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _now_br().strftime("%Y-%m-%d")
     conn = _get_conn()
     cur = conn.cursor()
 
@@ -789,7 +793,7 @@ def get_transactions(user_phone: str, date: str = "", month: str = "") -> str:
         prefix = date
         label = date
     else:
-        prefix = datetime.now().strftime("%Y-%m-%d")
+        prefix = _now_br().strftime("%Y-%m-%d")
         label = "hoje"
 
     cur.execute(
@@ -825,7 +829,7 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
     month: YYYY-MM (padrão = mês atual)
     """
     if not month:
-        month = datetime.now().strftime("%Y-%m")
+        month = _now_br().strftime("%Y-%m")
 
     conn = _get_conn()
     cur = conn.cursor()
@@ -890,7 +894,7 @@ def _find_card(cur, user_id: str, card_name: str):
 
 def _bill_period_start(closing_day: int) -> str:
     """Calcula a data de início do período de fatura atual."""
-    today = datetime.now()
+    today = _now_br()
     if today.day >= closing_day:
         start = today.replace(day=closing_day, hour=0, minute=0, second=0, microsecond=0)
     else:
@@ -974,7 +978,7 @@ def get_cards(user_phone: str) -> str:
         conn.close()
         return "Nenhum cartão cadastrado. Use register_card para adicionar."
 
-    today = datetime.now()
+    today = _now_br()
     lines = [f"💳 Seus cartões ({today.strftime('%d/%m/%Y')}):"]
     for card_id, name, closing_day, due_day, limit_cents, opening_cents, last_paid in cards:
         # Calcula período da fatura atual
@@ -1032,7 +1036,7 @@ def close_bill(user_phone: str, card_name: str) -> str:
 
     cur.execute(
         "UPDATE credit_cards SET current_bill_opening_cents=0, last_bill_paid_at=? WHERE id=?",
-        (datetime.now().isoformat(), card[0])
+        (_now_br().isoformat(), card[0])
     )
     conn.commit()
     conn.close()
@@ -1124,7 +1128,7 @@ def get_recurring(user_phone: str) -> str:
         return "Nenhum gasto fixo cadastrado. Use register_recurring para adicionar."
 
     total = sum(r[1] for r in rows)
-    today = datetime.now().day
+    today = _now_br().day
     lines = [f"📋 Gastos fixos mensais — Total: R${total/100:.2f}"]
     for name, amount, category, day, merchant, card_name in rows:
         paid = "✅" if day < today else "⏳"
@@ -1257,7 +1261,7 @@ def get_next_bill(user_phone: str, card_name: str) -> str:
 
     card_id, name, closing_day, due_day, limit_cents, opening_cents, last_paid = card
 
-    today = datetime.now()
+    today = _now_br()
 
     # Parcelas ativas vinculadas a este cartão
     cur.execute(
@@ -1364,7 +1368,7 @@ def get_month_comparison(user_phone: str) -> str:
     Compara o mês atual com o mês anterior por categoria.
     Ideal para resumo mensal com contexto e evolução.
     """
-    now = datetime.now()
+    now = _now_br()
     current_month = now.strftime("%Y-%m")
 
     # mês anterior
@@ -1446,7 +1450,7 @@ def get_week_summary(user_phone: str) -> str:
     Resumo e alertas da semana atual (segunda a hoje).
     Detecta categorias com gasto acima do ritmo esperado para o mês.
     """
-    today = datetime.now()
+    today = _now_br()
     # início da semana (segunda-feira)
     start_of_week = today.strftime("%Y-%m-%d")
     days_since_monday = today.weekday()  # 0 = segunda
@@ -1522,7 +1526,7 @@ def can_i_buy(user_phone: str, amount: float, description: str = "") -> str:
     description: o que é a compra (ex: "tênis", "jantar fora", "notebook")
     """
     amount_cents = round(amount * 100)
-    today = datetime.now()
+    today = _now_br()
     current_month = today.strftime("%Y-%m")
     days_in_month = 30
     days_elapsed = today.day
@@ -1692,7 +1696,7 @@ def _get_cycle_dates(salary_day: int) -> tuple:
     Retorna (cycle_start, next_salary, days_total, days_elapsed, days_remaining).
     salary_day=0 → usa mês calendário.
     """
-    today = datetime.now()
+    today = _now_br()
     today_midnight = today.replace(hour=0, minute=0, second=0, microsecond=0)
 
     if salary_day > 0:
@@ -1877,7 +1881,7 @@ def get_financial_score(user_phone: str) -> str:
     Calcula o score de saúde financeira do mês atual (0-100, grau A+ a F).
     Baseado em: taxa de poupança, consistência de registros, controle do orçamento e metas.
     """
-    today = datetime.now()
+    today = _now_br()
     current_month = today.strftime("%Y-%m")
     days_elapsed = today.day
 
@@ -2172,6 +2176,35 @@ def will_i_have_leftover(user_phone: str) -> str:
         (user_id, cycle_start_str),
     )
     income_real = cur.fetchone()[0] or 0
+
+    # Fatura atual dos cartões (compromissos já acumulados)
+    cur.execute(
+        "SELECT name, current_bill_opening_cents, closing_day FROM credit_cards WHERE user_id = ?",
+        (user_id,)
+    )
+    cards = cur.fetchall()
+    card_bills_cents = 0
+    card_bill_lines = []
+    for card_name, opening_cents, closing_day in cards:
+        period_start = _bill_period_start(closing_day)
+        cur.execute(
+            "SELECT SUM(amount_cents) FROM transactions WHERE user_id = ? AND card_id = (SELECT id FROM credit_cards WHERE user_id = ? AND name = ?) AND occurred_at >= ?",
+            (user_id, user_id, card_name, period_start)
+        )
+        new_purchases = cur.fetchone()[0] or 0
+        bill_total = (opening_cents or 0) + new_purchases
+        if bill_total > 0:
+            card_bills_cents += bill_total
+            card_bill_lines.append(f"   💳 {card_name}: R${bill_total/100:.2f}")
+
+    # Gastos fixos ativos (que vencem este ciclo)
+    cur.execute(
+        "SELECT name, amount_cents FROM recurring_expenses WHERE user_id = ? AND is_active = 1",
+        (user_id,)
+    )
+    recurring = cur.fetchall()
+    recurring_cents = sum(v for _, v in recurring)
+
     conn.close()
 
     income_to_use = income_real if income_real > 0 else income_cents
@@ -2180,13 +2213,14 @@ def will_i_have_leftover(user_phone: str) -> str:
         return "Sem renda cadastrada. Registre sua renda primeiro para eu calcular a projeção."
 
     expenses_cents = sum(v for _, v in category_expenses)
+    fixed_commitments = card_bills_cents + recurring_cents
 
-    if expenses_cents == 0:
+    if expenses_cents == 0 and fixed_commitments == 0:
         return "Nenhum gasto registrado neste ciclo ainda. Anote seus gastos e eu projeto o fim do mês!"
 
-    daily_pace = expenses_cents / days_elapsed
+    daily_pace = expenses_cents / max(days_elapsed, 1)
     projected_expenses = daily_pace * days_total
-    projected_leftover = income_to_use - projected_expenses
+    projected_leftover = income_to_use - projected_expenses - fixed_commitments
 
     # Categorias não-essenciais (cortáveis)
     cuttable = {"Alimentação", "Lazer", "Assinaturas", "Vestuário", "Outros"}
@@ -2202,7 +2236,13 @@ def will_i_have_leftover(user_phone: str) -> str:
     max_daily_for_20pct = max_expenses_for_20pct / days_total
 
     lines = ["💭 Vai sobrar?"]
-    lines.append(f"   {days_remaining} dias restantes  •  Renda: R${income_to_use/100:.2f}  •  Gasto: R${expenses_cents/100:.2f}")
+    lines.append(f"   {days_remaining} dias restantes  •  Renda: R${income_to_use/100:.2f}  •  Gasto até agora: R${expenses_cents/100:.2f}")
+    if card_bills_cents > 0:
+        lines.append(f"   💳 Faturas a pagar: R${card_bills_cents/100:.2f}")
+        for cl in card_bill_lines:
+            lines.append(cl)
+    if recurring_cents > 0:
+        lines.append(f"   📋 Gastos fixos: R${recurring_cents/100:.2f}")
     lines.append("")
 
     # Cenário 1 — ritmo atual
@@ -2364,7 +2404,9 @@ CERTO:  "Anotado! R$120 no mercado extra."
 
 ADD_EXPENSE / ADD_INCOME:
   Formato: "Anotado! [emoji] R$XX em [Categoria] — [merchant se disponível][detalhe de pagamento]."
-  Depois de 1 linha em branco: UMA sugestão. Ex: "Quer ver o total de hoje?"
+  Depois de 1 linha em branco: UMA sugestão curta e VARIADA — não repita sempre a mesma.
+  Alterne entre: "Quer ver o total de hoje?" / "Mais algum gasto?" / "Tem mais pra lançar?" / nada (se já perguntou antes nessa conversa)
+  NUNCA repita a mesma sugestão duas vezes seguidas na mesma conversa.
   - À vista implícito (sem menção): não mencione pagamento para valores < R$200
   - À vista para valores ≥ R$200: adicione "— à vista. Foi parcelado? É só me falar."
   - Parcelado: "Anotado! 👟 R$120/mês × 3x (R$360 total) em Vestuário — Nike Store."
@@ -2661,16 +2703,19 @@ Ao corrigir parcelamento, passe APENAS installments — o valor total é calcula
 ## CARTÕES DE CRÉDITO
 
 Cadastrar cartão:
-REGRA CRÍTICA: NUNCA invente ou assuma dias de fechamento/vencimento. SEMPRE pergunte ao usuário.
-Fluxo obrigatório quando usuário pedir pra cadastrar cartão:
-1. Usuário diz o nome do cartão → pergunte: "Qual o dia que a fatura *fecha* e qual o dia que *vence*?"
-2. Recebeu fechamento e vencimento → pergunte: "Qual o limite do cartão? (pode pular)"
-3. Recebeu limite (ou pulou) → pergunte: "Tem fatura já acumulada nesse cartão antes do ATLAS? (pode pular)"
-4. Só após coletar todos os dados → chame register_card(...)
+REGRA CRÍTICA: NUNCA invente nome, dia de fechamento, vencimento ou limite. NUNCA assuma valores padrão.
+Quando usuário quiser cadastrar cartão, pergunte TUDO DE UMA VEZ em uma única mensagem:
 
-Exemplos de dados completos:
-"Nubank, fecha dia 25, vence dia 10, limite 10000" → register_card(name="Nubank", closing_day=25, due_day=10, limit=10000)
-"Inter já está em 2000" com fechamento/vencimento coletados → register_card(name="Inter", closing_day=X, due_day=Y, current_bill=2000)
+"Para cadastrar seu cartão, me informe:
+1️⃣ Nome do cartão (ex: Nubank, Itaú, Inter)
+2️⃣ Dia de fechamento da fatura
+3️⃣ Dia de vencimento
+4️⃣ Limite total em reais (pode pular)
+5️⃣ Fatura já acumulada antes do ATLAS (pode pular)"
+
+Só chame register_card(...) após receber pelo menos nome + fechamento + vencimento do usuário.
+Se usuário informar tudo junto ("Itaú fecha 14 vence 20 limite 4000 fatura 1380") → register_card imediatamente.
+Se fatura não informada → current_bill=0. Se limite não informado → limit=0.
 
 Gasto no cartão: "comprei X no Nubank" / "gastei 300 no Inter" / "parcelei no Bradesco"
 → save_transaction(..., card_name="Nubank")
