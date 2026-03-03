@@ -1808,10 +1808,6 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     today_str = today.strftime("%Y-%m-%d")
     start_label = (today - timedelta(days=days_since_monday)).strftime("%d/%m")
     end_label = today.strftime("%d/%m")
-    days_elapsed = days_since_monday + 1
-
-    current_month = today.strftime("%Y-%m")
-    days_in_month = 30
 
     # Gera os dias da semana (segunda até hoje) como strings YYYY-MM-DD
     week_dates = [
@@ -1843,14 +1839,6 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     )
     tx_rows = cur.fetchall()
 
-    # Monthly expense totals for alerts
-    cur.execute(
-        """SELECT category, SUM(amount_cents) FROM transactions
-           WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?
-           GROUP BY category""",
-        (user_id, f"{current_month}%"),
-    )
-    month_totals = {r[0]: r[1] for r in cur.fetchall()}
     conn.close()
 
     if not tx_rows:
@@ -1872,7 +1860,6 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     lines.append("")
 
     top_cat_name, top_pct_val = "", 0.0
-    alertas = []
 
     def add_cat_block(rows_list, ref_total):
         cat_totals: dict = defaultdict(int)
@@ -1888,10 +1875,6 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
             for label, amt in cat_txs[cat]:
                 lines.append(f"  • {label}: R${amt/100:,.2f}".replace(",", "."))
             lines.append("")
-            month_val = month_totals.get(cat, 0)
-            if month_val > 0 and days_elapsed > 0 and (total_cat / days_elapsed) > (month_val / days_in_month) * 1.4:
-                proj = total_cat / days_elapsed * 30
-                alertas.append(f"⚠️ {cat}: ritmo de R${proj/100:.0f}/mês — acima da média")
         return cat_totals
 
     if filter_type in ("ALL", "EXPENSE") and exp_rows:
@@ -1910,11 +1893,6 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
         if filter_type == "INCOME" and ct:
             tc = max(ct, key=lambda x: ct[x])
             top_cat_name, top_pct_val = tc, ct[tc] / total_inc * 100
-
-    if alertas:
-        lines.append("")
-        lines.append("🔔 *Alertas:*")
-        lines.extend(alertas)
 
     if top_cat_name:
         lines.append(f"__top_category:{top_cat_name}:{top_pct_val:.0f}%")
