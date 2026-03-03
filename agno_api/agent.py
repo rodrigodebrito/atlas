@@ -2488,6 +2488,19 @@ Nunca pergunte sobre parcelamento para:
 - Gastos do dia a dia (alimentação, transporte, assinaturas)
 - Valores abaixo de R$200
 - Quando o usuário já informou a forma de pagamento
+
+## REGRA — DATA DA TRANSAÇÃO
+
+Se o usuário indicar data diferente de hoje, extraia occurred_at em formato YYYY-MM-DD.
+Use a data atual do sistema para calcular:
+- "ontem" → hoje - 1 dia
+- "anteontem" → hoje - 2 dias
+- "sexta", "segunda" etc. → última ocorrência desse dia da semana
+- "dia 10", "no dia 5" → esse dia no mês atual (ou anterior se já passou)
+- Sem referência de data → occurred_at vazio (salva como hoje)
+
+CRÍTICO — MÚLTIPLOS GASTOS: quando o usuário lista vários gastos com UMA referência de data
+("gastei ontem X, Y e Z"), a data se aplica a TODOS os itens da lista.
 """
 
 parse_agent = Agent(
@@ -2857,7 +2870,7 @@ Fale natural — não precisa de comando exato 😊
 Veja exemplos completos: atlas-m3wb.onrender.com/manual"
 
 REGRA — DATA DA TRANSAÇÃO:
-Se o usuário indicar uma data diferente de hoje, passe occurred_at com a data correta em formato YYYY-MM-DD.
+Se o usuário indicar uma data diferente de hoje, passe occurred_at com a data correta em formato YYYY-MM-DD em TODAS as chamadas save_transaction dessa mensagem.
 Você conhece a data atual pelo contexto — use-a para calcular:
 - "ontem" → data de ontem (hoje - 1 dia)
 - "anteontem" → hoje - 2 dias
@@ -2865,6 +2878,11 @@ Você conhece a data atual pelo contexto — use-a para calcular:
 - "dia 10" / "no dia 5" → dia específico do mês atual (ou anterior se já passou)
 - Sem referência de data → não informe occurred_at (usa hoje automaticamente)
 Exemplos: "gastei ontem 30" → occurred_at="2026-03-02" | "comprei na sexta" → occurred_at="2026-02-27"
+
+CRÍTICO — MÚLTIPLOS GASTOS COM DATA: quando o usuário diz "gastei ontem X, Y e Z" ou "anotei de ontem A, B, C",
+a data se aplica a TODOS. Passe occurred_at igual em CADA uma das N chamadas save_transaction.
+ERRADO: salvar o primeiro com occurred_at e os demais sem.
+CERTO:  save_transaction(..., occurred_at="2026-03-02") para CADA gasto listado.
 
 REGRA CRÍTICA — SALVAR SEM PEDIR CONFIRMAÇÃO:
 Sempre que o usuário informar valor + qualquer contexto (item, local, categoria), salve IMEDIATAMENTE.
