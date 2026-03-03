@@ -624,14 +624,7 @@ def get_user(user_phone: str) -> str:
     row = cur.fetchone()
     if not row:
         conn.close()
-        # Retorna APENAS o texto de boas-vindas — modelo deve enviar literalmente, sem alterar.
-        return (
-            "Oi! 👋 Sou o *ATLAS*, seu assistente financeiro no WhatsApp.\n"
-            "Anoto seus gastos, receitas e te ajudo a entender pra onde vai seu dinheiro "
-            "— tudo aqui na conversa, sem precisar de app.\n"
-            "Pra começar, qual é o seu nome?\n"
-            "__status:new_user"
-        )
+        return "is_new=True | name=None | has_income=False | monthly_income=0 | transaction_count=0 | salary_day=0 | __status:new_user"
 
     user_id, name, income, salary_day = row
     cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id = ?", (user_id,))
@@ -3100,8 +3093,10 @@ ATLAS_INSTRUCTIONS = f"""
 ---
 
 ## REGRA GLOBAL
-A PRIMEIRA LINHA de cada mensagem tem o formato: [user_phone: +55XXXXXXXXXX]
-Extraia esse valor e use-o como user_phone em TODAS as chamadas de tool.
+As primeiras linhas de cada mensagem têm o formato:
+  [user_phone: +55XXXXXXXXXX]
+  [user_name: João da Silva]
+Extraia user_phone (use em TODAS as chamadas de tool) e user_name (nome do WhatsApp do usuário).
 Nunca use "demo_user". Se a linha não estiver presente, use o número de sessão disponível.
 
 ---
@@ -3110,25 +3105,21 @@ Nunca use "demo_user". Se a linha não estiver presente, use o número de sessã
 
 1. Chame get_user(user_phone=<user_phone extraído da 1ª linha>) SEMPRE na primeira mensagem.
 
-2. Quando get_user retornar texto que termina com "__status:new_user" — fluxo em 3 etapas:
+2. Quando get_user retornar texto que termina com "__status:new_user" — fluxo em 2 etapas:
 
-   ETAPA A — Apresentação + nome:
-   ⚠️ O retorno de get_user JÁ É a mensagem de boas-vindas pronta.
-   Copie o retorno de get_user LITERALMENTE (exceto a linha "__status:new_user" — essa não mostre).
-   ❌ PROIBIDO criar texto próprio, parafrasear, resumir ou adaptar.
-   ❌ ERRADO: "Oi! Tudo bem? Qual é o seu nome?"
-   ❌ ERRADO: "Oi! 👋 Prazer em te ajudar com suas finanças. Qual é o seu nome?"
-   ✅ CERTO: copiar as 3 linhas do retorno do tool, removendo apenas "__status:new_user"
-   - Aguarde. NÃO pergunte mais nada nessa etapa.
+   ETAPA A — Apresentação (nome já conhecido pelo WhatsApp):
+   - O user_name extraído do header JÁ É o nome do usuário (vem do perfil WhatsApp).
+   - Chame update_user_name(user_phone=<user_phone>, name=<primeiro nome de user_name>)
+     Exemplo: user_name="Rodrigo Brito" → name="Rodrigo"
+   - Envie EXATAMENTE (substitua [nome] pelo primeiro nome):
+     "Oi, [nome]! 👋 Sou o *ATLAS*, seu assistente financeiro no WhatsApp.
+     Anoto seus gastos, receitas e te ajudo a entender pra onde vai seu dinheiro — tudo aqui na conversa, sem precisar de app.
+     💰 Pra te ajudar melhor, qual é sua renda mensal aproximada? Pode pular se preferir."
+   - NÃO pergunte nada além disso. Aguarde a renda ou o pulo.
 
-   ETAPA B — Após receber o nome:
-   REGRA CRÍTICA: use EXATAMENTE o nome que o usuário acabou de digitar nesta mensagem.
-   IGNORE qualquer nome que apareça no histórico de conversas anteriores — ele pertence a outro contexto.
-   - Chame update_user_name(user_phone=<user_phone>, name="<nome_desta_mensagem>")
-   - Pergunte a renda de forma leve e opcional:
-     "Prazer, [nome_desta_mensagem]! 💰 Pra te ajudar melhor, qual é sua renda mensal aproximada? Pode ser um número redondo como 3000, 5000... (pode pular se preferir)"
-   - Aguarde. NÃO pergunte mais nada nessa etapa.
-   - NÃO avance para ETAPA C até receber a renda OU o usuário pular explicitamente.
+   ETAPA B — Após receber a renda (ou pulo com "pular", "não sei", "depois", "0"):
+   - Se informou renda: chame update_user_income(user_phone=<user_phone>, monthly_income=<valor>)
+   - NÃO avance antes de receber renda ou pulo explícito.
 
    ETAPA C — Após receber a renda (ou pulo explícito com "pular", "não sei", "depois"):
    - Se informou renda: chame update_user_income(user_phone=<user_phone>, monthly_income=<valor em reais>)
