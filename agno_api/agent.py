@@ -65,6 +65,7 @@ def _init_sqlite_tables():
             name TEXT NOT NULL,
             monthly_income_cents INTEGER DEFAULT 0,
             salary_day INTEGER DEFAULT 0,
+            reminder_days_before INTEGER DEFAULT 3,
             created_at TEXT DEFAULT (datetime('now'))
         );
 
@@ -132,6 +133,7 @@ def _init_sqlite_tables():
     # Migrations
     for migration in [
         "ALTER TABLE users ADD COLUMN salary_day INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN reminder_days_before INTEGER DEFAULT 3",
         "ALTER TABLE transactions ADD COLUMN card_id TEXT DEFAULT NULL",
     ]:
         try:
@@ -157,6 +159,7 @@ def _init_postgres_tables():
             name TEXT NOT NULL,
             monthly_income_cents INTEGER DEFAULT 0,
             salary_day INTEGER DEFAULT 0,
+            reminder_days_before INTEGER DEFAULT 3,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -227,6 +230,7 @@ def _init_postgres_tables():
     """)
     # Migrations
     for migration in [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_days_before INTEGER DEFAULT 3",
         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS card_id TEXT DEFAULT NULL",
     ]:
         try:
@@ -304,6 +308,7 @@ def save_transaction(
     installments: int = 1,
     total_amount: float = 0,
     card_name: str = "",
+    occurred_at: str = "",
 ) -> str:
     """
     Salva uma transação financeira no banco de dados.
@@ -313,6 +318,8 @@ def save_transaction(
     installments: número de parcelas (1 = à vista)
     total_amount: valor TOTAL da compra em reais (preencher se parcelado)
     card_name: nome do cartão de crédito se usado (ex: "Nubank"). Deixar vazio para débito/PIX/dinheiro.
+    occurred_at: data da transação no formato YYYY-MM-DD. Deixar vazio para hoje.
+                 "ontem" → calcule ontem, "anteontem" → 2 dias atrás, "segunda" → última segunda, etc.
 
     Categorias EXPENSE: Alimentação | Transporte | Moradia | Saúde | Lazer |
                         Educação | Assinaturas | Vestuário | Investimento | Outros
@@ -321,6 +328,7 @@ def save_transaction(
 
     Exemplos:
     - "gastei 45 no iFood" → amount=45, installments=1
+    - "gastei ontem 30 no restaurante" → amount=30, occurred_at="2026-03-02" (data de ontem)
     - "paguei 120 no mercado" → amount=120, installments=1
     - "tênis 1200 em 12x no Nubank" → amount=100, installments=12, total_amount=1200, card_name="Nubank"
     - "notebook 3000 em 6x no Inter" → amount=500, installments=6, total_amount=3000, card_name="Inter"
@@ -371,7 +379,18 @@ def save_transaction(
             payment_method = "CREDIT"
 
     tx_id = str(uuid.uuid4())
-    now = _now_br().isoformat()
+    # Usa a data informada pelo modelo ou fallback para agora em BRT
+    if occurred_at:
+        # Aceita "YYYY-MM-DD" ou "YYYY-MM-DDTHH:MM:SS" — normaliza para ISO com hora
+        try:
+            if len(occurred_at) == 10:  # apenas data
+                now = occurred_at + "T12:00:00"
+            else:
+                now = occurred_at[:19]
+        except Exception:
+            now = _now_br().isoformat()
+    else:
+        now = _now_br().isoformat()
     cur.execute(
         """INSERT INTO transactions
            (id, user_id, type, amount_cents, total_amount_cents, installments, installment_number,
@@ -556,22 +575,7 @@ def update_user_income(user_phone: str, monthly_income: float) -> str:
         )
     conn.commit()
     conn.close()
-    return (
-        f"Renda mensal de R${monthly_income_cents/100:.2f} salva. "
-        "Agora envie esta mensagem de boas-vindas EXATAMENTE como está abaixo (substitua [nome] pelo nome do usuário):\n\n"
-        "Tudo certo, [nome]! 🎉 Pode me mandar seus gastos assim:\n\n"
-        "💸 *Gastos do dia a dia:*\n"
-        '• _"almocei 35 no Restaurante Talentos — PIX"_\n'
-        '• _"mercado 120 no Supermercado Deville — débito"_\n'
-        '• _"uber 18 pro aeroporto — débito"_\n\n'
-        "💳 *Compras no cartão:*\n"
-        '• _"comprei tênis 300 no Nubank"_\n'
-        '• _"notebook 3000 em 6x no Inter"_\n\n'
-        "📊 *Ver como está:*\n"
-        '• _"como tá meu mês?"_\n'
-        '• _"posso comprar um tênis de 200?"_\n\n'
-        "Digite *ajuda* a qualquer hora pra ver tudo que sei fazer 🎯"
-    )
+    return f"OK — renda mensal de R${monthly_income_cents/100:.2f} salva. Agora envie a mensagem de boas-vindas conforme as instruções."
 
 
 @tool
@@ -2126,6 +2130,36 @@ def set_salary_day(user_phone: str, salary_day: int) -> str:
 
 
 @tool
+def set_reminder_days(user_phone: str, days_before: int) -> str:
+    """
+    Configura quantos dias antes o ATLAS avisa sobre compromissos fixos e faturas de cartão.
+    days_before: número de dias de antecedência (1-7). Padrão: 3.
+    Use quando o usuário disser:
+    - "quero lembrete 2 dias antes"
+    - "me avisa com 5 dias de antecedência"
+    - "avisa 1 dia antes"
+    - "lembrete no dia anterior"
+    """
+    if not (1 <= days_before <= 7):
+        return "Informe um número de dias entre 1 e 7."
+
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return "Usuário não encontrado."
+
+    cur.execute("UPDATE users SET reminder_days_before = ? WHERE phone = ?", (days_before, user_phone))
+    conn.commit()
+    conn.close()
+
+    label = "amanhã" if days_before == 1 else f"{days_before} dias antes"
+    return f"Configurado! Vou te avisar {label} dos seus compromissos e faturas 🔔"
+
+
+@tool
 def get_salary_cycle(user_phone: str) -> str:
     """
     Retorna o status completo do ciclo de salário atual.
@@ -2276,7 +2310,7 @@ def will_i_have_leftover(user_phone: str) -> str:
 
     # Gastos fixos ativos (que vencem este ciclo)
     cur.execute(
-        "SELECT name, amount_cents FROM recurring_expenses WHERE user_id = ? AND is_active = 1",
+        "SELECT name, amount_cents FROM recurring_transactions WHERE user_id = ? AND active = 1",
         (user_id,)
     )
     recurring = cur.fetchall()
@@ -2632,8 +2666,25 @@ Pra começar, qual é o seu nome?"
 
    ETAPA C — Após receber a renda (ou pulo explícito com "pular", "não sei", "depois"):
    - Se informou renda: chame update_user_income(user_phone=<user_phone>, monthly_income=<valor em reais>)
-     O retorno do tool já contém a mensagem de boas-vindas formatada. Envie ela ao usuário substituindo [nome] pelo nome real.
-   - Se pulou sem informar renda: envie diretamente:
+     Após confirmar OK na tool, envie EXATAMENTE este texto (substitua [nome] pelo nome real):
+"Tudo certo, [nome]! 🎉 Pode me mandar seus gastos assim:
+
+💸 *Gastos do dia a dia:*
+• _"almocei 35 no Restaurante Talentos — PIX"_
+• _"mercado 120 no Supermercado Deville — débito"_
+• _"uber 18 pro aeroporto — débito"_
+
+💳 *Compras no cartão:*
+• _"comprei tênis 300 no Nubank"_
+• _"notebook 3000 em 6x no Inter"_
+
+📊 *Ver como está:*
+• _"como tá meu mês?"_
+• _"posso comprar um tênis de 200?"_
+
+Digite *ajuda* a qualquer hora pra ver tudo que sei fazer 🎯"
+
+   - Se pulou sem informar renda: envie EXATAMENTE este texto (substitua [nome] pelo nome real):
 "Tudo certo, [nome]! 🎉 Pode me mandar seus gastos assim:
 
 💸 *Gastos do dia a dia:*
@@ -2719,6 +2770,16 @@ Responda com este menu formatado — sem chamar nenhum tool:
 • "ver minhas metas"
 
 *Dica:* fale natural — não precisa de comando exato 😊"
+
+REGRA — DATA DA TRANSAÇÃO:
+Se o usuário indicar uma data diferente de hoje, passe occurred_at com a data correta em formato YYYY-MM-DD.
+Você conhece a data atual pelo contexto — use-a para calcular:
+- "ontem" → data de ontem (hoje - 1 dia)
+- "anteontem" → hoje - 2 dias
+- "sexta" / "segunda" → última ocorrência desse dia da semana
+- "dia 10" / "no dia 5" → dia específico do mês atual (ou anterior se já passou)
+- Sem referência de data → não informe occurred_at (usa hoje automaticamente)
+Exemplos: "gastei ontem 30" → occurred_at="2026-03-02" | "comprei na sexta" → occurred_at="2026-02-27"
 
 REGRA CRÍTICA — SALVAR SEM PEDIR CONFIRMAÇÃO:
 Sempre que o usuário informar valor + qualquer contexto (item, local, categoria), salve IMEDIATAMENTE.
@@ -2823,6 +2884,15 @@ Ver gastos fixos: "quais meus gastos fixos?" / "minhas contas mensais" / "meus c
 Cancelar gasto fixo: "cancelei a Netflix" / "quitei o parcela do carro" / "não tenho mais academia"
 → deactivate_recurring(user_phone=<user_phone>, name="Netflix")
 
+## LEMBRETES DE COMPROMISSOS
+
+O ATLAS envia lembretes automáticos de gastos fixos e faturas de cartão antes do vencimento.
+Por padrão, avisa 3 dias antes. O usuário pode configurar:
+
+- "quero lembrete 2 dias antes" / "me avisa com 5 dias de antecedência" / "avisa 1 dia antes" / "lembrete no dia anterior":
+    set_reminder_days(user_phone=<user_phone>, days_before=<número>)
+    Confirme: "Configurado! Vou te avisar X dia(s) antes dos seus compromissos 🔔"
+
 ## CICLO DE SALÁRIO (CLT / PF)
 
 - "meu salário é todo dia X" / "recebo no dia X" / "salário cai dia X":
@@ -2847,7 +2917,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=6,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days],
     add_datetime_to_context=True,
     markdown=True,
 )
@@ -2884,6 +2954,72 @@ app.build_middleware_stack()
 # ============================================================
 # HEALTH CHECK
 # ============================================================
+
+@app.get("/v1/reminders/daily")
+def get_daily_reminders():
+    """
+    Retorna lista de lembretes a enviar hoje.
+    Chamado pelo cron job do n8n diariamente às 9h BRT.
+    Retorna: {"reminders": [{"phone": "+55...", "message": "...", "user_id": "..."}], "count": N}
+    """
+    today = _now_br()
+    today_day = today.day
+    days_in_month = calendar.monthrange(today.year, today.month)[1]
+
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    # Apenas usuários que completaram o onboarding (tem renda cadastrada)
+    cur.execute(
+        "SELECT id, phone, name, reminder_days_before FROM users WHERE name != 'Usuário' AND monthly_income_cents > 0",
+    )
+    users = cur.fetchall()
+
+    results = []
+
+    for user_id, phone, name, reminder_days in users:
+        reminder_days = reminder_days or 3
+
+        # Dia alvo = hoje + reminder_days (com rollover de mês)
+        target_day = today_day + reminder_days
+        if target_day > days_in_month:
+            target_day = target_day - days_in_month
+
+        items = []
+
+        # Gastos fixos com vencimento no dia alvo
+        cur.execute(
+            "SELECT name, amount_cents FROM recurring_transactions WHERE user_id = ? AND active = 1 AND day_of_month = ?",
+            (user_id, target_day)
+        )
+        for rec_name, amount_cents in cur.fetchall():
+            items.append(f"📋 {rec_name} — R${amount_cents/100:.2f}")
+
+        # Faturas de cartão com vencimento no dia alvo
+        cur.execute(
+            "SELECT id, name, closing_day, current_bill_opening_cents FROM credit_cards WHERE user_id = ? AND due_day = ?",
+            (user_id, target_day)
+        )
+        for card_id, card_name, closing_day, opening_cents in cur.fetchall():
+            period_start = _bill_period_start(closing_day)
+            cur.execute(
+                "SELECT SUM(amount_cents) FROM transactions WHERE user_id = ? AND card_id = ? AND occurred_at >= ?",
+                (user_id, card_id, period_start)
+            )
+            new_purchases = cur.fetchone()[0] or 0
+            bill_total = (opening_cents or 0) + new_purchases
+            if bill_total > 0:
+                items.append(f"💳 Fatura {card_name} — R${bill_total/100:.2f}")
+
+        if items:
+            days_label = "amanhã" if reminder_days == 1 else f"em {reminder_days} dias"
+            header = f"🔔 Oi, {name}! Seus compromissos que vencem {days_label} (dia {target_day:02d}):"
+            message = header + "\n\n" + "\n".join(items) + "\n\nJá planejou? 😊"
+            results.append({"phone": phone, "message": message, "user_id": user_id})
+
+    conn.close()
+    return {"reminders": results, "date": today.strftime("%Y-%m-%d"), "count": len(results)}
+
 
 @app.get("/health")
 def health_check():
