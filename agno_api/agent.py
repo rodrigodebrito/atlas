@@ -347,14 +347,20 @@ def save_transaction(
     if installments > 1 and total_amount_cents == 0:
         total_amount_cents = amount_cents * installments
 
-    # Resolve card_id
+    # Resolve card_id — cria cartão automaticamente se não existir
     card_id = None
     if card_name:
         card = _find_card(cur, user_id, card_name)
         if card:
             card_id = card[0]
-            if not payment_method:
-                payment_method = "CREDIT"
+        else:
+            card_id = str(uuid.uuid4())
+            cur.execute(
+                "INSERT INTO credit_cards (id, user_id, name, closing_day, due_day) VALUES (?, ?, ?, 0, 0)",
+                (card_id, user_id, card_name)
+            )
+        if not payment_method:
+            payment_method = "CREDIT"
 
     tx_id = str(uuid.uuid4())
     now = _now_br().isoformat()
@@ -1041,6 +1047,45 @@ def close_bill(user_phone: str, card_name: str) -> str:
     conn.commit()
     conn.close()
     return f"Fatura do {card[1]} zerada! Novo ciclo iniciado."
+
+
+@tool
+def set_card_bill(user_phone: str, card_name: str, amount: float) -> str:
+    """
+    Define ou atualiza o valor atual da fatura de um cartão.
+    Usar quando usuário disser:
+    - "minha fatura do Nubank está em 1300"
+    - "altere a fatura do Inter para 800"
+    - "o Itaú tem 2500 de fatura"
+    Cria o cartão automaticamente se não existir.
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "ERRO: usuário não encontrado."
+
+    amount_cents = round(amount * 100)
+    card = _find_card(cur, user_id, card_name)
+
+    if card:
+        cur.execute(
+            "UPDATE credit_cards SET current_bill_opening_cents = ? WHERE id = ?",
+            (amount_cents, card[0])
+        )
+        name = card[1]
+    else:
+        card_id = str(uuid.uuid4())
+        cur.execute(
+            "INSERT INTO credit_cards (id, user_id, name, closing_day, due_day, current_bill_opening_cents) VALUES (?, ?, ?, 0, 0, ?)",
+            (card_id, user_id, card_name, amount_cents)
+        )
+        name = card_name
+
+    conn.commit()
+    conn.close()
+    return f"Fatura do {name} registrada: R${amount:.2f}."
 
 
 @tool
@@ -2702,39 +2747,32 @@ Ao corrigir parcelamento, passe APENAS installments — o valor total é calcula
 
 ## CARTÕES DE CRÉDITO
 
-Cadastrar cartão:
-REGRA CRÍTICA: NUNCA invente nome, dia de fechamento, vencimento ou limite. NUNCA assuma valores padrão.
-Quando usuário quiser cadastrar cartão, pergunte TUDO DE UMA VEZ em uma única mensagem:
+REGRA FUNDAMENTAL: cartões são criados AUTOMATICAMENTE quando o usuário menciona o nome num gasto.
+NUNCA peça para o usuário cadastrar um cartão antes de lançar um gasto.
+NUNCA invente nome, limite ou data de fechamento.
 
-"Para cadastrar seu cartão, me informe:
-1️⃣ Nome do cartão (ex: Nubank, Itaú, Inter)
-2️⃣ Dia de fechamento da fatura
-3️⃣ Dia de vencimento
-4️⃣ Limite total em reais (pode pular)
-5️⃣ Fatura já acumulada antes do ATLAS (pode pular)"
-
-Só chame register_card(...) após receber pelo menos nome + fechamento + vencimento do usuário.
-Se usuário informar tudo junto ("Itaú fecha 14 vence 20 limite 4000 fatura 1380") → register_card imediatamente.
-Se fatura não informada → current_bill=0. Se limite não informado → limit=0.
-
-Gasto no cartão: "comprei X no Nubank" / "gastei 300 no Inter" / "parcelei no Bradesco"
+Gasto no cartão: quando usuário mencionar nome de cartão no gasto
 → save_transaction(..., card_name="Nubank")
-   Se cartão informado mas não cadastrado: "Você tem o [nome] cadastrado? Me passa o dia de fechamento e limite pra eu rastrear a fatura."
+→ O cartão é criado automaticamente. Confirme normalmente: "Anotado! R$300 em Vestuário — Nike Store (Nubank)."
+Exemplos: "gastei 300 no Nubank" / "comprei tênis 300 em 3x no Inter" / "parcelei 1200 em 6x no Itaú"
 
-Ver faturas: "como estão minhas faturas?" / "fatura do Nubank" / "quanto está no cartão?"
+Ver faturas: "fatura do Nubank" / "quanto está no cartão?" / "meus cartões"
 → get_cards(user_phone=<user_phone>)
 
-Pagar fatura: "paguei a fatura do Nubank" / "quitei o Inter" / "paguei o cartão"
+Atualizar valor da fatura atual: "minha fatura do Nubank está em 1.300" / "altere a fatura do Inter para 800" / "o Itaú tem 2.500 de fatura"
+→ set_card_bill(user_phone=<user_phone>, card_name="Nubank", amount=1300)
+Use quando usuário quiser registrar/corrigir o valor atual da fatura.
+
+Registrar fatura de meses futuros: "em abril tenho 400 no Nubank" / "maio Inter 150"
+→ set_future_bill(user_phone=<user_phone>, card_name="Nubank", bill_month="2026-04", amount=400)
+   Múltiplos meses → chame set_future_bill UMA VEZ POR MÊS.
+
+Pagar fatura: "paguei o Nubank" / "quitei o Inter" / "paguei o cartão"
 → close_bill(user_phone=<user_phone>, card_name="Nubank")
 
-Próxima fatura: "quanto vai ser minha próxima fatura do Nubank?" / "o que cai no mês que vem no Inter?" / "próxima fatura"
-→ get_next_bill(user_phone=<user_phone>, card_name="Nubank")
-
-Registrar compromissos pré-existentes no cartão (faturas já acumuladas ANTES do ATLAS):
-"minha fatura de abril no Nubank já está em 400" / "em maio tenho 150 no Inter" / "Nubank: março 500, abril 400, maio 150"
-→ set_future_bill(user_phone=<user_phone>, card_name="Nubank", bill_month="2026-04", amount=400)
-   Se o usuário informar múltiplos meses de uma vez, chame set_future_bill UMA VEZ POR MÊS.
-   bill_month sempre no formato YYYY-MM (ex: "2026-04").
+Configuração avançada (opcional — só se usuário pedir):
+"Nubank fecha dia 25 vence dia 10 limite 5000" → register_card(user_phone=<user_phone>, name="Nubank", closing_day=25, due_day=10, limit=5000)
+Use register_card APENAS quando usuário explicitamente quiser configurar fechamento/vencimento/limite.
 
 ## GASTOS FIXOS / RECORRENTES
 
@@ -2773,7 +2811,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=6,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill],
     add_datetime_to_context=True,
     markdown=True,
 )
