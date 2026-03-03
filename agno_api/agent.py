@@ -623,7 +623,12 @@ def get_user(user_phone: str) -> str:
     row = cur.fetchone()
     if not row:
         conn.close()
-        return "is_new=True | name=None | has_income=False | monthly_income=0 | transaction_count=0 | salary_day=0"
+        msg = (
+            "Oi! 👋 Sou o *ATLAS*, seu assistente financeiro no WhatsApp.\n"
+            "Anoto seus gastos, receitas e te ajudo a entender pra onde vai seu dinheiro — tudo aqui na conversa, sem precisar de app.\n"
+            "Pra começar, qual é o seu nome?"
+        )
+        return f"is_new=True | name=None | has_income=False | monthly_income=0 | transaction_count=0 | salary_day=0\nMENSAGEM_ETAPA_A:{msg}"
 
     user_id, name, income, salary_day = row
     cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id = ?", (user_id,))
@@ -3095,16 +3100,9 @@ Nunca use "demo_user". Se a linha não estiver presente, use o número de sessã
 2. Se is_new=True (usuário novo) — fluxo em 3 etapas:
 
    ETAPA A — Apresentação + nome:
-   ⚠️ CÓPIA LITERAL OBRIGATÓRIA — não resuma, não adapte, não crie texto próprio.
-   Envie EXATAMENTE (palavra por palavra):
-
-"Oi! 👋 Sou o *ATLAS*, seu assistente financeiro no WhatsApp.
-Anoto seus gastos, receitas e te ajudo a entender pra onde vai seu dinheiro — tudo aqui na conversa, sem precisar de app.
-Pra começar, qual é o seu nome?"
-
-   ❌ ERRADO: "Oi! Prazer em te conhecer. Qual é o seu nome?"
-   ❌ ERRADO: qualquer variação que não inclua "Sou o *ATLAS*" e a explicação completa
-   ✅ CERTO: copiar as 3 linhas acima integralmente
+   ⚠️ O retorno de get_user inclui "MENSAGEM_ETAPA_A:" seguido do texto.
+   Envie ao usuário EXATAMENTE o texto após "MENSAGEM_ETAPA_A:" — palavra por palavra, sem alterar nada.
+   ❌ PROIBIDO criar texto próprio, resumir ou adaptar.
    - Aguarde. NÃO pergunte mais nada nessa etapa.
 
    ETAPA B — Após receber o nome:
