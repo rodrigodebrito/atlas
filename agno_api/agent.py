@@ -1026,10 +1026,11 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
 @tool
 def get_transactions(user_phone: str, date: str = "", month: str = "") -> str:
     """
-    Lista transações individuais com merchant, valor e categoria.
-    date: data específica no formato YYYY-MM-DD (ex: hoje = data atual)
-    month: mês no formato YYYY-MM (ex: 2026-03)
-    Se nenhum informado, usa hoje.
+    Lista TODAS as transações de um dia ou mês específico — SEM filtro por estabelecimento.
+    Use SOMENTE quando o usuário pedir uma lista geral (ex: "todas as transações de março").
+    NUNCA use quando o usuário mencionar um estabelecimento/loja/app específico —
+    nesses casos use get_transactions_by_merchant.
+    date: data específica YYYY-MM-DD | month: mês YYYY-MM | sem parâmetro: usa hoje.
     """
     conn = _get_conn()
     cur = conn.cursor()
@@ -1134,10 +1135,12 @@ def get_transactions_by_merchant(
     month: str = "",
 ) -> str:
     """
-    Filtra transações pelo nome do estabelecimento (busca parcial, case-insensitive).
-    Responde: "quanto gastei no Talentos?", "o que comprei na Nike?", "iFood esse mês?"
-    merchant_query: parte do nome — ex: "talentos", "ifood", "herbalife"
-    month: YYYY-MM para filtrar por mês (padrão = todos os meses, máx 20 resultados)
+    USE SEMPRE que o usuário mencionar um estabelecimento, loja, restaurante, app ou serviço específico.
+    Exemplos: "Deville", "iFood", "Uber", "Talentos", "Herbalife", "Amazon", "Nubank", "Netflix".
+    Detecta menções como: "quanto gastei no X", "gastos no X", "o que comprei na X",
+    "me mostra o X", "X esse mês", "X essa semana", "histórico do X".
+    merchant_query: nome parcial do estabelecimento (busca case-insensitive).
+    month: YYYY-MM para filtrar por mês (opcional).
     """
     conn = _get_conn()
     cur = conn.cursor()
