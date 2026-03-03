@@ -788,6 +788,34 @@ def update_last_transaction(
 
 
 @tool
+def delete_last_transaction(user_phone: str) -> str:
+    """
+    Apaga a última transação registrada pelo usuário.
+    Use quando o usuário disser 'apaga', 'cancela', 'exclui', 'foi erro', 'não era isso'.
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "Nenhuma transação encontrada."
+    cur.execute(
+        "SELECT id, amount_cents, category, merchant FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+        (user_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return "Nenhuma transação para apagar."
+    tx_id, amount_cents, category, merchant = row
+    cur.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+    conn.commit()
+    conn.close()
+    merchant_info = f" ({merchant})" if merchant else ""
+    return f"OK — R${amount_cents/100:.2f} {category}{merchant_info} apagado."
+
+
+@tool
 def get_today_total(user_phone: str) -> str:
     """Retorna o total gasto hoje."""
     today = _now_br().strftime("%Y-%m-%d")
@@ -2548,7 +2576,7 @@ Formato em 3 linhas:
 - Linha 3: data no formato DD/MM/YYYY + entre parênteses "hoje" / "ontem" / dia da semana se relevante
 - Se método explícito (PIX, débito, dinheiro): adicionar na linha 3 após  •
 - Se valor ≥ R$200 e sem mencionar parcelamento: adicionar linha extra: _À vista — foi parcelado? É só falar._
-- NÃO adicione perguntas ou sugestões após confirmar.
+- Última linha SEMPRE: _Errou? → "corrige" ou "apaga"_
 
 ## FORMATO: ADD_EXPENSE (parcelado)
 
@@ -2556,8 +2584,8 @@ Formato em 3 linhas:
 ✅ *R$100,00/mês × 3x* — Vestuário
 📍 Nike Store  •  Nubank  •  _R$300,00 total_
 📅 03/03/2026 (hoje)
+_Errou? → "corrige" ou "apaga"_
 ```
-- NÃO adicione perguntas ou sugestões após confirmar.
 
 ## FORMATO: ADD_INCOME
 
@@ -2565,16 +2593,16 @@ Formato em 3 linhas:
 💰 *R$13.000,00* registrado — Salário
 ```
 + UMA linha de contexto opcional curta: "Boa! Mês começa bem 💪" / "Freela chegou! 🎉" (varie, às vezes omita)
-- NÃO adicione perguntas ou sugestões após confirmar.
 
 ## FORMATO: MÚLTIPLOS GASTOS (quando salvar vários de uma vez)
 
-Liste todos em bloco compacto — sem perguntas no final:
+Liste todos em bloco compacto + dica no final:
 ```
 ✅ Anotados!
 • *R$30,00* Alimentação — Talentos
 • *R$85,00* Saúde — Vacina cachorro
 • *R$65,00* Alimentação — Supermercado
+_Errou algum? → "corrige" ou "apaga"_
 ```
 
 ## INSIGHT CONTEXTUAL (opcional, 1 linha máximo)
@@ -2912,11 +2940,18 @@ Pergunte primeiro: "R$18 em quê?" — salve só após a resposta.
 - "minhas parcelas" / "quanto tenho parcelado": get_installments_summary(user_phone=<user_phone>)
 
 ## CORREÇÕES
+
+### APAGAR último gasto
+Quando usuário disser "apaga", "cancela", "exclui", "foi erro", "não era isso", "apaga esse":
+1. Chame delete_last_transaction(user_phone=<user_phone>)
+2. Confirme em UMA linha: "✅ Apagado! R$X [categoria] removido."
+NÃO peça confirmação antes — apague direto.
+
+### EDITAR último gasto
 Quando usuário disser "espera", "errei", "corrige", "na verdade", "foi parcelado", "foi no débito", "o local era X":
-1. Chame get_last_transaction(user_phone=<user_phone>) para ver o que foi registrado
-2. Confirme em UMA linha: "Vou corrigir [o que muda]. Pode ser?"
-3. Chame update_last_transaction(user_phone=<user_phone>, <apenas os campos a corrigir>)
-4. Confirme a correção em UMA linha
+1. Chame update_last_transaction(user_phone=<user_phone>, <apenas os campos a corrigir>)
+2. Confirme a correção em UMA linha: "✅ Corrigido! [o que mudou]."
+NÃO chame get_last_transaction antes — corrija direto quando o campo for claro.
 
 Campos que update_last_transaction suporta:
 - installments → corrige parcelamento (recalcula parcela automaticamente)
@@ -2926,6 +2961,7 @@ Campos que update_last_transaction suporta:
 - merchant → nome do local/estabelecimento
 
 Exemplos:
+- "apaga" → delete_last_transaction(user_phone=<user_phone>)
 - "foi parcelado em 6x" → update_last_transaction(user_phone=<user_phone>, installments=6)
 - "foi no débito" → update_last_transaction(user_phone=<user_phone>, payment_method="DEBIT")
 - "foi 150 não 200" → update_last_transaction(user_phone=<user_phone>, amount=150)
@@ -3020,7 +3056,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=6,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, delete_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days],
     add_datetime_to_context=True,
     markdown=True,
 )
