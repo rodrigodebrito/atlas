@@ -250,10 +250,10 @@ if DB_TYPE == "postgres":
 # ============================================================
 
 def get_model():
-    return OpenAIChat(id="gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY"))
+    return OpenAIChat(id="gpt-5-mini", api_key=os.getenv("OPENAI_API_KEY"))
 
 def get_fast_model():
-    return OpenAIChat(id="gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY"))
+    return OpenAIChat(id="gpt-5-mini", api_key=os.getenv("OPENAI_API_KEY"))
 
 # ============================================================
 # TOOLS FINANCEIRAS — leitura/escrita no banco
@@ -3687,7 +3687,7 @@ def health_check():
         "service": "atlas-agno-api",
         "db": DB_TYPE,
         "agents": ["atlas", "parse_agent", "response_agent"],
-        "model": "gpt-4.1-mini",
+        "model": "gpt-5-mini",
     }
 
 
