@@ -1127,6 +1127,81 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
     return "\n".join(lines)
 
 
+@tool
+def get_transactions_by_merchant(
+    user_phone: str,
+    merchant_query: str,
+    month: str = "",
+) -> str:
+    """
+    Filtra transações pelo nome do estabelecimento (busca parcial, case-insensitive).
+    Responde: "quanto gastei no Talentos?", "o que comprei na Nike?", "iFood esse mês?"
+    merchant_query: parte do nome — ex: "talentos", "ifood", "herbalife"
+    month: YYYY-MM para filtrar por mês (padrão = todos os meses, máx 20 resultados)
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return "Nenhuma transação encontrada."
+    user_id = row[0]
+
+    query_like = f"%{merchant_query.lower()}%"
+
+    if month:
+        cur.execute(
+            """SELECT type, category, amount_cents, merchant, occurred_at
+               FROM transactions
+               WHERE user_id = ? AND LOWER(merchant) LIKE ? AND occurred_at LIKE ?
+               ORDER BY occurred_at DESC""",
+            (user_id, query_like, f"{month}%"),
+        )
+    else:
+        cur.execute(
+            """SELECT type, category, amount_cents, merchant, occurred_at
+               FROM transactions
+               WHERE user_id = ? AND LOWER(merchant) LIKE ?
+               ORDER BY occurred_at DESC
+               LIMIT 20""",
+            (user_id, query_like),
+        )
+    rows = cur.fetchall()
+    conn.close()
+
+    period = f" em {month}" if month else ""
+    if not rows:
+        return f"Nenhuma transação com \"{merchant_query}\"{period}."
+
+    total_expense = sum(r[2] for r in rows if r[0] == "EXPENSE")
+    total_income  = sum(r[2] for r in rows if r[0] == "INCOME")
+    n = len(rows)
+
+    merchant_display = rows[0][3] or merchant_query  # nome real da primeira ocorrência
+    header = f"🔍 *{merchant_display}*{period} — {n} lançamento{'s' if n > 1 else ''}"
+    if total_expense:
+        header += f"\n💸 Gasto total: *R${total_expense/100:,.2f}*".replace(",", ".")
+    if total_income:
+        header += f"\n💰 Recebido: *R${total_income/100:,.2f}*".replace(",", ".")
+
+    lines = [header, ""]
+    months_pt = ["", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
+                 "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+    for tx_type, cat, amt, merch, occurred in rows:
+        try:
+            d = occurred[:10]
+            day, m_num = int(d[8:10]), int(d[5:7])
+            date_str = f"{day:02d}/{months_pt[m_num]}"
+        except Exception:
+            date_str = occurred[:10]
+        icon = "💰" if tx_type == "INCOME" else "💸"
+        lines.append(f"  {icon} R${amt/100:,.2f} — {cat}  •  {date_str}".replace(",", "."))
+
+    return "\n".join(lines)
+
+
 # ============================================================
 # HELPERS — cartões e recorrentes
 # ============================================================
@@ -3307,6 +3382,10 @@ OUTROS:
 - "como evoluí?" / "comparado ao mês passado" → get_month_comparison(user_phone=<user_phone>)
 - Detalhes / lista de transações → get_transactions(user_phone=<user_phone>, date="YYYY-MM-DD") ou get_transactions(user_phone=<user_phone>, month="YYYY-MM")
 - "onde gastei em X?" / "detalhes de [categoria]" → get_category_breakdown(user_phone=<user_phone>, category="<categoria>")
+- "quanto gastei no [estabelecimento]?" / "o que comprei na [loja]?" / "iFood esse mês?" / "histórico do [lugar]":
+    → get_transactions_by_merchant(user_phone=<user_phone>, merchant_query="<nome>")
+    → Se mencionar mês: get_transactions_by_merchant(user_phone=<user_phone>, merchant_query="<nome>", month="YYYY-MM")
+    Exemplos: "Talentos" / "iFood" / "Herbalife" / "Nike" / "Nubank"
 - "minhas parcelas" / "quanto tenho parcelado" → get_installments_summary(user_phone=<user_phone>)
 
 COMPROMISSOS FUTUROS:
