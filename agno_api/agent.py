@@ -1802,25 +1802,22 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     Resumo da semana atual (segunda a hoje) com lançamentos por categoria.
     filter_type: "ALL" (padrão), "EXPENSE" (só gastos), "INCOME" (só receitas).
     """
-    try:
-        return _get_week_summary_impl(user_phone, filter_type)
-    except Exception as e:
-        import traceback
-        return f"ERRO_DEBUG: {type(e).__name__}: {e}\n{traceback.format_exc()[-500:]}"
-
-
-def _get_week_summary_impl(user_phone: str, filter_type: str = "ALL") -> str:
     from collections import defaultdict
     today = _now_br()
     days_since_monday = today.weekday()
-    start_of_week = (today - timedelta(days=days_since_monday)).strftime("%Y-%m-%d")
     today_str = today.strftime("%Y-%m-%d")
-    start_label = f"{start_of_week[8:10]}/{start_of_week[5:7]}"
-    end_label = f"{today_str[8:10]}/{today_str[5:7]}"
+    start_label = (today - timedelta(days=days_since_monday)).strftime("%d/%m")
+    end_label = today.strftime("%d/%m")
     days_elapsed = days_since_monday + 1
 
     current_month = today.strftime("%Y-%m")
     days_in_month = 30
+
+    # Gera os dias da semana (segunda até hoje) como strings YYYY-MM-DD
+    week_dates = [
+        (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        for i in range(days_since_monday, -1, -1)
+    ]
 
     conn = _get_conn()
     cur = conn.cursor()
@@ -1832,13 +1829,17 @@ def _get_week_summary_impl(user_phone: str, filter_type: str = "ALL") -> str:
         return "Nenhum dado encontrado."
     user_id, user_name = row
 
+    # Usa LIKE para cada dia (mesmo padrão que get_today_total — funciona em SQLite e PostgreSQL)
+    date_conditions = " OR ".join(["occurred_at LIKE ?" for _ in week_dates])
+    date_params = tuple(f"{d}%" for d in week_dates)
+
     type_filter = "" if filter_type == "ALL" else f"AND type = '{filter_type}'"
     cur.execute(
         f"""SELECT type, category, merchant, amount_cents
            FROM transactions
-           WHERE user_id = ? {type_filter} AND occurred_at >= ?
+           WHERE user_id = ? {type_filter} AND ({date_conditions})
            ORDER BY amount_cents DESC""",
-        (user_id, f"{start_of_week}T00:00:00"),
+        (user_id,) + date_params,
     )
     tx_rows = cur.fetchall()
 
