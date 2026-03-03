@@ -20,24 +20,28 @@ Sem app para baixar. Sem planilha para abrir. Sem fricção.
 
 | Feature | Status |
 |---|---|
-| Onboarding (nome + renda) | ✅ |
+| Onboarding automático — usa nome do WhatsApp, sem perguntar | ✅ |
 | Registrar gastos e receitas em linguagem natural | ✅ |
-| Categorização automática (iFood → Alimentação, Uber → Transporte...) | ✅ |
+| Categorização automática (iFood → Alimentação, Uber → Transporte, vet → Pets...) | ✅ |
+| **Categoria Pets 🐾** — vet, ração, petshop, banho/tosa | ✅ |
 | Categorização de renda por fonte (Salário, Freelance, Aluguel, Investimentos...) | ✅ |
 | Parcelamento — registra parcela + total, inferência automática | ✅ |
-| Correção da última transação ("foi parcelado em 10x") | ✅ |
-| Total do dia | ✅ |
-| Resumo mensal com fontes de renda separadas | ✅ |
-| Comparativo mês atual vs anterior com alertas de alta | ✅ |
-| Resumo semanal com alertas de ritmo | ✅ |
+| Correção/exclusão da última transação ("corrige" / "apaga") | ✅ |
+| Total do dia (filtro: só gastos / só receitas / tudo) | ✅ |
+| Últimos N dias ("gastos dos últimos 3 dias", "ontem e hoje") | ✅ |
+| Resumo semanal com lançamentos por categoria | ✅ |
+| Resumo mensal com lançamentos individuais por categoria | ✅ |
+| Filtro por tipo em todos os resumos (EXPENSE / INCOME / ALL) | ✅ |
+| Comparativo mês atual vs anterior | ✅ |
+| Alertas de ritmo semanal (compara contra mês anterior — sem falso positivo) | ✅ |
+| Compromissos futuros (gastos fixos + faturas nos próximos N dias) | ✅ |
 | Detalhes de transações por data ou mês | ✅ |
-| Resumo de parcelas ativas com compromisso total | ✅ |
+| Resumo de parcelas ativas com compromisso total restante | ✅ |
 | "Posso comprar?" com 4 veredictos (✅ / ⚠️ / ⏳ / 🚫) | ✅ |
-| "Posso comprar?" usa receitas reais do mês como renda | ✅ |
 | Metas financeiras com barra de progresso | ✅ |
 | Score mensal de saúde financeira (0-100, grau A+ a F) | ✅ |
-| Sugestões contextuais após cada ação | ✅ |
-| Memória de conversa (últimas 10 interações) | ✅ |
+| Memória de conversa por sessão | ✅ |
+| Manual mobile-friendly em `/manual` | ✅ |
 
 ---
 
@@ -46,13 +50,13 @@ Sem app para baixar. Sem planilha para abrir. Sem fricção.
 ```
 WhatsApp (usuário)
     ↓
-Evolution API          ← recebe mensagens WhatsApp
+Chatwoot            ← recebe e envia mensagens WhatsApp
     ↓
-n8n                    ← orquestração do pipeline
+n8n                 ← orquestração do pipeline (inclui nome do usuário no header)
     ↓
-ATLAS Agno API         ← agente LLM + tools financeiras
+ATLAS Agno API      ← agente LLM + tools financeiras (Render)
     ↓
-PostgreSQL             ← usuários, transações, metas
+PostgreSQL          ← usuários, transações, cartões, fixos, metas
 ```
 
 ### Agentes
@@ -63,23 +67,30 @@ PostgreSQL             ← usuários, transações, metas
 | `parse_agent` | Interpreta mensagens → JSON estruturado (pipeline n8n) |
 | `response_agent` | Gera resposta em PT-BR informal (pipeline n8n) |
 
-### Tools financeiras (18)
+### Tools financeiras
 
 | Tool | O que faz |
 |---|---|
-| `get_user` | Retorna dados do usuário (novo, nome, renda, has_income) |
-| `update_user_name` | Salva nome no onboarding |
+| `get_user` | Retorna dados do usuário; se novo, retorna `__status:new_user` |
+| `update_user_name` | Salva nome (extraído do perfil WhatsApp via n8n) |
 | `update_user_income` | Salva renda mensal estimada |
-| `save_transaction` | Registra gasto ou receita (suporta parcelamento) |
+| `save_transaction` | Registra gasto ou receita (suporta parcelamento); retorna texto formatado pronto |
 | `get_last_transaction` | Retorna última transação registrada |
 | `update_last_transaction` | Corrige última transação (parcelas, categoria, valor, pagamento) |
-| `get_today_total` | Total gasto hoje |
+| `delete_last_transaction` | Apaga a última transação registrada |
+| `get_today_total` | Total do dia ou dos últimos N dias, por categoria, com filtro de tipo |
 | `get_transactions` | Lista transações por data ou mês |
 | `get_installments_summary` | Parcelas ativas com compromisso total restante |
-| `get_month_summary` | Resumo mensal com fontes de renda e gastos por categoria |
-| `get_month_comparison` | Comparativo mês atual vs anterior com alertas |
-| `get_week_summary` | Resumo semanal com alertas de ritmo |
+| `get_month_summary` | Resumo mensal com lançamentos individuais por categoria + filtro de tipo |
+| `get_month_comparison` | Comparativo mês atual vs anterior |
+| `get_week_summary` | Resumo semanal por categoria + alertas contra mês anterior |
+| `get_upcoming_commitments` | Compromissos futuros (fixos + faturas) nos próximos N dias |
 | `can_i_buy` | Analisa se pode fazer uma compra (usa renda real do mês) |
+| `get_cards` | Lista cartões cadastrados |
+| `get_card_bill` | Fatura atual de um cartão |
+| `pay_card_bill` | Registra pagamento de fatura |
+| `add_recurring_transaction` | Cadastra gasto fixo recorrente |
+| `get_recurring_transactions` | Lista gastos fixos |
 | `create_goal` | Cria meta financeira |
 | `get_goals` | Lista metas com barra de progresso |
 | `add_to_goal` | Adiciona valor a uma meta |
@@ -87,25 +98,43 @@ PostgreSQL             ← usuários, transações, metas
 
 ---
 
-## Lógica de parcelamento
+## Onboarding
 
-O agente infere automaticamente sem perguntar:
+O n8n passa `[user_name: Nome Sobrenome]` no header de cada mensagem ao agente. No primeiro contato:
+
+1. `get_user` detecta `is_new=True` → retorna `__status:new_user`
+2. Agente extrai o primeiro nome do header, chama `update_user_name` automaticamente
+3. Envia apresentação do ATLAS já com o nome + pergunta de renda
+4. Sem etapa de "qual é o seu nome?" — experiência fluida desde a primeira mensagem
+
+---
+
+## Categorias de gasto
+
+| Emoji | Categoria | Exemplos |
+|---|---|---|
+| 🍽️ | Alimentação | restaurante, mercado, iFood, delivery |
+| 🚗 | Transporte | uber, combustível, ônibus, estacionamento |
+| 💊 | Saúde | farmácia, consulta, exame, plano de saúde |
+| 🏠 | Moradia | aluguel, condomínio, energia, água, internet |
+| 🎮 | Lazer | cinema, viagem, bar, Netflix, jogos |
+| 📱 | Assinaturas | Spotify, streaming, apps recorrentes |
+| 📚 | Educação | curso, livro, escola, faculdade |
+| 👟 | Vestuário | roupa, tênis, acessórios |
+| 📈 | Investimento | aportes, previdência |
+| 🐾 | **Pets** | vet, remédio animal, ração, petshop, banho/tosa |
+| 📦 | Outros | tudo que não se encaixa acima |
+
+---
+
+## Lógica de parcelamento
 
 | O usuário diz | ATLAS faz |
 |---|---|
 | "em 12x", "parcelei em 6x" | Registra parcelado direto |
 | "à vista", "no débito", "no Pix" | Registra à vista direto |
 | "no cartão" + valor ≥ R$200 | Pergunta se foi parcelado |
-| Sem mencionar pagamento | Registra à vista, avisa se valor ≥ R$200 |
-
-Fluxo de correção:
-```
-"gastei 1200 no mercado"
-→ Anotado! R$1.200 em Alimentação — à vista. Foi parcelado?
-
-"foi em 3x"
-→ OK — corrigido: 3x de R$400,00 (R$1.200 total)
-```
+| Sem mencionar pagamento | Registra à vista |
 
 ---
 
@@ -115,6 +144,8 @@ Fluxo de correção:
 - **Agno** — framework de agentes LLM com AgentOS (FastAPI)
 - **OpenAI GPT-4.1-mini** — modelo principal
 - **SQLite** (local) / **PostgreSQL** (produção no Render)
+- **Chatwoot** — inbox WhatsApp
+- **n8n** — orquestração do pipeline
 - **Agent UI** — frontend Next.js para testes
 
 ---
@@ -173,11 +204,6 @@ OPENAI_API_KEY=sk-...
 
 # Produção (Render) — sem esta variável usa SQLite local
 DATABASE_URL=postgresql://user:password@host/db
-
-# Futuro
-REDIS_URL=redis://localhost:6379
-EVOLUTION_API_URL=https://...
-EVOLUTION_API_KEY=...
 ```
 
 ---
@@ -191,9 +217,12 @@ EVOLUTION_API_KEY=...
 ### Tabelas
 
 ```
-users                  — cadastro, nome, renda mensal estimada
-transactions           — gastos e receitas (suporta parcelamento)
-financial_goals        — metas com progresso
+users                    — cadastro, nome, renda mensal, dia do salário
+transactions             — gastos e receitas (suporta parcelamento e cartão)
+credit_cards             — cartões com fechamento, vencimento e limite
+recurring_transactions   — gastos fixos recorrentes por dia do mês
+card_bill_snapshots      — histórico de faturas por cartão/mês
+financial_goals          — metas com progresso
 ```
 
 ### Schema de transactions
@@ -206,47 +235,52 @@ amount_cents          INTEGER        -- valor da parcela (ou total se à vista)
 total_amount_cents    INTEGER        -- valor total da compra
 installments          INTEGER        -- número de parcelas (1 = à vista)
 installment_number    INTEGER        -- parcela atual
-category              TEXT
-merchant              TEXT
+category              TEXT           -- inclui Pets 🐾
+merchant              TEXT           -- estabelecimento (filtrável no futuro)
 payment_method        TEXT           -- CREDIT | DEBIT | PIX | CASH | TED
+card_id               TEXT           -- FK credit_cards (nullable)
 notes                 TEXT
-occurred_at           TEXT           -- ISO 8601 local
+occurred_at           TEXT           -- ISO 8601 local (UTC-3)
 ```
 
 ---
 
 ## Score de Saúde Financeira (AFHS)
 
-Nota 0-100, graus A+ / A / B+ / B / C+ / C / D / F.
+Nota 0-100, graus A+ / A / B+ / B / C / D / F.
 
 | Componente | Peso | Cálculo |
 |---|---|---|
-| Taxa de poupança | 35% | % da renda guardada (meta: 20%+) |
-| Consistência | 25% | Dias com registro / dias do mês |
-| Metas | 20% | Progresso médio nas metas ativas |
-| Controle do orçamento | 20% | Ficou dentro da renda? |
+| Taxa de poupança | 30% | % da renda guardada (meta: 20%+) |
+| Consistência | 20% | Dias com registro / dias do mês |
+| Adesão às metas | 25% | Progresso médio nas metas ativas |
+| Volatilidade | 15% | Variação de gastos vs mês anterior |
+| Dívidas/fixos | 10% | % da renda comprometida com fixos |
 
 ---
 
 ## Roadmap
 
-### Fase 1 — Beta (próximo passo)
-- [ ] Deploy no Render + PostgreSQL
-- [ ] Evolution API + número WhatsApp dedicado
-- [ ] Pipeline n8n completo
+### Fase 1 — MVP em teste (atual)
+- [x] Deploy Render + PostgreSQL
+- [x] Pipeline n8n + Chatwoot
+- [x] Onboarding com nome do WhatsApp
+- [x] Resumos diário / semanal / mensal com categorias detalhadas
+- [x] Categoria Pets, filtro por tipo, últimos N dias
+- [x] Cartões de crédito + gastos fixos + compromissos futuros
 - [ ] 50 usuários beta
 
 ### Fase 2 — Produto
 - [ ] Alertas proativos (APScheduler)
-- [ ] Gastos fixos recorrentes
+- [ ] Indicador "digitando..." no WhatsApp durante processamento
 - [ ] Card mensal compartilhável (PNG)
 - [ ] Score histórico mês a mês
-- [ ] Cobrança via Mercado Pago (Pix no WhatsApp)
-- [ ] Rate limiting (anti-ban WhatsApp)
+- [ ] Filtro por estabelecimento ("quanto gastei no Talentos?")
+- [ ] Cobrança via Pix (Mercado Pago)
 - [ ] Plano Fundador R$9,90 (primeiros 100 usuários)
 
 ### Fase 3 — Escala
-- [ ] Open Finance via Pluggy/Belvo (input zero, ~200 usuários Pro)
+- [ ] Open Finance via Pluggy/Belvo (input zero)
 - [ ] Registro no BCB como Iniciador de Pagamentos
 - [ ] ATLAS Score como alternativa ao Serasa para MEI
 
