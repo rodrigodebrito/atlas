@@ -1968,7 +1968,13 @@ def get_upcoming_commitments(user_phone: str, days: int = 60, month: str = "") -
         snap_row = cur.fetchone()
         snapshot_cents = snap_row[0] if snap_row else 0
 
-        bill_total = (opening_cents or 0) + new_purchases + snapshot_cents
+        # Snapshot (set_future_bill) substitui opening_cents para evitar dupla contagem.
+        # opening_cents = valor na época do cadastro; snapshot = valor pré-existente declarado pelo usuário.
+        # Se ambos existirem para o mesmo mês, o snapshot é a fonte mais recente.
+        if snapshot_cents > 0:
+            bill_total = snapshot_cents + new_purchases
+        else:
+            bill_total = (opening_cents or 0) + new_purchases
 
         # Fallback: se bill_total = 0, busca o valor no gasto recorrente vinculado a este cartão
         if bill_total == 0:
@@ -3109,6 +3115,7 @@ NUNCA adicione após a resposta:
 - "Quer adicionar mais algum gasto?"
 - "Quer que eu te lembre quando a data estiver próxima?"
 - "Quer que eu verifique algo específico para abril?"
+- "Quer que eu faça isso?"
 - "Claro! Estou aqui para ajudar sempre que precisar."
 - Sugestões ("Você pode também...", "Que tal...")
 - Ofertas de ajuda ("Se precisar de mais...", "Estou aqui para...")
@@ -3414,6 +3421,7 @@ PROIBIDO após qualquer ação (consulta, registro, cadastro de cartão, etc.):
 - "Quer que eu separe por categoria?"
 - "Quer ver o total?"
 - "Quer que eu verifique algo específico para abril?"
+- "Quer que eu faça isso?"
 - "Gostaria de ver mais?"
 - "Posso mostrar...?"
 - "Claro! Estou aqui para ajudar sempre que precisar."
@@ -3602,6 +3610,7 @@ LISTA DETALHADA: "todas as transações de março" / "transações do dia 10"
 "fatura do Nubank" / "meus cartões" → get_cards(user_phone)
 "minha fatura do Nubank está em 1.300" → set_card_bill(user_phone, card_name="Nubank", amount=1300)
 "em abril tenho 400 no Nubank" → set_future_bill(user_phone, card_name="Nubank", bill_month="2026-04", amount=400)
+"a fatura do ML em abril é 887" / "está errado, a fatura é 887" → set_future_bill imediatamente, sem pedir confirmação
 "paguei o Nubank" → close_bill(user_phone, card_name="Nubank")
 "Nubank fecha 25 vence 10" → register_card(user_phone, name="Nubank", closing_day=25, due_day=10)
 "próxima fatura do Inter" → get_next_bill(user_phone, card_name="Inter")
