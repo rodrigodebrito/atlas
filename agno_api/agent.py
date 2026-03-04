@@ -3618,7 +3618,7 @@ statement_agent = Agent(
     name="statement_analyzer",
     description="Parser de faturas de cartão — extrai e classifica transações de imagens.",
     instructions=STATEMENT_INSTRUCTIONS,
-    model=OpenAIChat(id="gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY")),
+    model=OpenAIChat(id="gpt-4o", api_key=os.getenv("OPENAI_API_KEY")),
     response_model=StatementParseResult,
 )
 
@@ -4295,7 +4295,7 @@ async def parse_statement_endpoint(
             import json as _json_pdf
             _oai = _openai_lib.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             completion = await _oai.chat.completions.create(
-                model="gpt-4.1-mini",
+                model="gpt-4o",
                 messages=[{
                     "role": "user",
                     "content": [
