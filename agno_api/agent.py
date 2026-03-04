@@ -250,10 +250,10 @@ if DB_TYPE == "postgres":
 # ============================================================
 
 def get_model():
-    return OpenAIChat(id="gpt-5-mini", api_key=os.getenv("OPENAI_API_KEY"))
+    return OpenAIChat(id="gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY"))
 
 def get_fast_model():
-    return OpenAIChat(id="gpt-5-mini", api_key=os.getenv("OPENAI_API_KEY"))
+    return OpenAIChat(id="gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY"))
 
 # ============================================================
 # TOOLS FINANCEIRAS — leitura/escrita no banco
@@ -1023,9 +1023,9 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     return "\n".join(lines)
 
 
-@tool(description="Lista TODAS as transações de um dia ou mês — SEM filtro por loja. NUNCA usar quando o usuário mencionar nome de estabelecimento, loja ou app (ex: Deville, iFood, Uber) — nesses casos usar get_transactions_by_merchant. Usar apenas para listar transações gerais: 'todas as transações de março', 'lista do dia 10'.")
+@tool(description="Lista TODAS as transações de um período (dia ou mês). Use SOMENTE quando o usuário pede transações genéricas sem mencionar loja, app ou estabelecimento específico. Exemplos corretos: 'me mostra as transações de hoje', 'extrato de março', 'o que gastei essa semana', 'minhas compras de fevereiro'. NUNCA use quando o usuário mencionar um nome específico (Deville, iFood, Uber, Netflix, etc.) — nesses casos use get_transactions_by_merchant.")
 def get_transactions(user_phone: str, date: str = "", month: str = "") -> str:
-    """date: YYYY-MM-DD | month: YYYY-MM | sem parâmetro: usa hoje."""
+    """Lista transações por data ou mês. date=YYYY-MM-DD, month=YYYY-MM."""
     conn = _get_conn()
     cur = conn.cursor()
 
@@ -1037,6 +1037,7 @@ def get_transactions(user_phone: str, date: str = "", month: str = "") -> str:
 
     user_id = row[0]
 
+    # Lista flat por período
     if month:
         prefix = month
         label = month
@@ -1122,7 +1123,7 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
     return "\n".join(lines)
 
 
-@tool(description="USAR SEMPRE que o usuário mencionar um estabelecimento, loja, restaurante, app ou serviço específico pelo nome. Exemplos de queries: 'quanto gastei no Deville?', 'gastos no iFood esse mês', 'o que comprei na Nike?', 'me mostra o Talentos', 'Herbalife esse mês', 'histórico do Uber'. merchant_query = nome parcial (ex: 'deville', 'ifood'). month = YYYY-MM opcional.")
+@tool(description="Filtra transações por nome de estabelecimento, loja, restaurante, app ou serviço. Use SEMPRE que o usuário mencionar um nome específico. Exemplos: 'quanto gastei no Deville?' → merchant_query='Deville'. 'gastos no iFood esse mês' → merchant_query='iFood', month='2026-03'. 'me mostra o Talentos' → merchant_query='Talentos'. 'histórico do Uber' → merchant_query='Uber'. 'Netflix esse mês' → merchant_query='Netflix'. merchant_query = nome do estabelecimento (busca parcial, case-insensitive).")
 def get_transactions_by_merchant(
     user_phone: str,
     merchant_query: str,
@@ -3554,7 +3555,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=6,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, delete_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, delete_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments],
     add_datetime_to_context=True,
     markdown=True,
 )
