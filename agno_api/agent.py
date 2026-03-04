@@ -148,6 +148,7 @@ def _init_sqlite_tables():
         "ALTER TABLE users ADD COLUMN reminder_days_before INTEGER DEFAULT 3",
         "ALTER TABLE transactions ADD COLUMN card_id TEXT DEFAULT NULL",
         "ALTER TABLE transactions ADD COLUMN installment_group_id TEXT DEFAULT NULL",
+        "ALTER TABLE transactions ADD COLUMN import_source TEXT DEFAULT NULL",
     ]:
         try:
             conn.execute(migration)
@@ -259,6 +260,7 @@ def _init_postgres_tables():
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_days_before INTEGER DEFAULT 3",
         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS card_id TEXT DEFAULT NULL",
         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS installment_group_id TEXT DEFAULT NULL",
+        "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS import_source TEXT DEFAULT NULL",
     ]:
         try:
             cur.execute(migration)
@@ -4534,20 +4536,40 @@ async def import_statement_endpoint(
     # Importa cada transação
     imported = 0
     skipped = 0
+    potential_duplicates = []
+    import_source = f"fatura:{det_card}:{bill_month}"
+
     for tx in transactions:
         try:
             amount_cents = round(tx["amount"] * 100)
             if amount_cents <= 0:
                 skipped += 1
                 continue
-            # Verifica duplicata grosseira (mesmo merchant, valor, data)
+
+            # 1. Duplicata exata: mesmo merchant (case-insensitive) + valor + data
             cur.execute(
-                "SELECT id FROM transactions WHERE user_id=? AND merchant=? AND amount_cents=? AND occurred_at LIKE ?",
+                "SELECT id FROM transactions WHERE user_id=? AND LOWER(merchant)=LOWER(?) AND amount_cents=? AND occurred_at LIKE ?",
                 (user_id, tx["merchant"], amount_cents, f"{tx['date']}%")
             )
             if cur.fetchone():
                 skipped += 1
                 continue
+
+            # 2. Provável duplicata: mesmo valor + mesma data, merchant diferente, sem card_id (lançamento manual)
+            cur.execute(
+                "SELECT id, merchant FROM transactions WHERE user_id=? AND amount_cents=? AND occurred_at LIKE ? AND card_id IS NULL",
+                (user_id, amount_cents, f"{tx['date']}%")
+            )
+            dup_row = cur.fetchone()
+            if dup_row:
+                potential_duplicates.append({
+                    "fatura": tx["merchant"],
+                    "atlas": dup_row[1],
+                    "amount": tx["amount"],
+                    "date": tx["date"],
+                })
+                # importa mesmo assim, mas marca como possível duplicata
+
             tx_id = str(uuid.uuid4())
             inst_total, inst_num = 1, 1
             if tx.get("installment") and "/" in tx["installment"]:
@@ -4560,13 +4582,13 @@ async def import_statement_endpoint(
             cur.execute(
                 """INSERT INTO transactions
                    (id, user_id, type, amount_cents, total_amount_cents, installments, installment_number,
-                    category, merchant, payment_method, occurred_at, card_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    category, merchant, payment_method, occurred_at, card_id, import_source)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (tx_id, user_id, "EXPENSE", amount_cents,
                  amount_cents * inst_total if inst_total > 1 else 0,
                  inst_total, inst_num,
                  tx["category"], tx["merchant"], "CREDIT",
-                 tx["date"] + "T12:00:00", card_id)
+                 tx["date"] + "T12:00:00", card_id, import_source)
             )
             imported += 1
         except Exception:
@@ -4586,14 +4608,25 @@ async def import_statement_endpoint(
     except Exception:
         mo_label = bill_month
 
-    skip_note = f" ({skipped} ignoradas — duplicatas ou valor zero)" if skipped else ""
+    card_link = f" _(vinculadas ao cartão {det_card})_" if card_id else f" _(cartão '{det_card}' não cadastrado — sem vínculo)_"
+    skip_note = f"\n{skipped} ignoradas (duplicatas exatas ou valor zero)." if skipped else ""
+
+    dup_note = ""
+    if potential_duplicates:
+        dup_note = f"\n\n⚠️ *{len(potential_duplicates)} possível(eis) duplicata(s)* com lançamentos manuais:"
+        for d in potential_duplicates[:5]:
+            dup_note += f"\n  • {d['fatura']} vs '{d['atlas']}' — R${d['amount']:,.2f} em {d['date']}".replace(",", ".")
+        dup_note += "\n_Verifique e delete manualmente se necessário._"
+
     return {
         "message": (
-            f"✅ *{imported} transações importadas* da fatura {det_card} de {mo_label}!{skip_note}\n"
+            f"✅ *{imported} transações importadas*{card_link}{skip_note}{dup_note}\n\n"
+            f"Origem salva: `{import_source}`\n"
             f"Pergunte _\"como tá meu mês?\"_ para ver o resumo atualizado."
         ),
         "imported": imported,
         "skipped": skipped,
+        "potential_duplicates": len(potential_duplicates),
     }
 
 
