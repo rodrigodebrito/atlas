@@ -525,7 +525,7 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
 
     user_id, user_name = row
 
-    # Totals per category
+    # Totals per type (for income)
     cur.execute(
         """SELECT type, category, SUM(amount_cents) as total
            FROM transactions
@@ -536,12 +536,15 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     )
     rows = cur.fetchall()
 
-    # Individual transactions per expense category
+    # Individual transactions com JOIN em credit_cards para diferenciar crédito de caixa
     cur.execute(
-        """SELECT category, merchant, amount_cents, occurred_at
-           FROM transactions
-           WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?
-           ORDER BY category, amount_cents DESC""",
+        """SELECT t.category, t.merchant, t.amount_cents, t.occurred_at,
+                  t.card_id, t.installments, t.installment_number,
+                  c.name as card_name, c.closing_day, c.due_day
+           FROM transactions t
+           LEFT JOIN credit_cards c ON t.card_id = c.id
+           WHERE t.user_id = ? AND t.type = 'EXPENSE' AND t.occurred_at LIKE ?
+           ORDER BY t.category, t.amount_cents DESC""",
         (user_id, f"{month}%"),
     )
     tx_rows = cur.fetchall()
@@ -560,7 +563,12 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
 
     income = sum(r[2] for r in rows if r[0] == "INCOME")
     expenses = sum(r[2] for r in rows if r[0] == "EXPENSE")
-    balance = income - expenses
+
+    # Separa gastos em caixa (débito/PIX/dinheiro) e crédito (cartão)
+    # card_id IS NULL → caixa (sai do banco agora)
+    # card_id NOT NULL → crédito (sai do banco quando a fatura vencer)
+    cash_expenses = 0
+    credit_expenses = 0
 
     # Month label
     months_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
@@ -583,12 +591,27 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         except Exception:
             pass
 
-    # Group individual transactions by category
+    # Group individual transactions by category, anotando crédito
     from collections import defaultdict
     cat_txs: dict = defaultdict(list)
-    for cat, merchant, amount, occurred in tx_rows:
+    for cat, merchant, amount, occurred, card_id, inst_total, inst_num, card_name, closing_day, due_day in tx_rows:
         label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
-        cat_txs[cat].append((label, amount))
+        if card_id:
+            # Crédito — calcula mês de vencimento da fatura
+            credit_expenses += amount
+            if closing_day and due_day:
+                due_month = _compute_due_month(occurred, closing_day, due_day)
+                due_lbl = _month_label_pt(due_month)
+            else:
+                due_lbl = "?"
+            short_card = card_name.split()[0] if card_name else "cartão"
+            inst_suffix = f" ({inst_num}/{inst_total})" if inst_total and inst_total > 1 else ""
+            item = f"• {label}: R${amount/100:,.2f}{inst_suffix} 💳 fat. {short_card} ({due_lbl})".replace(",", ".")
+        else:
+            # Caixa / débito / PIX
+            cash_expenses += amount
+            item = f"• {label}: R${amount/100:,.2f}".replace(",", ".")
+        cat_txs[cat].append((amount, item))
 
     # Category emoji map
     cat_emoji = {
@@ -597,6 +620,9 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         "Educação": "📚", "Vestuário": "👟", "Investimento": "📈",
         "Outros": "📦",
     }
+
+    # Saldo: apenas caixa (crédito sai do banco quando a fatura vencer)
+    balance = income - cash_expenses
 
     # Filter type label
     filter_label = {"EXPENSE": " — apenas gastos", "INCOME": " — apenas receitas", "ALL": ""}.get(filter_type, "")
@@ -611,10 +637,18 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
             pct = total / expenses * 100 if expenses else 0
             emoji = cat_emoji.get(cat, "💸")
             lines.append(f"{emoji} *{cat}* — R${total/100:,.2f} ({pct:.0f}%)".replace(",", "."))
-            for label, amt in cat_txs.get(cat, []):
-                lines.append(f"  • {label}: R${amt/100:,.2f}".replace(",", "."))
+            for _amt, item_line in sorted(cat_txs.get(cat, []), key=lambda x: -x[0]):
+                lines.append(f"  {item_line}")
             lines.append("")
-        lines.append(f"💸 *Total gasto: R${expenses/100:,.2f}*".replace(",", "."))
+
+        # Total gasto com breakdown caixa vs crédito
+        if credit_expenses > 0:
+            lines.append(
+                f"💸 *Total gasto: R${expenses/100:,.2f}*"
+                f"  (R${cash_expenses/100:,.2f} à vista · R${credit_expenses/100:,.2f} 💳 crédito)".replace(",", ".")
+            )
+        else:
+            lines.append(f"💸 *Total gasto: R${expenses/100:,.2f}*".replace(",", "."))
 
     if filter_type in ("ALL", "INCOME") and income_rows_detail:
         lines.append("")
@@ -623,7 +657,18 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         lines.append(f"💰 *Total recebido: R${income/100:,.2f}*".replace(",", "."))
 
     if filter_type == "ALL":
-        lines.append(f"{'✅' if balance >= 0 else '⚠️'} Saldo: *R${balance/100:,.2f}*".replace(",", "."))
+        if credit_expenses > 0:
+            lines.append(f"{'✅' if balance >= 0 else '⚠️'} *Saldo (caixa): R${balance/100:,.2f}*".replace(",", "."))
+        else:
+            lines.append(f"{'✅' if balance >= 0 else '⚠️'} Saldo: *R${balance/100:,.2f}*".replace(",", "."))
+
+    # Nenhuma receita lançada
+    if filter_type == "ALL" and income == 0:
+        try:
+            _mo_lbl = months_pt[m_num].lower()
+        except Exception:
+            _mo_lbl = month
+        lines.append(f"Você ainda não lançou receitas em {_mo_lbl}.")
 
     # Largest category for model insight
     top_rows = expense_rows if filter_type in ("ALL", "EXPENSE") else income_rows_detail
@@ -1021,14 +1066,18 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
 
     user_id, user_name = row
 
-    date_conditions = " OR ".join(["occurred_at LIKE ?" for _ in date_list])
+    date_conditions = " OR ".join(["t.occurred_at LIKE ?" for _ in date_list])
     date_params = tuple(f"{d}%" for d in date_list)
 
-    type_filter = "" if filter_type == "ALL" else f"AND type = '{filter_type}'"
+    type_filter = "" if filter_type == "ALL" else f"AND t.type = '{filter_type}'"
     cur.execute(
-        f"""SELECT type, category, merchant, amount_cents FROM transactions
-           WHERE user_id = ? {type_filter} AND ({date_conditions})
-           ORDER BY amount_cents DESC""",
+        f"""SELECT t.type, t.category, t.merchant, t.amount_cents,
+                   t.card_id, t.occurred_at, t.installments, t.installment_number,
+                   c.name as card_name, c.closing_day, c.due_day
+            FROM transactions t
+            LEFT JOIN credit_cards c ON t.card_id = c.id
+            WHERE t.user_id = ? {type_filter} AND ({date_conditions})
+            ORDER BY t.amount_cents DESC""",
         (user_id,) + date_params,
     )
     rows = cur.fetchall()
@@ -1046,15 +1095,46 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
         "Pets": "🐾", "Outros": "📦",
     }
 
-    # Separate by type
-    exp_rows = [(r[1], r[2], r[3]) for r in rows if r[0] == "EXPENSE"]
+    # Separate by type; include card info for expenses
+    exp_rows = [r for r in rows if r[0] == "EXPENSE"]
     inc_rows = [(r[1], r[2], r[3]) for r in rows if r[0] == "INCOME"]
 
     filter_label = {"EXPENSE": " — apenas gastos", "INCOME": " — apenas receitas", "ALL": ""}.get(filter_type, "")
     lines = [f"*{user_name}*, suas movimentações — {period_label}{filter_label}:"]
     lines.append("")
 
-    def build_cat_block(tx_list, ref_total):
+    def build_exp_block(tx_list, ref_total):
+        cat_totals: dict = defaultdict(int)
+        cat_txs: dict = defaultdict(list)
+        cash_total = 0
+        credit_total = 0
+        for _, cat, merchant, amount, card_id, occurred, inst_total, inst_num, card_name, closing_day, due_day in tx_list:
+            cat_totals[cat] += amount
+            label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
+            if card_id:
+                credit_total += amount
+                if closing_day and due_day:
+                    due_lbl = _month_label_pt(_compute_due_month(occurred, closing_day, due_day))
+                else:
+                    due_lbl = "?"
+                short_card = card_name.split()[0] if card_name else "cartão"
+                inst_suffix = f" ({inst_num}/{inst_total})" if inst_total and inst_total > 1 else ""
+                item = f"• {label}: R${amount/100:,.2f}{inst_suffix} 💳 fat. {short_card} ({due_lbl})".replace(",", ".")
+            else:
+                cash_total += amount
+                item = f"• {label}: R${amount/100:,.2f}".replace(",", ".")
+            cat_txs[cat].append((amount, item))
+        result = []
+        for cat, total_cat in sorted(cat_totals.items(), key=lambda x: -x[1]):
+            pct = total_cat / ref_total * 100 if ref_total else 0
+            emoji = cat_emoji.get(cat, "💸")
+            result.append(f"{emoji} *{cat}* — R${total_cat/100:,.2f} ({pct:.0f}%)".replace(",", "."))
+            for _amt, item_line in sorted(cat_txs[cat], key=lambda x: -x[0]):
+                result.append(f"  {item_line}")
+            result.append("")
+        return cat_totals, result, cash_total, credit_total
+
+    def build_inc_block(tx_list, ref_total):
         cat_totals: dict = defaultdict(int)
         cat_txs: dict = defaultdict(list)
         for cat, merchant, amount in tx_list:
@@ -1064,8 +1144,7 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
         result = []
         for cat, total_cat in sorted(cat_totals.items(), key=lambda x: -x[1]):
             pct = total_cat / ref_total * 100 if ref_total else 0
-            emoji = cat_emoji.get(cat, "💸")
-            result.append(f"{emoji} *{cat}* — R${total_cat/100:,.2f} ({pct:.0f}%)".replace(",", "."))
+            result.append(f"💰 *{cat}* — R${total_cat/100:,.2f} ({pct:.0f}%)".replace(",", "."))
             for label, amt in cat_txs[cat]:
                 result.append(f"  • {label}: R${amt/100:,.2f}".replace(",", "."))
             result.append("")
@@ -1074,10 +1153,16 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     top_cat_name, top_pct_val = "", 0.0
 
     if filter_type in ("ALL", "EXPENSE") and exp_rows:
-        total_exp = sum(r[2] for r in exp_rows)
-        cat_totals_exp, exp_block = build_cat_block(exp_rows, total_exp)
+        total_exp = sum(r[3] for r in exp_rows)
+        cat_totals_exp, exp_block, cash_tot, credit_tot = build_exp_block(exp_rows, total_exp)
         lines.extend(exp_block)
-        lines.append(f"💸 *Total gastos: R${total_exp/100:,.2f}*".replace(",", "."))
+        if credit_tot > 0:
+            lines.append(
+                f"💸 *Total gastos: R${total_exp/100:,.2f}*"
+                f"  (R${cash_tot/100:,.2f} à vista · R${credit_tot/100:,.2f} 💳 crédito)".replace(",", ".")
+            )
+        else:
+            lines.append(f"💸 *Total gastos: R${total_exp/100:,.2f}*".replace(",", "."))
         if cat_totals_exp:
             tc = max(cat_totals_exp, key=lambda x: cat_totals_exp[x])
             top_cat_name, top_pct_val = tc, cat_totals_exp[tc] / total_exp * 100
@@ -1085,7 +1170,7 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     if filter_type in ("ALL", "INCOME") and inc_rows:
         total_inc = sum(r[2] for r in inc_rows)
         lines.append("")
-        cat_totals_inc, inc_block = build_cat_block(inc_rows, total_inc)
+        cat_totals_inc, inc_block = build_inc_block(inc_rows, total_inc)
         lines.extend(inc_block)
         lines.append(f"💰 *Total recebido: R${total_inc/100:,.2f}*".replace(",", "."))
         if filter_type == "INCOME" and cat_totals_inc:
@@ -1281,6 +1366,39 @@ def get_transactions_by_merchant(
 # ============================================================
 # HELPERS — cartões e recorrentes
 # ============================================================
+
+def _compute_due_month(occurred_at_str: str, closing_day: int, due_day: int) -> str:
+    """Retorna 'YYYY-MM' do mês em que a fatura desta transação vence."""
+    try:
+        from datetime import date as _date
+        txn_date = _date.fromisoformat(occurred_at_str[:10])
+    except Exception:
+        return ""
+    # Em qual ciclo cai?
+    if txn_date.day <= closing_day:
+        close_yr, close_mo = txn_date.year, txn_date.month
+    else:
+        close_yr = txn_date.year + (1 if txn_date.month == 12 else 0)
+        close_mo = 1 if txn_date.month == 12 else txn_date.month + 1
+    # Quando vence este ciclo?
+    if due_day > closing_day:
+        return f"{close_yr}-{close_mo:02d}"
+    else:
+        due_yr = close_yr + (1 if close_mo == 12 else 0)
+        due_mo = 1 if close_mo == 12 else close_mo + 1
+        return f"{due_yr}-{due_mo:02d}"
+
+
+def _month_label_pt(year_month: str) -> str:
+    """'2026-04' → 'abr/26'"""
+    _months = ["jan", "fev", "mar", "abr", "mai", "jun",
+               "jul", "ago", "set", "out", "nov", "dez"]
+    try:
+        y, m = int(year_month[:4]), int(year_month[5:7])
+        return f"{_months[m - 1]}/{str(y)[2:]}"
+    except Exception:
+        return year_month
+
 
 def _get_user_id(cur, user_phone: str):
     cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
