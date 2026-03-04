@@ -15,6 +15,7 @@ import os
 import sqlite3
 import uuid
 import calendar
+import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -3688,7 +3689,9 @@ Para cada transação, identifique:
   Use "Indefinido" quando não tiver certeza razoável sobre a categoria.
 - confidence: número de 0.0 a 1.0 indicando sua confiança na categoria escolhida.
   Use < 0.6 quando o merchant for ambíguo (ex: nomes de pessoas, siglas, códigos).
-- installment: se parcelado, escreva "X/Y" (ex: "2/6"); se à vista, deixe ""
+- installment: se parcelado, escreva "X/Y" (ex: "2/6"); se à vista, deixe "".
+  ATENÇÃO: faturas mostram parcelas como "MERCHANT PARC 03/12", "MERCHANT 3/12", "MERCHANT P3/12",
+  "MERCHANT PARCELA 03 DE 12". Extraia o número da parcela atual e total nestes casos.
 
 REGRAS CRÍTICAS — DÉBITO vs CRÉDITO:
 - Faturas têm colunas DÉBITO e CRÉDITO. Valores na coluna CRÉDITO são estornos/devoluções.
@@ -4714,12 +4717,21 @@ async def import_statement_endpoint(
                     tx["confidence"] = 1.0
                     break
 
-    # Resolve card_id se o cartão estiver cadastrado
+    # Resolve card_id — busca cartão existente ou cria automaticamente
     card_id = None
-    cur.execute("SELECT id FROM credit_cards WHERE user_id=? AND LOWER(name) LIKE ?", (user_id, f"%{det_card.lower().split()[0]}%"))
-    card_row = cur.fetchone()
-    if card_row:
-        card_id = card_row[0]
+    card_created = False
+    if det_card:
+        card = _find_card(cur, user_id, det_card)
+        if card:
+            card_id = card[0]
+        else:
+            # Auto-cria cartão com dados da fatura (closing/due = 0, usuário ajusta depois)
+            card_id = str(uuid.uuid4())
+            cur.execute(
+                "INSERT INTO credit_cards (id, user_id, name, closing_day, due_day) VALUES (?, ?, ?, 0, 0)",
+                (card_id, user_id, det_card)
+            )
+            card_created = True
 
     # Importa cada transação
     imported = 0
@@ -4774,16 +4786,31 @@ async def import_statement_endpoint(
                     inst_total = int(parts[1])
                 except Exception:
                     pass
+
+            # Gera installment_group_id para parcelas — agrupa por merchant+total+mês
+            group_id = None
+            if inst_total > 1:
+                group_key = f"{user_id}:{tx['merchant'].upper()}:{inst_total}:{bill_month}"
+                group_id = hashlib.md5(group_key.encode()).hexdigest()[:16]
+
+            total_amount_cents = amount_cents * inst_total if inst_total > 1 else 0
+
+            # Confidence → notes para auditoria
+            conf = tx.get("confidence", 1.0)
+            notes = f"[conf:{conf:.1f}]" if conf < 1.0 else None
+
             cur.execute(
                 """INSERT INTO transactions
                    (id, user_id, type, amount_cents, total_amount_cents, installments, installment_number,
-                    category, merchant, payment_method, occurred_at, card_id, import_source)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    category, merchant, payment_method, occurred_at, card_id, import_source,
+                    installment_group_id, notes)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (tx_id, user_id, "EXPENSE", amount_cents,
-                 amount_cents * inst_total if inst_total > 1 else 0,
+                 total_amount_cents,
                  inst_total, inst_num,
                  tx["category"], tx["merchant"], "CREDIT",
-                 tx["date"] + "T12:00:00", card_id, import_source)
+                 tx["date"] + "T12:00:00", card_id, import_source,
+                 group_id, notes)
             )
             imported += 1
         except Exception:
@@ -4803,7 +4830,12 @@ async def import_statement_endpoint(
     except Exception:
         mo_label = bill_month
 
-    card_link = f" _(vinculadas ao cartão {det_card})_" if card_id else f" _(cartão '{det_card}' não cadastrado — sem vínculo)_"
+    if card_created:
+        card_link = f" _(cartão '{det_card}' criado automaticamente — ajuste fechamento/vencimento depois)_"
+    elif card_id:
+        card_link = f" _(vinculadas ao cartão {det_card})_"
+    else:
+        card_link = ""
     skip_note = f"\n{skipped} ignoradas (duplicatas exatas ou valor zero)." if skipped else ""
 
     dup_note = ""
