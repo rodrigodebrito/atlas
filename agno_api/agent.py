@@ -3612,6 +3612,9 @@ Regras:
 - Não invente transações — só extraia o que está claramente visível
 - Se não conseguir ler uma linha, pule-a
 - Detecte o nome do cartão e o mês/ano de referência da fatura
+
+Retorne APENAS JSON válido, sem texto adicional, neste formato exato:
+{"transactions":[{"date":"YYYY-MM-DD","merchant":"...","amount":0.0,"category":"...","installment":""}],"bill_month":"YYYY-MM","total":0.0,"card_name":"..."}
 """
 
 statement_agent = Agent(
@@ -3619,7 +3622,6 @@ statement_agent = Agent(
     description="Parser de faturas de cartão — extrai e classifica transações de imagens.",
     instructions=STATEMENT_INSTRUCTIONS,
     model=OpenAIChat(id="gpt-4o", api_key=os.getenv("OPENAI_API_KEY")),
-    response_model=StatementParseResult,
 )
 
 # ============================================================
@@ -4309,12 +4311,17 @@ async def parse_statement_endpoint(
             parsed = StatementParseResult.model_validate(_json_pdf.loads(raw_json))
         else:
             # Imagem: usa Agno statement_agent
+            import json as _json_img
             img_obj = _AgnoImage(base64_data=file_b64)
             result = await statement_agent.arun(
                 "Extraia todas as transações desta fatura de cartão de crédito.",
                 images=[img_obj],
             )
-            parsed: StatementParseResult = result.content
+            raw = result.content if isinstance(result.content, str) else str(result.content)
+            raw = raw.strip().strip("```").strip()
+            if raw.startswith("json"):
+                raw = raw[4:].strip()
+            parsed = StatementParseResult.model_validate(_json_img.loads(raw))
     except Exception as e:
         conn.close()
         err_type = "PDF" if is_pdf else "imagem"
