@@ -997,7 +997,14 @@ def get_last_transaction(user_phone: str) -> str:
     )
 
 
-@tool
+@tool(description="""Corrige a última transação registrada.
+Para corrigir parcelamento: passe APENAS installments (ex: installments=10).
+Para corrigir valor: passe APENAS amount com o valor TOTAL em reais (ex: amount=150).
+Para corrigir merchant/local: passe merchant (ex: merchant="Magazine Luiza").
+Para corrigir categoria: passe category (ex: category="Alimentação").
+Aceita qualquer categoria — padrão ou personalizada do usuário.
+⚠️ Se o usuário quer mudar a categoria de um ESTABELECIMENTO inteiro (ex: "Talentos é Lazer"),
+use update_merchant_category em vez desta — ela atualiza TODAS as transações do merchant.""")
 def update_last_transaction(
     user_phone: str,
     installments: int = 0,
@@ -1006,13 +1013,7 @@ def update_last_transaction(
     amount: float = 0,
     merchant: str = "",
 ) -> str:
-    """
-    Corrige a última transação registrada.
-    Para corrigir parcelamento: passe APENAS installments (ex: installments=10).
-    Para corrigir valor: passe APENAS amount com o valor TOTAL em reais (ex: amount=150).
-    Para corrigir merchant/local: passe merchant (ex: merchant="Magazine Luiza").
-    Para corrigir outros campos: passe payment_method ou category.
-    """
+    """Corrige a última transação registrada."""
     try:
         conn = _get_conn()
         cur = conn.cursor()
@@ -1093,13 +1094,10 @@ def update_last_transaction(
 @tool(description="""Atualiza a categoria de TODAS as transações de um estabelecimento e salva a regra para futuras importações.
 Use quando o usuário disser: "HELIO RODRIGUES é alimentação", "muda Talentos pra Lazer", "X é categoria Y".
 Isso atualiza TODAS as transações existentes desse merchant E memoriza para futuras faturas.
-Categorias válidas: Alimentação, Transporte, Saúde, Moradia, Lazer, Assinaturas, Educação, Vestuário, Investimento, Pets, Outros.""")
+Categorias padrão: Alimentação, Transporte, Saúde, Moradia, Lazer, Assinaturas, Educação, Vestuário, Investimento, Pets, Outros.
+O usuário também pode criar categorias personalizadas (ex: "Freelance", "Pix Pessoal", "Bebê").""")
 def update_merchant_category(user_phone: str, merchant_query: str, category: str) -> str:
     """Atualiza categoria de todas as transações de um merchant e salva regra."""
-    valid_cats = ["Alimentação", "Transporte", "Saúde", "Moradia", "Lazer",
-                  "Assinaturas", "Educação", "Vestuário", "Investimento", "Pets", "Outros"]
-    if category not in valid_cats:
-        return f"Categoria inválida. Use uma de: {', '.join(valid_cats)}"
 
     try:
         conn = _get_conn()
