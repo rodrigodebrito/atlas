@@ -17,7 +17,7 @@ import uuid
 import calendar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
@@ -128,6 +128,18 @@ def _init_sqlite_tables():
             created_at TEXT DEFAULT (datetime('now')),
             UNIQUE(card_id, bill_month)
         );
+
+        CREATE TABLE IF NOT EXISTS pending_statement_imports (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            card_name TEXT DEFAULT '',
+            bill_month TEXT DEFAULT '',
+            transactions_json TEXT NOT NULL,
+            insights TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            imported_at TEXT DEFAULT NULL,
+            expires_at TEXT NOT NULL
+        );
     """)
     conn.commit()
     # Migrations
@@ -229,6 +241,19 @@ def _init_postgres_tables():
             UNIQUE(card_id, bill_month)
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pending_statement_imports (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            card_name TEXT DEFAULT '',
+            bill_month TEXT DEFAULT '',
+            transactions_json TEXT NOT NULL,
+            insights TEXT DEFAULT '',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            imported_at TEXT DEFAULT NULL,
+            expires_at TEXT NOT NULL
+        )
+    """)
     # Migrations
     for migration in [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_days_before INTEGER DEFAULT 3",
@@ -256,6 +281,23 @@ def get_model():
 
 def get_fast_model():
     return OpenAIChat(id="gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY"))
+
+# ============================================================
+# MODELOS PYDANTIC — Statement Parser
+# ============================================================
+
+class ParsedTransaction(BaseModel):
+    date: str = Field(description="Data da compra YYYY-MM-DD")
+    merchant: str = Field(description="Nome do estabelecimento")
+    amount: float = Field(description="Valor em reais")
+    category: str = Field(description="Categoria ATLAS")
+    installment: str = Field(default="", description="Ex: '2/6' se parcelado, '' se à vista")
+
+class StatementParseResult(BaseModel):
+    transactions: List[ParsedTransaction] = Field(default_factory=list)
+    bill_month: str = Field(default="", description="Mês da fatura YYYY-MM")
+    total: float = Field(default=0.0, description="Total da fatura em reais")
+    card_name: str = Field(default="", description="Nome do cartão detectado na imagem")
 
 # ============================================================
 # TOOLS FINANCEIRAS — leitura/escrita no banco
@@ -3548,6 +3590,39 @@ response_agent = Agent(
 )
 
 # ============================================================
+# STATEMENT AGENT — Parser de faturas via visão
+# ============================================================
+
+STATEMENT_INSTRUCTIONS = """
+Você é um parser especializado em faturas de cartão de crédito brasileiras.
+
+Sua tarefa: extrair TODAS as transações visíveis na imagem da fatura.
+
+Para cada transação, identifique:
+- date: data da compra no formato YYYY-MM-DD (use o ano da fatura; se não houver ano, deduza pelo mês)
+- merchant: nome do estabelecimento exatamente como aparece na fatura
+- amount: valor em reais como número (ex: 89.90)
+- category: classifique em UMA das categorias:
+  Alimentação | Transporte | Saúde | Moradia | Lazer | Assinaturas | Educação | Vestuário | Investimento | Pets | Outros
+- installment: se parcelado, escreva "X/Y" (ex: "2/6"); se à vista, deixe ""
+
+Regras:
+- Ignore linhas de pagamento, crédito, ajuste ou saldo anterior
+- Se um valor parecer IOF ou encargo, coloque em "Outros"
+- Não invente transações — só extraia o que está claramente visível
+- Se não conseguir ler uma linha, pule-a
+- Detecte o nome do cartão e o mês/ano de referência da fatura
+"""
+
+statement_agent = Agent(
+    name="statement_analyzer",
+    description="Parser de faturas de cartão — extrai e classifica transações de imagens.",
+    instructions=STATEMENT_INSTRUCTIONS,
+    model=OpenAIChat(id="gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY")),
+    response_model=StatementParseResult,
+)
+
+# ============================================================
 # ATLAS AGENT — Conversacional com memória e banco
 # ============================================================
 
@@ -3899,6 +3974,26 @@ Só em casos evidentes (última parcela, compra grande, receita alta).
 Silêncio é melhor que comentário genérico. Nunca invente dados.
 
 ╔══════════════════════════════════════════════════════════════╗
+║  MODO MENTOR                                                ║
+╚══════════════════════════════════════════════════════════════╝
+
+Ative quando:
+- Usuário pede "análise dos meus gastos", "fala como mentor", "onde estou errando"
+- Usuário importa uma fatura (endpoint /v1/import-statement retorna resultado)
+- Usuário pede comparação de meses ("compara com mês passado")
+
+Tom e comportamento:
+- Consultor financeiro amigo: direto, sem julgamento, acionável
+- Frase de abertura: "Olhando seus gastos..." ou "Analisando sua fatura..."
+- Dê 1-2 insights específicos (não genéricos como "gaste menos")
+  ✅ "Você foi ao iFood 11x este mês — R$310. Equivale a 17% dos seus gastos."
+  ✅ "Alimentação subiu R$120 vs fevereiro — puxado pelo Supermercado Deville."
+  ❌ "Tente economizar em alimentação."
+- Compare com histórico quando disponível (use get_month_comparison)
+- Uma sugestão concreta no final, se cabível
+- NÃO faça perguntas ao final — entregue o diagnóstico completo e pare
+
+╔══════════════════════════════════════════════════════════════╗
 ║  CHECKLIST — REVISE ANTES DE ENVIAR                         ║
 ╚══════════════════════════════════════════════════════════════╝
 
@@ -4046,6 +4141,341 @@ def get_daily_reminders():
 
     conn.close()
     return {"reminders": results, "date": today.strftime("%Y-%m-%d"), "count": len(results)}
+
+
+# ============================================================
+# FATURA ANALYZER — parse + import endpoints
+# ============================================================
+
+from fastapi import Form as _Form
+
+def _generate_statement_insights(transactions: list, user_id: str, bill_month: str) -> str:
+    """Gera texto de insights do mentor a partir das transações parseadas."""
+    if not transactions:
+        return ""
+
+    cat_emoji = {
+        "Alimentação": "🍽️", "Transporte": "🚗", "Saúde": "💊",
+        "Moradia": "🏠", "Lazer": "🎮", "Assinaturas": "📱",
+        "Educação": "📚", "Vestuário": "👟", "Investimento": "📈",
+        "Pets": "🐾", "Outros": "📦",
+    }
+    from collections import defaultdict
+
+    # Agrupamentos
+    cat_totals: dict = defaultdict(float)
+    merchant_totals: dict = defaultdict(float)
+    for tx in transactions:
+        cat_totals[tx["category"]] += tx["amount"]
+        merchant_totals[tx["merchant"]] += tx["amount"]
+
+    total = sum(cat_totals.values())
+    top_merchants = sorted(merchant_totals.items(), key=lambda x: -x[1])[:3]
+    top_cats = sorted(cat_totals.items(), key=lambda x: -x[1])[:5]
+
+    # Comparação com histórico (últimos 3 meses)
+    history_lines = []
+    try:
+        conn = _get_conn()
+        cur = conn.cursor()
+        m_year, m_month = int(bill_month[:4]), int(bill_month[5:7])
+        for delta in [1, 2, 3]:
+            prev_mo = m_month - delta
+            prev_yr = m_year
+            if prev_mo <= 0:
+                prev_mo += 12
+                prev_yr -= 1
+            prev_str = f"{prev_yr}-{prev_mo:02d}"
+            cur.execute(
+                "SELECT SUM(amount_cents) FROM transactions WHERE user_id=? AND type='EXPENSE' AND occurred_at LIKE ?",
+                (user_id, f"{prev_str}%")
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                history_lines.append(row[0] / 100)
+        conn.close()
+    except Exception:
+        pass
+
+    # Monta o texto
+    _month_names = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"]
+    try:
+        mo_label = _month_names[int(bill_month[5:7]) - 1] + "/" + bill_month[2:4]
+    except Exception:
+        mo_label = bill_month
+
+    lines = [f"📊 *Fatura — {mo_label}*", ""]
+    lines.append(f"💸 *Total: R${total:,.2f}* em {len(transactions)} transações".replace(",", "."))
+    lines.append("")
+
+    if top_merchants:
+        lines.append("🏆 *Top estabelecimentos:*")
+        for i, (m, v) in enumerate(top_merchants, 1):
+            pct = v / total * 100 if total else 0
+            lines.append(f"  {i}. {m} — R${v:,.2f} ({pct:.0f}%)".replace(",", "."))
+        lines.append("")
+
+    lines.append("📂 *Por categoria:*")
+    for cat, val in top_cats:
+        pct = val / total * 100 if total else 0
+        emoji = cat_emoji.get(cat, "📦")
+        lines.append(f"  {emoji} {cat} — R${val:,.2f} ({pct:.0f}%)".replace(",", "."))
+    lines.append("")
+
+    if history_lines:
+        avg = sum(history_lines) / len(history_lines)
+        diff = total - avg
+        sign = "+" if diff >= 0 else ""
+        lines.append(f"📈 *vs. média dos últimos {len(history_lines)} meses:*")
+        lines.append(f"  Total: {sign}R${diff:,.2f} vs R${avg:,.2f} de média".replace(",", "."))
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+@app.post("/v1/parse-statement")
+async def parse_statement_endpoint(
+    user_phone: str = _Form(...),
+    image_url: str = _Form(""),
+    image_base64: str = _Form(""),
+    card_name: str = _Form(""),
+):
+    """
+    Recebe imagem de fatura (URL ou base64), extrai transações com visão e gera insights.
+    Retorna texto formatado para enviar ao usuário + import_id para confirmação.
+    """
+    import base64 as _b64
+    import httpx as _httpx
+    from agno.media import Image as _AgnoImage
+
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    # Resolve user_id
+    cur.execute("SELECT id FROM users WHERE phone=?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return {"error": "Usuário não encontrado.", "message": "Usuário não encontrado."}
+    user_id = row[0]
+
+    # Obtém a imagem como base64
+    img_b64 = image_base64
+    if not img_b64 and image_url:
+        try:
+            async with _httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(image_url)
+                resp.raise_for_status()
+                img_b64 = _b64.b64encode(resp.content).decode()
+                content_type = resp.headers.get("content-type", "image/jpeg")
+        except Exception as e:
+            conn.close()
+            return {"error": str(e), "message": "Não consegui baixar a imagem da fatura. Tente enviar novamente."}
+
+    if not img_b64:
+        conn.close()
+        return {"error": "Sem imagem.", "message": "Envie uma foto ou print da fatura."}
+
+    # Roda o statement_agent com visão
+    try:
+        img_obj = _AgnoImage(base64_data=img_b64)
+        result = await statement_agent.arun(
+            "Extraia todas as transações desta fatura de cartão de crédito.",
+            images=[img_obj],
+        )
+        parsed: StatementParseResult = result.content
+    except Exception as e:
+        conn.close()
+        return {"error": str(e), "message": "Não consegui analisar a imagem. Certifique-se que é um print claro da fatura."}
+
+    if not parsed.transactions:
+        conn.close()
+        return {"message": "Não encontrei transações nessa imagem. É um print da fatura do cartão?"}
+
+    # Usa card_name da imagem se não foi informado
+    detected_card = card_name or parsed.card_name or "cartão"
+    bill_month = parsed.bill_month or _now_br().strftime("%Y-%m")
+
+    # Gera insights
+    tx_dicts = [t.model_dump() for t in parsed.transactions]
+    insights_text = _generate_statement_insights(tx_dicts, user_id, bill_month)
+
+    # Salva pending import (TTL 30 min)
+    import_id = str(uuid.uuid4())
+    now_str = _now_br().strftime("%Y-%m-%dT%H:%M:%S")
+    expires_str = (_now_br() + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S")
+    import json as _json
+    cur.execute(
+        """INSERT INTO pending_statement_imports
+           (id, user_id, card_name, bill_month, transactions_json, insights, created_at, expires_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (import_id, user_id, detected_card, bill_month,
+         _json.dumps(tx_dicts, ensure_ascii=False), insights_text, now_str, expires_str)
+    )
+    conn.commit()
+    conn.close()
+
+    # Monta resposta final
+    n = len(parsed.transactions)
+    response_text = (
+        insights_text
+        + f"\nQuer importar essas *{n} transações* para o ATLAS?\n"
+        + f"Responda *importar* para confirmar. _(válido por 30 min)_"
+    )
+
+    return {
+        "message": response_text,
+        "import_id": import_id,
+        "transaction_count": n,
+        "bill_month": bill_month,
+        "card_name": detected_card,
+    }
+
+
+@app.post("/v1/import-statement")
+async def import_statement_endpoint(
+    user_phone: str = _Form(...),
+    import_id: str = _Form(""),
+):
+    """
+    Confirma a importação das transações de uma fatura parseada.
+    Se import_id não fornecido, usa o mais recente do usuário (nos últimos 30 min).
+    """
+    import json as _json
+
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id FROM users WHERE phone=?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return {"error": "Usuário não encontrado.", "message": "Usuário não encontrado."}
+    user_id = row[0]
+
+    now_str = _now_br().strftime("%Y-%m-%dT%H:%M:%S")
+
+    if import_id:
+        cur.execute(
+            "SELECT id, transactions_json, card_name, bill_month, imported_at, expires_at FROM pending_statement_imports WHERE id=? AND user_id=?",
+            (import_id, user_id)
+        )
+    else:
+        # Pega o mais recente ainda válido
+        cur.execute(
+            "SELECT id, transactions_json, card_name, bill_month, imported_at, expires_at FROM pending_statement_imports WHERE user_id=? AND imported_at IS NULL ORDER BY created_at DESC LIMIT 1",
+            (user_id,)
+        )
+    row = cur.fetchone()
+
+    if not row:
+        conn.close()
+        return {"message": "Nenhuma fatura pendente para importar. Envie o print novamente."}
+
+    imp_id, txns_json, det_card, bill_month, imported_at, expires_at = row
+
+    if imported_at:
+        conn.close()
+        return {"message": "Essas transações já foram importadas anteriormente."}
+
+    if now_str > expires_at:
+        conn.close()
+        return {"message": "O prazo para importar expirou (30 min). Envie o print da fatura novamente."}
+
+    transactions = _json.loads(txns_json)
+
+    # Resolve card_id se o cartão estiver cadastrado
+    card_id = None
+    cur.execute("SELECT id FROM credit_cards WHERE user_id=? AND LOWER(name) LIKE ?", (user_id, f"%{det_card.lower().split()[0]}%"))
+    card_row = cur.fetchone()
+    if card_row:
+        card_id = card_row[0]
+
+    # Importa cada transação
+    imported = 0
+    skipped = 0
+    for tx in transactions:
+        try:
+            amount_cents = round(tx["amount"] * 100)
+            if amount_cents <= 0:
+                skipped += 1
+                continue
+            # Verifica duplicata grosseira (mesmo merchant, valor, data)
+            cur.execute(
+                "SELECT id FROM transactions WHERE user_id=? AND merchant=? AND amount_cents=? AND occurred_at LIKE ?",
+                (user_id, tx["merchant"], amount_cents, f"{tx['date']}%")
+            )
+            if cur.fetchone():
+                skipped += 1
+                continue
+            tx_id = str(uuid.uuid4())
+            inst_total, inst_num = 1, 1
+            if tx.get("installment") and "/" in tx["installment"]:
+                parts = tx["installment"].split("/")
+                try:
+                    inst_num = int(parts[0])
+                    inst_total = int(parts[1])
+                except Exception:
+                    pass
+            cur.execute(
+                """INSERT INTO transactions
+                   (id, user_id, type, amount_cents, total_amount_cents, installments, installment_number,
+                    category, merchant, payment_method, occurred_at, card_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (tx_id, user_id, "EXPENSE", amount_cents,
+                 amount_cents * inst_total if inst_total > 1 else 0,
+                 inst_total, inst_num,
+                 tx["category"], tx["merchant"], "CREDIT",
+                 tx["date"] + "T12:00:00", card_id)
+            )
+            imported += 1
+        except Exception:
+            skipped += 1
+
+    # Marca como importado
+    cur.execute(
+        "UPDATE pending_statement_imports SET imported_at=? WHERE id=?",
+        (now_str, imp_id)
+    )
+    conn.commit()
+    conn.close()
+
+    _month_names = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"]
+    try:
+        mo_label = _month_names[int(bill_month[5:7]) - 1] + "/" + bill_month[2:4]
+    except Exception:
+        mo_label = bill_month
+
+    skip_note = f" ({skipped} ignoradas — duplicatas ou valor zero)" if skipped else ""
+    return {
+        "message": (
+            f"✅ *{imported} transações importadas* da fatura {det_card} de {mo_label}!{skip_note}\n"
+            f"Pergunte _\"como tá meu mês?\"_ para ver o resumo atualizado."
+        ),
+        "imported": imported,
+        "skipped": skipped,
+    }
+
+
+@app.get("/v1/pending-import")
+def get_pending_import(user_phone: str):
+    """Retorna o import_id pendente mais recente do usuário (para o n8n usar no fluxo 'importar')."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE phone=?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return {"import_id": None}
+    user_id = row[0]
+    now_str = _now_br().strftime("%Y-%m-%dT%H:%M:%S")
+    cur.execute(
+        "SELECT id FROM pending_statement_imports WHERE user_id=? AND imported_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
+        (user_id, now_str)
+    )
+    row = cur.fetchone()
+    conn.close()
+    return {"import_id": row[0] if row else None}
 
 
 @app.get("/health")
