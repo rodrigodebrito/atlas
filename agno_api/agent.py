@@ -1925,11 +1925,66 @@ def get_upcoming_commitments(user_phone: str, days: int = 60, month: str = "") -
         if not closing_day or not due_day:
             continue
 
-        # Sempre marcar o nome como "tratado pelo loop de cartão",
-        # mesmo se bill_total = 0, para evitar duplicata no loop de recorrentes.
         card_bill_names.add(f"Fatura {card_name}")
 
-        # Próxima data de fechamento
+        def _get_snapshot(cid, month_str):
+            cur.execute(
+                "SELECT opening_cents FROM card_bill_snapshots WHERE card_id = ? AND bill_month = ?",
+                (cid, month_str),
+            )
+            r = cur.fetchone()
+            return r[0] if r else 0
+
+        def _get_new_purchases(uid, cid, period_start):
+            cur.execute(
+                "SELECT SUM(amount_cents) FROM transactions WHERE user_id = ? AND card_id = ? AND occurred_at >= ?",
+                (uid, cid, period_start),
+            )
+            return cur.fetchone()[0] or 0
+
+        def _fallback_recurring(uid, cid, cname):
+            cur.execute(
+                "SELECT amount_cents FROM recurring_transactions WHERE card_id = ? AND active = 1 LIMIT 1",
+                (cid,),
+            )
+            r = cur.fetchone()
+            if r:
+                return r[0]
+            cur.execute(
+                "SELECT amount_cents FROM recurring_transactions WHERE user_id = ? AND active = 1 AND LOWER(name) = LOWER(?) LIMIT 1",
+                (uid, f"Fatura {cname}"),
+            )
+            r2 = cur.fetchone()
+            return r2[0] if r2 else 0
+
+        # ── CICLO 1: fatura que fechou este mês e ainda não venceu ─────────
+        # Quando today.day > closing_day, o cartão fechou neste mês.
+        # O vencimento deste ciclo pode ainda estar no futuro.
+        if today.day > closing_day:
+            if due_day > closing_day:
+                # Vencimento no mesmo mês do fechamento (ex: fecha 2, vence 7 → vence 07/03)
+                c1_day = min(due_day, calendar.monthrange(today.year, today.month)[1])
+                c1_due = today.replace(day=c1_day)
+            else:
+                # Vencimento no mês seguinte ao fechamento (ex: fecha 25, vence 5 → vence 05/04)
+                c1_y = today.year + (1 if today.month == 12 else 0)
+                c1_m = 1 if today.month == 12 else today.month + 1
+                c1_day = min(due_day, calendar.monthrange(c1_y, c1_m)[1])
+                c1_due = today.replace(year=c1_y, month=c1_m, day=c1_day)
+
+            c1_delta = (c1_due - today).days
+            if 1 <= c1_delta <= days:
+                # Valor = opening_cents (fatura do ciclo que fechou)
+                # Snapshot do mês do fechamento sobrepõe opening_cents se existir
+                c1_month_str = f"{today.year}-{today.month:02d}"
+                c1_snap = _get_snapshot(card_id, c1_month_str)
+                c1_amount = c1_snap if c1_snap > 0 else (opening_cents or 0)
+                if c1_amount == 0:
+                    c1_amount = _fallback_recurring(user_id, card_id, card_name)
+                if c1_amount > 0:
+                    items.append((c1_due, c1_due.strftime("%d/%m"), "💳", f"Fatura {card_name}", c1_amount))
+
+        # ── CICLO 2: próximo fechamento → próximo vencimento ────────────────
         if today.day <= closing_day:
             next_close_day = min(closing_day, calendar.monthrange(today.year, today.month)[1])
             next_close = today.replace(day=next_close_day)
@@ -1939,65 +1994,25 @@ def get_upcoming_commitments(user_phone: str, days: int = 60, month: str = "") -
             next_close_day = min(closing_day, calendar.monthrange(ny, nm)[1])
             next_close = today.replace(year=ny, month=nm, day=next_close_day)
 
-        # Data de vencimento: due_day > closing_day → mesmo mês do fechamento
-        #                      due_day <= closing_day → mês seguinte ao fechamento
         if due_day > closing_day:
-            due_date = next_close.replace(day=min(due_day, calendar.monthrange(next_close.year, next_close.month)[1]))
+            c2_due = next_close.replace(day=min(due_day, calendar.monthrange(next_close.year, next_close.month)[1]))
         else:
-            dy = next_close.year + (1 if next_close.month == 12 else 0)
-            dm = 1 if next_close.month == 12 else next_close.month + 1
-            due_date = next_close.replace(year=dy, month=dm, day=min(due_day, calendar.monthrange(dy, dm)[1]))
+            c2_y = next_close.year + (1 if next_close.month == 12 else 0)
+            c2_m = 1 if next_close.month == 12 else next_close.month + 1
+            c2_due = next_close.replace(year=c2_y, month=c2_m, day=min(due_day, calendar.monthrange(c2_y, c2_m)[1]))
 
-        delta_days = (due_date - today).days
-        if not (1 <= delta_days <= days):
-            continue
-
-        # Valor da fatura: opening_cents + compras do ciclo atual + snapshot
-        period_start = _bill_period_start(closing_day)
-        cur.execute(
-            "SELECT SUM(amount_cents) FROM transactions WHERE user_id = ? AND card_id = ? AND occurred_at >= ?",
-            (user_id, card_id, period_start),
-        )
-        new_purchases = cur.fetchone()[0] or 0
-
-        bill_month_str = f"{next_close.year}-{next_close.month:02d}"
-        cur.execute(
-            "SELECT opening_cents FROM card_bill_snapshots WHERE card_id = ? AND bill_month = ?",
-            (card_id, bill_month_str),
-        )
-        snap_row = cur.fetchone()
-        snapshot_cents = snap_row[0] if snap_row else 0
-
-        # Snapshot (set_future_bill) substitui opening_cents para evitar dupla contagem.
-        # opening_cents = valor na época do cadastro; snapshot = valor pré-existente declarado pelo usuário.
-        # Se ambos existirem para o mesmo mês, o snapshot é a fonte mais recente.
-        if snapshot_cents > 0:
-            bill_total = snapshot_cents + new_purchases
-        else:
-            bill_total = (opening_cents or 0) + new_purchases
-
-        # Fallback: se bill_total = 0, busca o valor no gasto recorrente vinculado a este cartão
-        if bill_total == 0:
-            cur.execute(
-                "SELECT amount_cents FROM recurring_transactions WHERE card_id = ? AND active = 1 LIMIT 1",
-                (card_id,),
-            )
-            rec_fallback = cur.fetchone()
-            if rec_fallback:
-                bill_total = rec_fallback[0]
-            else:
-                # Tenta por nome: "Fatura <card_name>" sem card_id linkado
-                cur.execute(
-                    "SELECT amount_cents FROM recurring_transactions WHERE user_id = ? AND active = 1 AND LOWER(name) = LOWER(?) LIMIT 1",
-                    (user_id, f"Fatura {card_name}"),
-                )
-                rec_fallback2 = cur.fetchone()
-                if rec_fallback2:
-                    bill_total = rec_fallback2[0]
-
-        if bill_total > 0:
-            date_label = due_date.strftime("%d/%m")
-            items.append((due_date, date_label, "💳", f"Fatura {card_name}", bill_total))
+        c2_delta = (c2_due - today).days
+        if 1 <= c2_delta <= days:
+            # Valor do próximo ciclo = snapshot + compras novas (NÃO usa opening_cents — ele é do ciclo 1)
+            c2_month_str = f"{next_close.year}-{next_close.month:02d}"
+            c2_snap = _get_snapshot(card_id, c2_month_str)
+            period_start = _bill_period_start(closing_day)
+            c2_new = _get_new_purchases(user_id, card_id, period_start)
+            c2_amount = c2_snap + c2_new
+            if c2_amount == 0:
+                c2_amount = _fallback_recurring(user_id, card_id, card_name)
+            if c2_amount > 0:
+                items.append((c2_due, c2_due.strftime("%d/%m"), "💳", f"Fatura {card_name}", c2_amount))
 
     # ── Gastos fixos recorrentes (excluindo faturas de cartão já tratadas acima) ──
     for offset in range(1, days + 1):
@@ -3110,7 +3125,9 @@ FORMATO OBRIGATÓRIO de cada resposta:
 3. FIM. Ponto final. Não acrescente nada.
 
 NUNCA adicione após a resposta:
-- Perguntas de qualquer tipo ("Quer...?", "Gostaria...?", "Posso...?")
+- Perguntas de qualquer tipo ("Quer...?", "Gostaria...?", "Posso...?", "Deseja...?")
+- "Quer ver o resumo das suas faturas?"
+- "Quer ver o extrato?"
 - "Quer adicionar algum gasto agora?"
 - "Quer adicionar mais algum gasto?"
 - "Quer que eu te lembre quando a data estiver próxima?"
@@ -3412,7 +3429,10 @@ CERTO: colar o bloco exato que a tool retornou, começando pelo primeiro caracte
 REGRA 2 — ZERO PERGUNTAS APÓS CONSULTAS (SEM EXCEÇÕES PARA FILTROS):
 Para get_transactions_by_merchant e get_category_breakdown: regra ABSOLUTA, zero exceções.
 Para outros resumos: não adicione perguntas de follow-up.
-PROIBIDO após qualquer ação (consulta, registro, cadastro de cartão, etc.):
+PROIBIDO após qualquer ação (consulta, registro, cadastro de cartão, etc.).
+A resposta TERMINA após a confirmação ou output da tool. ZERO perguntas de acompanhamento.
+- "Quer ver o resumo das suas faturas?"
+- "Quer ver o extrato?"
 - "Quer adicionar algum gasto agora?"
 - "Quer adicionar mais algum gasto?"
 - "Quer que eu te lembre quando a data estiver próxima?"
