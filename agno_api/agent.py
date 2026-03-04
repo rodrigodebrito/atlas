@@ -4188,6 +4188,39 @@ app.add_middleware(
 app.build_middleware_stack()
 
 # ============================================================
+# MIDDLEWARE — sanitiza lone surrogates das respostas JSON
+# (GPT gera surrogates quebrados que causam "null byte" no Chatwoot)
+# ============================================================
+import re as _re_mid
+from starlette.middleware.base import BaseHTTPMiddleware as _BaseMiddleware
+from starlette.responses import Response as _StarletteResponse
+
+_LONE_SURROGATE_RE = _re_mid.compile(r'[\ud800-\udfff]')
+
+class _SanitizeSurrogateMiddleware(_BaseMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        content_type = response.headers.get("content-type", "")
+        if "application/json" in content_type:
+            body_bytes = b""
+            async for chunk in response.body_iterator:
+                if isinstance(chunk, str):
+                    body_bytes += chunk.encode("utf-8", errors="surrogatepass")
+                else:
+                    body_bytes += chunk
+            text = body_bytes.decode("utf-8", errors="replace")
+            text = _LONE_SURROGATE_RE.sub("", text)
+            return _StarletteResponse(
+                content=text,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type="application/json",
+            )
+        return response
+
+app.add_middleware(_SanitizeSurrogateMiddleware)
+
+# ============================================================
 # MANUAL — página HTML mobile-friendly
 # ============================================================
 
