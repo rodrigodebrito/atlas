@@ -594,27 +594,32 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     # Group individual transactions by category, anotando crédito
     from collections import defaultdict
     cat_txs: dict = defaultdict(list)
+    cat_totals_display: dict = defaultdict(int)  # totals using full price for 1st installment
     for cat, merchant, amount, occurred, card_id, inst_total, inst_num, card_name, closing_day, due_day, total_amt in tx_rows:
         label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
+        is_first_inst = inst_total and inst_total > 1 and inst_num == 1 and total_amt and total_amt > amount
         if card_id:
-            # Crédito — calcula mês de vencimento da fatura
-            credit_expenses += amount
+            # Crédito — usa total_amount_cents na 1ª parcela para refletir o gasto real do mês
+            display_amt = total_amt if is_first_inst else amount
+            credit_expenses += display_amt
             if closing_day and due_day:
                 due_month = _compute_due_month(occurred, closing_day, due_day)
                 due_lbl = _month_label_pt(due_month)
             else:
                 due_lbl = "?"
             short_card = card_name.split()[0] if card_name else "cartão"
-            if inst_total and inst_total > 1 and total_amt and total_amt > amount:
+            if is_first_inst:
                 inst_suffix = f" R${total_amt/100:,.2f} em {inst_total}x (R${amount/100:,.2f}/parc.)".replace(",", ".")
             else:
                 inst_suffix = f" R${amount/100:,.2f}".replace(",", ".")
             item = f"• {label}:{inst_suffix} 💳 fat. {short_card} ({due_lbl})"
         else:
             # Caixa / débito / PIX
+            display_amt = amount
             cash_expenses += amount
             item = f"• {label}: R${amount/100:,.2f}".replace(",", ".")
-        cat_txs[cat].append((amount, item))
+        cat_totals_display[cat] += display_amt
+        cat_txs[cat].append((display_amt, item))
 
     # Category emoji map
     cat_emoji = {
@@ -632,12 +637,12 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     lines = [f"*{user_name}*, seu resumo de *{month_label}*{date_label}{filter_label}:"]
     lines.append("")
 
-    expense_rows = [(r[1], r[2]) for r in rows if r[0] == "EXPENSE"]
     income_rows_detail = [(r[1], r[2]) for r in rows if r[0] == "INCOME"]
+    display_expenses = cash_expenses + credit_expenses  # total display (inclui valor cheio de parcelados)
 
-    if filter_type in ("ALL", "EXPENSE") and expense_rows:
-        for cat, total in sorted(expense_rows, key=lambda x: -x[1]):
-            pct = total / expenses * 100 if expenses else 0
+    if filter_type in ("ALL", "EXPENSE") and cat_totals_display:
+        for cat, total in sorted(cat_totals_display.items(), key=lambda x: -x[1]):
+            pct = total / display_expenses * 100 if display_expenses else 0
             emoji = cat_emoji.get(cat, "💸")
             lines.append(f"{emoji} *{cat}* — R${total/100:,.2f} ({pct:.0f}%)".replace(",", "."))
             for _amt, item_line in sorted(cat_txs.get(cat, []), key=lambda x: -x[0]):
@@ -647,11 +652,11 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         # Total gasto com breakdown caixa vs crédito
         if credit_expenses > 0:
             lines.append(
-                f"💸 *Total gasto: R${expenses/100:,.2f}*"
+                f"💸 *Total gasto: R${display_expenses/100:,.2f}*"
                 f"  (R${cash_expenses/100:,.2f} à vista · R${credit_expenses/100:,.2f} 💳 crédito)".replace(",", ".")
             )
         else:
-            lines.append(f"💸 *Total gasto: R${expenses/100:,.2f}*".replace(",", "."))
+            lines.append(f"💸 *Total gasto: R${display_expenses/100:,.2f}*".replace(",", "."))
 
     if filter_type in ("ALL", "INCOME") and income_rows_detail:
         lines.append("")
@@ -674,11 +679,13 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         lines.append(f"Você ainda não lançou receitas em {_mo_lbl}.")
 
     # Largest category for model insight
-    top_rows = expense_rows if filter_type in ("ALL", "EXPENSE") else income_rows_detail
-    if top_rows:
-        top_cat, top_total = sorted(top_rows, key=lambda x: -x[1])[0]
-        ref_total = expenses if filter_type in ("ALL", "EXPENSE") else income
-        top_pct = top_total / ref_total * 100 if ref_total else 0
+    if filter_type in ("ALL", "EXPENSE") and cat_totals_display:
+        top_cat, top_total = sorted(cat_totals_display.items(), key=lambda x: -x[1])[0]
+        top_pct = top_total / display_expenses * 100 if display_expenses else 0
+        lines.append(f"__top_category:{top_cat}:{top_pct:.0f}%")
+    elif income_rows_detail:
+        top_cat, top_total = sorted(income_rows_detail, key=lambda x: -x[1])[0]
+        top_pct = top_total / income * 100 if income else 0
         lines.append(f"__top_category:{top_cat}:{top_pct:.0f}%")
 
     return "\n".join(lines)
