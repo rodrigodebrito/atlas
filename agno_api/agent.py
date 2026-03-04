@@ -4630,6 +4630,7 @@ async def import_statement_endpoint(
     }
 
 
+@app.get("/v1/pending-import")
 def get_pending_import(user_phone: str):
     """Retorna o import_id pendente mais recente do usuário (para o n8n usar no fluxo 'importar')."""
     conn = _get_conn()
