@@ -3838,7 +3838,8 @@ DATA: "ontem"→hoje-1 | "anteontem"→hoje-2 | "dia X"→YYYY-MM-X | sem data�
 
 filter_type: "gastos"/"o que gastei" → EXPENSE | "receitas"/"entradas" → INCOME | resto → ALL
 
-MÊS: "como tá meu mês?" / "resumo do mês" → get_month_summary(user_phone, filter_type="ALL")
+MÊS: "como tá meu mês?" / "resumo do mês" / "me mostra o mês" / "mês de fevereiro" / "como foi março" / "me mostra fevereiro" → get_month_summary(user_phone, month="YYYY-MM", filter_type="ALL")
+  ⚠️ REGRA: qualquer pedido sobre um MÊS inteiro (sem pedir "transações" ou "lista" explicitamente) → get_month_summary. NUNCA get_transactions para "me mostra o mês".
 SEMANA: "como foi minha semana?" → get_week_summary(user_phone, filter_type="ALL")
 HOJE/N DIAS: "gastos de hoje" → get_today_total(filter_type="EXPENSE", days=1)
   "movimentações de hoje" → get_today_total(filter_type="ALL", days=1)
@@ -3860,8 +3861,10 @@ POR ESTABELECIMENTO — qualquer menção a nome próprio de loja/app/serviço:
 POR CATEGORIA: "onde gastei em X?" / "detalhes de Alimentação"
   → get_category_breakdown(user_phone, category="<categoria>")
 
-LISTA DETALHADA: "todas as transações de março" / "transações do dia 10"
+LISTA DETALHADA (só quando pedir "transações" ou "lista" ou "extrato" explicitamente):
+  "todas as transações de março" / "transações do dia 10" / "lista de gastos de fev" / "extrato de março"
   → get_transactions(user_phone, month="YYYY-MM") ou get_transactions(user_phone, date="YYYY-MM-DD")
+  ⚠️ NÃO use get_transactions para "me mostra o mês" / "como foi março" → use get_month_summary
 
 ── ANÁLISES ───────────────────────────────────────────────────
 
