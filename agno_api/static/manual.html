@@ -281,33 +281,112 @@
       <h2>Cartões de crédito</h2>
     </div>
     <div class="section-body">
-      <p>ATLAS rastreia seus cartões automaticamente. Basta mencionar o nome do cartão.</p>
+      <p>ATLAS rastreia cada cartão pelo <strong>ciclo de faturamento</strong> — não pela data da compra. Isso garante que o saldo reflita exatamente o que vai sair do seu banco e quando.</p>
 
-      <div class="label">Compra no crédito</div>
+      <!-- CADASTRO -->
+      <div class="label">1 · Cadastrar o cartão</div>
+      <div class="chat">
+        <div class="bubble user">quero cadastrar meu cartão Nubank<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">Qual o dia de <strong>fechamento</strong> da fatura? (o dia em que as compras "trancam")<span class="tick">✓✓</span></div>
+        <div class="bubble user">dia 2<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">E o dia de <strong>vencimento</strong>? (quando você paga)<span class="tick">✓✓</span></div>
+        <div class="bubble user">dia 7<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">✅ <strong>Nubank</strong> cadastrado!<br>Fecha dia 2 · Vence dia 7<span class="tick">✓✓</span></div>
+      </div>
+      <div class="tip-green"><strong>✅ Cadastre o fechamento e o vencimento!</strong><br>Esses dois dados fazem toda a diferença — são eles que determinam em qual mês cada compra e parcela aparecerão no seu resumo.</div>
+
+      <!-- COMPRA SIMPLES -->
+      <div class="label" style="margin-top:14px;">2 · Compra simples no crédito</div>
       <div class="chat">
         <div class="bubble user">tênis 300 no Nubank<span class="tick">✓✓</span></div>
-        <div class="bubble atlas">✅ <strong>R$300,00 — Vestuário</strong><br>📍 Nubank<br>📅 03/03/2026 (hoje)<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">✅ <strong>R$300,00 — Vestuário</strong><br>📍 Nubank  •  crédito<br>📅 03/03/2026 (hoje)<span class="tick">✓✓</span></div>
       </div>
 
-      <div class="label">Parcelado</div>
+      <!-- PARCELADO -->
+      <div class="label" style="margin-top:14px;">3 · Compra parcelada</div>
       <div class="chat">
-        <div class="bubble user">notebook 3000 em 6x no Inter<span class="tick">✓✓</span></div>
-        <div class="bubble atlas">✅ <strong>R$500,00/mês × 6x</strong> — Tecnologia<br>📍 Inter  •  <em>R$3.000,00 total</em><br>📅 03/03/2026 (hoje)<span class="tick">✓✓</span></div>
+        <div class="bubble user">tênis 500 em 3x no Itaú<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">✅ <strong>Vestuário — R$500,00 em 3x</strong><br>📍 Itaú  •  R$166,67/parcela<br>📅 04/03/2026 (hoje)<br><em>Parcelas distribuídas em mar, abr e mai</em><span class="tick">✓✓</span></div>
+      </div>
+      <div class="tip"><strong>💡 Sempre informe o número de parcelas.</strong><br>"tênis 500 em 3x no Itaú" → ATLAS cria os 3 registros automaticamente, um em cada mês do ciclo correto.</div>
+
+      <!-- COMO O SALDO FUNCIONA -->
+      <div class="label" style="margin-top:14px;">4 · Como o saldo funciona (o mais importante)</div>
+      <p>ATLAS calcula o saldo pelo <strong>ciclo de fatura</strong>, não pela data da compra.</p>
+
+      <div style="background:#f7faf9; border-radius:8px; padding:12px; margin-bottom:10px; font-size:13px;">
+        <div style="font-weight:700; color:#128c7e; margin-bottom:8px;">Exemplo — Itaú (fecha dia 14)</div>
+        <p style="margin-bottom:6px;">Você compra um tênis de R$500 em 3x no dia <strong>04/mar</strong>. O cartão <em>ainda está aberto</em> (dia 4 &lt; fechamento dia 14).</p>
+        <p style="margin-bottom:0;">→ A 1ª parcela (R$166,67) <strong>cai na fatura de março</strong> (vence dia 20/mar)<br>
+        → A 2ª parcela cai em abril · A 3ª em maio<br>
+        → Cada parcela aparece no resumo do mês em que a fatura vence e <strong>abate o saldo daquele mês</strong></p>
       </div>
 
-      <div class="label">Ver fatura atual</div>
+      <div style="background:#f7faf9; border-radius:8px; padding:12px; margin-bottom:10px; font-size:13px;">
+        <div style="font-weight:700; color:#128c7e; margin-bottom:8px;">Exemplo — ML (fecha dia 2, compra após o fechamento)</div>
+        <p style="margin-bottom:6px;">Você compra um tênis de R$500 em 3x no dia <strong>04/mar</strong>. O ML <em>já fechou</em> no dia 2.</p>
+        <p style="margin-bottom:0;">→ Março: <strong>nenhuma parcela</strong> (o ciclo de março já fechou)<br>
+        → A 1ª parcela (R$166,67) <strong>cai na fatura de abril</strong> (vence dia 7/abr)<br>
+        → A 2ª parcela em maio · A 3ª em junho</p>
+      </div>
+
+      <div style="background:#f7faf9; border-radius:8px; padding:12px; margin-bottom:10px; font-size:13px;">
+        <div style="font-weight:700; color:#128c7e; margin-bottom:8px;">Como fica no resumo mensal</div>
+        <div class="chat" style="margin-bottom:0;">
+          <div class="bubble atlas">
+            <strong>Rodrigo</strong>, seu resumo de <strong>Março/2026</strong>:<br><br>
+            👟 <strong>Vestuário</strong> — R$166,67 (100%)<br>
+            &nbsp;&nbsp;• tênis: R$500,00 em 3x (R$166,67/parc.) 💳 fat. Itaú (mar/26)<br><br>
+            💸 <strong>Total gasto: R$166,67</strong>&nbsp;&nbsp;(R$0 à vista · R$166,67 💳 cartão)<br>
+            ⚠️ Saldo: <strong>R$-166,67</strong>
+            <span class="tick">✓✓</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="tip"><strong>💡 Regra geral:</strong><br>
+      Compra feita <strong>antes ou no dia de fechamento</strong> → aparece no mês atual.<br>
+      Compra feita <strong>após o fechamento</strong> → aparece no mês seguinte.<br>
+      Parcelado → cada parcela aparece no mês do seu respectivo ciclo.<br>
+      O saldo sempre reflete o que vai sair do banco naquele mês.</div>
+
+      <!-- CONSULTAS -->
+      <div class="label" style="margin-top:14px;">5 · Consultar fatura e compromissos</div>
       <div class="chat">
-        <div class="bubble user">fatura do Nubank<span class="tick">✓✓</span></div>
-        <div class="bubble atlas">💳 <strong>Nubank — Fatura atual</strong><br>R$1.250,00 acumulados<br><em>Fecha dia 15  •  Vence dia 22</em><span class="tick">✓✓</span></div>
+        <div class="bubble user">fatura do Itaú<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">💳 <strong>Itaú — Próxima fatura (abr/26)</strong><br>R$166,67 acumulados no ciclo aberto<br><em>Fecha dia 14/abr · Vence dia 20/abr</em><span class="tick">✓✓</span></div>
       </div>
-
-      <div class="label">Pagar fatura</div>
       <div class="chat">
-        <div class="bubble user">paguei o cartão Nubank<span class="tick">✓✓</span></div>
-        <div class="bubble atlas">✅ Fatura do Nubank zerada! Novo ciclo aberto.<span class="tick">✓✓</span></div>
+        <div class="bubble user">o que tenho pra pagar esse mês?<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">📋 <strong>Próximos compromissos:</strong><br>• Fatura Itaú — R$166,67 → 20/03<br>• Aluguel — R$1.500 → 05/03<br>• Netflix — R$45 → 10/03<span class="tick">✓✓</span></div>
+      </div>
+      <div class="chat">
+        <div class="bubble user">o que tenho pra pagar em abril?<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">📋 <strong>Compromissos de abril:</strong><br>• Fatura ML — R$887,00 → 07/04<br>• Aluguel — R$1.500 → 05/04<span class="tick">✓✓</span></div>
       </div>
 
-      <div class="tip"><strong>💡 Cadastrar cartão:</strong> Diga "quero cadastrar meu cartão Nubank" — ATLAS pede fechamento, vencimento e limite.</div>
+      <!-- INFORMAR FATURA -->
+      <div class="label" style="margin-top:14px;">6 · Informar valor da fatura</div>
+      <p>Se você já sabe o valor da fatura fechada (ex: pelo app do banco), informe ao ATLAS para manter tudo sincronizado.</p>
+      <div class="chat">
+        <div class="bubble user">a fatura do ML em abril é 887 reais<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">✅ Fatura do <strong>Mercado Livre</strong> em abril registrada: <strong>R$887,00</strong><span class="tick">✓✓</span></div>
+      </div>
+
+      <!-- BOAS PRÁTICAS -->
+      <div class="label" style="margin-top:14px;">✅ Boas práticas</div>
+      <div class="tip-green">
+        <strong>1. Cadastre o fechamento e vencimento de cada cartão.</strong><br>
+        Sem esses dados o ATLAS não consegue saber em qual mês cada compra vai aparecer.<br><br>
+        <strong>2. Sempre informe o nome do cartão na compra.</strong><br>
+        "tênis 500 no Nubank" → ATLAS associa ao cartão certo automaticamente.<br><br>
+        <strong>3. Em compras parceladas, informe o número de parcelas.</strong><br>
+        "notebook 3000 em 6x no Inter" → ATLAS distribui as 6 parcelas nos 6 meses corretos.<br><br>
+        <strong>4. Informe o valor da fatura quando souber.</strong><br>
+        "a fatura do Nubank em abril é 1.250" → garante que os compromissos fiquem precisos.<br><br>
+        <strong>5. Compras à vista no crédito também são rastreadas.</strong><br>
+        Aparecem no mês da fatura correspondente e abatam o saldo daquele mês.
+      </div>
     </div>
   </section>
 
