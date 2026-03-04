@@ -4259,34 +4259,66 @@ async def parse_statement_endpoint(
         return {"error": "Usuário não encontrado.", "message": "Usuário não encontrado."}
     user_id = row[0]
 
-    # Obtém a imagem como base64
-    img_b64 = image_base64
-    if not img_b64 and image_url:
+    # Obtém o arquivo (imagem ou PDF)
+    raw_bytes = None
+    content_type = "image/jpeg"
+    if image_base64:
+        raw_bytes = _b64.b64decode(image_base64)
+        content_type = "application/pdf" if raw_bytes[:4] == b"%PDF" else "image/jpeg"
+    elif image_url:
         try:
-            async with _httpx.AsyncClient(timeout=15) as client:
+            async with _httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
                 resp = await client.get(image_url)
                 resp.raise_for_status()
-                img_b64 = _b64.b64encode(resp.content).decode()
+                raw_bytes = resp.content
                 content_type = resp.headers.get("content-type", "image/jpeg")
         except Exception as e:
             conn.close()
-            return {"error": str(e), "message": "Não consegui baixar a imagem da fatura. Tente enviar novamente."}
+            return {"error": str(e), "message": "Não consegui baixar a fatura. Tente enviar novamente."}
 
-    if not img_b64:
+    if not raw_bytes:
         conn.close()
-        return {"error": "Sem imagem.", "message": "Envie uma foto ou print da fatura."}
+        return {"error": "Sem arquivo.", "message": "Envie uma foto, print ou PDF da fatura."}
 
-    # Roda o statement_agent com visão
+    file_b64 = _b64.b64encode(raw_bytes).decode()
+    is_pdf = (
+        "pdf" in content_type.lower()
+        or (image_url or "").lower().endswith(".pdf")
+        or raw_bytes[:4] == b"%PDF"
+    )
+
+    # Extrai transações via visão
     try:
-        img_obj = _AgnoImage(base64_data=img_b64)
-        result = await statement_agent.arun(
-            "Extraia todas as transações desta fatura de cartão de crédito.",
-            images=[img_obj],
-        )
-        parsed: StatementParseResult = result.content
+        if is_pdf:
+            # PDF: chama OpenAI diretamente com file content type
+            import openai as _openai_lib
+            import json as _json_pdf
+            _oai = _openai_lib.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            completion = await _oai.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"Extraia TODAS as transações desta fatura e retorne JSON válido.\n\n{STATEMENT_INSTRUCTIONS}"},
+                        {"type": "file", "file": {"filename": "fatura.pdf", "file_data": f"data:application/pdf;base64,{file_b64}"}},
+                    ],
+                }],
+                response_format={"type": "json_object"},
+            )
+            raw_json = completion.choices[0].message.content
+            parsed = StatementParseResult.model_validate(_json_pdf.loads(raw_json))
+        else:
+            # Imagem: usa Agno statement_agent
+            img_obj = _AgnoImage(base64_data=file_b64)
+            result = await statement_agent.arun(
+                "Extraia todas as transações desta fatura de cartão de crédito.",
+                images=[img_obj],
+            )
+            parsed: StatementParseResult = result.content
     except Exception as e:
         conn.close()
-        return {"error": str(e), "message": "Não consegui analisar a imagem. Certifique-se que é um print claro da fatura."}
+        err_type = "PDF" if is_pdf else "imagem"
+        return {"error": str(e), "message": f"Não consegui analisar o {err_type}. Certifique-se que é um arquivo claro da fatura."}
 
     if not parsed.transactions:
         conn.close()

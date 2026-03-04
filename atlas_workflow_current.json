@@ -696,6 +696,18 @@
               "name": "info_arquivo",
               "value": "={{ !$json.body.attachments?.[0]?.meta?.is_recorded_audio && $json.body.attachments[0]?.file_type ? `\\n<usuário enviou um arquivo do tipo '${$json.body.attachments[0]?.file_type}'>` : '' }}",
               "type": "string"
+            },
+            {
+              "id": "a1b2c3d4-0001-0001-0001-000000000001",
+              "name": "attachment_url",
+              "value": "={{ $json.body.attachments?.[0]?.data_url || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "a1b2c3d4-0002-0002-0002-000000000002",
+              "name": "attachment_file_type",
+              "value": "={{ $json.body.attachments?.[0]?.file_type || '' }}",
+              "type": "string"
             }
           ]
         },
@@ -826,6 +838,30 @@
               },
               "renameOutput": true,
               "outputKey": "Teste"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "imp-cond-0001-0001-0001-000000000001",
+                    "leftValue": "={{ $json.mensagem.toLowerCase().trim() }}",
+                    "rightValue": "importar",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Importar"
             }
           ]
         },
@@ -2113,7 +2149,7 @@
           "parameters": [
             {
               "name": "message",
-              "value": "={{ '[user_phone: ' + $('Info1').item.json.telefone + ']\n[user_name: ' + $('Info1').item.json.nome + ']\n' + $json.mensagem }}"
+              "value": "={{ '[user_phone: ' + $('Info1').item.json.telefone + ']\\n[user_name: ' + $('Info1').item.json.nome + ']\\n' + $('Coletar mensagens1').first().json.mensagem }}"
             },
             {
               "name": "session_id",
@@ -2135,6 +2171,209 @@
         208,
         144
       ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "arq-cond-0001-0001-0001-000000000001",
+                    "leftValue": "={{ $('Info1').item.json.attachment_file_type }}",
+                    "rightValue": "image",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  },
+                  {
+                    "id": "arq-cond-0002-0002-0002-000000000002",
+                    "leftValue": "={{ $('Info1').item.json.attachment_file_type }}",
+                    "rightValue": "document",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  },
+                  {
+                    "id": "arq-cond-0003-0003-0003-000000000003",
+                    "leftValue": "={{ $('Info1').item.json.attachment_url }}",
+                    "rightValue": ".pdf",
+                    "operator": {
+                      "type": "string",
+                      "operation": "endsWith"
+                    }
+                  }
+                ],
+                "combinator": "or"
+              },
+              "renameOutput": true,
+              "outputKey": "Fatura"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Outro arquivo"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -3150,
+        450
+      ],
+      "id": "f1a2b3c4-0001-0001-0001-fatura000001",
+      "name": "Tipo de arquivo1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://atlas-m3wb.onrender.com/v1/parse-statement",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "user_phone",
+              "value": "={{ $('Info1').item.json.telefone }}"
+            },
+            {
+              "name": "image_url",
+              "value": "={{ $('Info1').item.json.attachment_url }}"
+            },
+            {
+              "name": "card_name",
+              "value": "={{ $('Info1').item.json.mensagem }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2820,
+        560
+      ],
+      "id": "f1a2b3c4-0002-0002-0002-fatura000002",
+      "name": "Analisar Fatura1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Info1').item.json.url_chatwoot }}/api/v1/accounts/{{ $('Info1').item.json.id_conta }}/conversations/{{ $('Info1').item.json.id_conversa }}/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "chatwootApi",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content",
+              "value": "={{ $json.message }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2520,
+        560
+      ],
+      "id": "f1a2b3c4-0003-0003-0003-fatura000003",
+      "name": "Enviar análise fatura1",
+      "credentials": {
+        "chatwootApi": {
+          "id": "VIcktgIr9MjDltkK",
+          "name": "ChatWoot account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://atlas-m3wb.onrender.com/v1/pending-import?user_phone={{ $('Info1').item.json.telefone }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -3550,
+        -150
+      ],
+      "id": "f1a2b3c4-0004-0004-0004-import00004",
+      "name": "Buscar import pendente1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://atlas-m3wb.onrender.com/v1/import-statement",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "user_phone",
+              "value": "={{ $('Info1').item.json.telefone }}"
+            },
+            {
+              "name": "import_id",
+              "value": "={{ $json.import_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -3250,
+        -150
+      ],
+      "id": "f1a2b3c4-0005-0005-0005-import00005",
+      "name": "Confirmar importação1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Info1').item.json.url_chatwoot }}/api/v1/accounts/{{ $('Info1').item.json.id_conta }}/conversations/{{ $('Info1').item.json.id_conversa }}/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "chatwootApi",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content",
+              "value": "={{ $json.message }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2950,
+        -150
+      ],
+      "id": "f1a2b3c4-0006-0006-0006-import00006",
+      "name": "Enviar confirmação importação1",
+      "credentials": {
+        "chatwootApi": {
+          "id": "VIcktgIr9MjDltkK",
+          "name": "ChatWoot account"
+        }
+      }
     }
   ],
   "connections": {
@@ -2204,7 +2443,7 @@
         ],
         [
           {
-            "node": "Enfileirar mensagem.1",
+            "node": "Tipo de arquivo1",
             "type": "main",
             "index": 0
           }
@@ -2296,6 +2535,13 @@
         [
           {
             "node": "Colocar etiqueta testando-agente1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Buscar import pendente1",
             "type": "main",
             "index": 0
           }
@@ -2475,6 +2721,57 @@
         [
           {
             "node": "Quebrar e enviar mensagens1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tipo de arquivo1": {
+      "main": [
+        [
+          {
+            "node": "Analisar Fatura1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Enfileirar mensagem.1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analisar Fatura1": {
+      "main": [
+        [
+          {
+            "node": "Enviar análise fatura1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar import pendente1": {
+      "main": [
+        [
+          {
+            "node": "Confirmar importação1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirmar importação1": {
+      "main": [
+        [
+          {
+            "node": "Enviar confirmação importação1",
             "type": "main",
             "index": 0
           }
