@@ -4026,9 +4026,19 @@ Antes de enviar qualquer resposta de consulta (filtro, resumo, análise):
    SIM → Errado. Copie os emojis exatamente como vieram da tool.
 """
 
-@tool(description="Mostra as transações extraídas da fatura enviada pelo usuário que ainda não foram importadas. Use quando o usuário perguntar sobre 'as transações da fatura', 'o que tinha na fatura', 'quais são as transações' após ter enviado uma imagem/PDF de fatura. Retorna a lista completa com merchant, valor e categoria.")
-def get_pending_statement(user_phone: str) -> str:
-    """Retorna as transações pendentes da fatura analisada (ainda não importadas)."""
+@tool(description="""Consulta a fatura que o usuário enviou (imagem/PDF) e ainda não importou.
+Use SEMPRE que o usuário mencionar 'fatura', 'esta fatura', 'da fatura', 'no pdf', 'na imagem que mandei' para perguntas sobre transações, categorias ou valores.
+Exemplos de quando usar:
+- 'quais as transações de alimentação desta fatura'
+- 'quanto gastei em transporte na fatura'
+- 'quais são as transações?'
+- 'o que tinha na fatura?'
+- 'me mostra os gastos da fatura'
+- 'qual o total da fatura?'
+Parâmetro category: filtra por categoria específica (ex: 'Alimentação', 'Transporte'). Deixe '' para retornar todas.
+NÃO use get_transactions, get_category_breakdown ou get_month_summary para perguntas sobre 'esta fatura' ou 'a fatura que enviei'.""")
+def get_pending_statement(user_phone: str, category: str = "") -> str:
+    """Retorna as transações da fatura pendente, com filtro opcional por categoria."""
     import json as _json_ps
     conn = _get_conn()
     cur = conn.cursor()
@@ -4040,7 +4050,7 @@ def get_pending_statement(user_phone: str) -> str:
     user_id = row[0]
     now_str = _now_br().strftime("%Y-%m-%dT%H:%M:%S")
     cur.execute(
-        "SELECT transactions_json, card_name, bill_month, created_at FROM pending_statement_imports "
+        "SELECT transactions_json, card_name, bill_month FROM pending_statement_imports "
         "WHERE user_id=? AND imported_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
         (user_id, now_str)
     )
@@ -4051,7 +4061,23 @@ def get_pending_statement(user_phone: str) -> str:
     txs = _json_ps.loads(row[0])
     card = row[1] or "cartão"
     month = row[2] or ""
-    lines = [f"📋 *Transações da fatura {card} — {month}* ({len(txs)} itens)\n"]
+
+    # Filtra por categoria se informada
+    cat_filter = category.strip().lower()
+    if cat_filter:
+        txs_filtered = [tx for tx in txs if tx.get("category", "").lower() == cat_filter]
+        if not txs_filtered:
+            # tenta match parcial
+            txs_filtered = [tx for tx in txs if cat_filter in tx.get("category", "").lower()]
+        if not txs_filtered:
+            return f"Nenhuma transação de '{category}' encontrada na fatura {card} ({month})."
+        total_cat = sum(tx["amount"] for tx in txs_filtered)
+        lines = [f"📋 *{category} na fatura {card} — {month}* ({len(txs_filtered)} itens | R${total_cat:,.2f})\n".replace(",", ".")]
+        txs = txs_filtered
+    else:
+        total = sum(tx["amount"] for tx in txs)
+        lines = [f"📋 *Transações da fatura {card} — {month}* ({len(txs)} itens | R${total:,.2f})\n".replace(",", ".")]
+
     for i, tx in enumerate(txs, 1):
         cat = tx.get("category", "?")
         conf = tx.get("confidence", 1.0)
