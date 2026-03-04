@@ -4026,6 +4026,42 @@ Antes de enviar qualquer resposta de consulta (filtro, resumo, análise):
    SIM → Errado. Copie os emojis exatamente como vieram da tool.
 """
 
+@tool(description="Mostra as transações extraídas da fatura enviada pelo usuário que ainda não foram importadas. Use quando o usuário perguntar sobre 'as transações da fatura', 'o que tinha na fatura', 'quais são as transações' após ter enviado uma imagem/PDF de fatura. Retorna a lista completa com merchant, valor e categoria.")
+def get_pending_statement(user_phone: str) -> str:
+    """Retorna as transações pendentes da fatura analisada (ainda não importadas)."""
+    import json as _json_ps
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE phone=?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return "Nenhuma fatura pendente encontrada."
+    user_id = row[0]
+    now_str = _now_br().strftime("%Y-%m-%dT%H:%M:%S")
+    cur.execute(
+        "SELECT transactions_json, card_name, bill_month, created_at FROM pending_statement_imports "
+        "WHERE user_id=? AND imported_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
+        (user_id, now_str)
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return "Nenhuma fatura pendente encontrada. Envie a imagem da fatura para analisar."
+    txs = _json_ps.loads(row[0])
+    card = row[1] or "cartão"
+    month = row[2] or ""
+    lines = [f"📋 *Transações da fatura {card} — {month}* ({len(txs)} itens)\n"]
+    for i, tx in enumerate(txs, 1):
+        cat = tx.get("category", "?")
+        conf = tx.get("confidence", 1.0)
+        flag = " ❓" if cat == "Indefinido" or conf < 0.6 else ""
+        inst = f" ({tx['installment']})" if tx.get("installment") else ""
+        lines.append(f"{i}. {tx['merchant']}{inst} — R${tx['amount']:,.2f} | {cat}{flag}".replace(",", "."))
+    lines.append("\n_Para importar, responda_ *importar*")
+    return "\n".join(lines)
+
+
 atlas_agent = Agent(
     name="atlas",
     description="ATLAS — Assistente financeiro pessoal via WhatsApp",
@@ -4501,43 +4537,6 @@ async def import_statement_endpoint(
         "imported": imported,
         "skipped": skipped,
     }
-
-
-@app.get("/v1/pending-import")
-@tool(description="Mostra as transações extraídas da fatura enviada pelo usuário que ainda não foram importadas. Use quando o usuário perguntar sobre 'as transações da fatura', 'o que tinha na fatura', 'quais são as transações' após ter enviado uma imagem/PDF de fatura. Retorna a lista completa com merchant, valor e categoria.")
-def get_pending_statement(user_phone: str) -> str:
-    """Retorna as transações pendentes da fatura analisada (ainda não importadas)."""
-    import json as _json_ps
-    conn = _get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM users WHERE phone=?", (user_phone,))
-    row = cur.fetchone()
-    if not row:
-        conn.close()
-        return "Nenhuma fatura pendente encontrada."
-    user_id = row[0]
-    now_str = _now_br().strftime("%Y-%m-%dT%H:%M:%S")
-    cur.execute(
-        "SELECT transactions_json, card_name, bill_month, created_at FROM pending_statement_imports "
-        "WHERE user_id=? AND imported_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
-        (user_id, now_str)
-    )
-    row = cur.fetchone()
-    conn.close()
-    if not row:
-        return "Nenhuma fatura pendente encontrada. Envie a imagem da fatura para analisar."
-    txs = _json_ps.loads(row[0])
-    card = row[1] or "cartão"
-    month = row[2] or ""
-    lines = [f"📋 *Transações da fatura {card} — {month}* ({len(txs)} itens)\n"]
-    for i, tx in enumerate(txs, 1):
-        cat = tx.get("category", "?")
-        conf = tx.get("confidence", 1.0)
-        flag = " ❓" if cat == "Indefinido" or conf < 0.6 else ""
-        inst = f" ({tx['installment']})" if tx.get("installment") else ""
-        lines.append(f"{i}. {tx['merchant']}{inst} — R${tx['amount']:,.2f} | {cat}{flag}".replace(",", "."))
-    lines.append(f"\n_Para importar, responda_ *importar*")
-    return "\n".join(lines)
 
 
 def get_pending_import(user_phone: str):
