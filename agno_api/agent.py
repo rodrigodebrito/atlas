@@ -1023,15 +1023,9 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     return "\n".join(lines)
 
 
-@tool
+@tool(description="Lista TODAS as transações de um dia ou mês — SEM filtro por loja. NUNCA usar quando o usuário mencionar nome de estabelecimento, loja ou app (ex: Deville, iFood, Uber) — nesses casos usar get_transactions_by_merchant. Usar apenas para listar transações gerais: 'todas as transações de março', 'lista do dia 10'.")
 def get_transactions(user_phone: str, date: str = "", month: str = "") -> str:
-    """
-    Lista TODAS as transações de um dia ou mês específico — SEM filtro por estabelecimento.
-    Use SOMENTE quando o usuário pedir uma lista geral (ex: "todas as transações de março").
-    NUNCA use quando o usuário mencionar um estabelecimento/loja/app específico —
-    nesses casos use get_transactions_by_merchant.
-    date: data específica YYYY-MM-DD | month: mês YYYY-MM | sem parâmetro: usa hoje.
-    """
+    """date: YYYY-MM-DD | month: YYYY-MM | sem parâmetro: usa hoje."""
     conn = _get_conn()
     cur = conn.cursor()
 
@@ -1128,20 +1122,13 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
     return "\n".join(lines)
 
 
-@tool
+@tool(description="USAR SEMPRE que o usuário mencionar um estabelecimento, loja, restaurante, app ou serviço específico pelo nome. Exemplos de queries: 'quanto gastei no Deville?', 'gastos no iFood esse mês', 'o que comprei na Nike?', 'me mostra o Talentos', 'Herbalife esse mês', 'histórico do Uber'. merchant_query = nome parcial (ex: 'deville', 'ifood'). month = YYYY-MM opcional.")
 def get_transactions_by_merchant(
     user_phone: str,
     merchant_query: str,
     month: str = "",
 ) -> str:
-    """
-    USE SEMPRE que o usuário mencionar um estabelecimento, loja, restaurante, app ou serviço específico.
-    Exemplos: "Deville", "iFood", "Uber", "Talentos", "Herbalife", "Amazon", "Nubank", "Netflix".
-    Detecta menções como: "quanto gastei no X", "gastos no X", "o que comprei na X",
-    "me mostra o X", "X esse mês", "X essa semana", "histórico do X".
-    merchant_query: nome parcial do estabelecimento (busca case-insensitive).
-    month: YYYY-MM para filtrar por mês (opcional).
-    """
+    """Filtra transações por nome de estabelecimento (busca parcial, case-insensitive)."""
     conn = _get_conn()
     cur = conn.cursor()
 
