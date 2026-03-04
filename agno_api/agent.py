@@ -1911,14 +1911,13 @@ def get_upcoming_commitments(user_phone: str, days: int = 30) -> str:
         return "Usuário não encontrado."
     user_id, user_name = row
 
-    # Build list of upcoming dates
     items = []
+
+    # ── Gastos fixos recorrentes ──────────────────────────────────────────
     for offset in range(1, days + 1):
         target = today + timedelta(days=offset)
         target_day = target.day
         target_date_label = target.strftime("%d/%m")
-
-        # Recurring fixed expenses
         cur.execute(
             "SELECT name, amount_cents FROM recurring_transactions WHERE user_id = ? AND active = 1 AND day_of_month = ?",
             (user_id, target_day),
@@ -1926,21 +1925,63 @@ def get_upcoming_commitments(user_phone: str, days: int = 30) -> str:
         for rec_name, amount_cents in cur.fetchall():
             items.append((target, target_date_label, "📋", rec_name, amount_cents))
 
-        # Credit card bills due
+    # ── Faturas de cartão: calcula a data real de vencimento ──────────────
+    # Em vez de iterar por dia, calcula a próxima due_date de cada cartão
+    # levando em conta o ciclo de fechamento.
+    cur.execute(
+        "SELECT id, name, closing_day, due_day, current_bill_opening_cents FROM credit_cards WHERE user_id = ?",
+        (user_id,),
+    )
+    for card_id, card_name, closing_day, due_day, opening_cents in cur.fetchall():
+        if not closing_day or not due_day:
+            continue
+
+        # Próxima data de fechamento
+        if today.day <= closing_day:
+            # Ainda não fechou este mês
+            next_close_day = min(closing_day, calendar.monthrange(today.year, today.month)[1])
+            next_close = today.replace(day=next_close_day)
+        else:
+            # Já fechou este mês → próximo fechamento é no mês seguinte
+            ny = today.year + (1 if today.month == 12 else 0)
+            nm = 1 if today.month == 12 else today.month + 1
+            next_close_day = min(closing_day, calendar.monthrange(ny, nm)[1])
+            next_close = today.replace(year=ny, month=nm, day=next_close_day)
+
+        # Data de vencimento: se due_day > closing_day → mesmo mês do fechamento
+        #                      se due_day <= closing_day → mês seguinte ao fechamento
+        if due_day > closing_day:
+            due_date = next_close.replace(day=min(due_day, calendar.monthrange(next_close.year, next_close.month)[1]))
+        else:
+            dy = next_close.year + (1 if next_close.month == 12 else 0)
+            dm = 1 if next_close.month == 12 else next_close.month + 1
+            due_date = next_close.replace(year=dy, month=dm, day=min(due_day, calendar.monthrange(dy, dm)[1]))
+
+        delta_days = (due_date - today).days
+        if not (1 <= delta_days <= days):
+            continue  # fora da janela
+
+        # Valor da fatura = opening_cents (current_bill) + compras + snapshot da fatura futura
+        period_start = _bill_period_start(closing_day)
         cur.execute(
-            "SELECT id, name, closing_day, current_bill_opening_cents FROM credit_cards WHERE user_id = ? AND due_day = ?",
-            (user_id, target_day),
+            "SELECT SUM(amount_cents) FROM transactions WHERE user_id = ? AND card_id = ? AND occurred_at >= ?",
+            (user_id, card_id, period_start),
         )
-        for card_id, card_name, closing_day, opening_cents in cur.fetchall():
-            period_start = _bill_period_start(closing_day)
-            cur.execute(
-                "SELECT SUM(amount_cents) FROM transactions WHERE user_id = ? AND card_id = ? AND occurred_at >= ?",
-                (user_id, card_id, period_start),
-            )
-            new_purchases = cur.fetchone()[0] or 0
-            bill_total = (opening_cents or 0) + new_purchases
-            if bill_total > 0:
-                items.append((target, target_date_label, "💳", f"Fatura {card_name}", bill_total))
+        new_purchases = cur.fetchone()[0] or 0
+
+        # Snapshot de fatura futura (registrado via set_future_bill)
+        bill_month_str = f"{next_close.year}-{next_close.month:02d}"
+        cur.execute(
+            "SELECT opening_cents FROM card_bill_snapshots WHERE card_id = ? AND bill_month = ?",
+            (card_id, bill_month_str),
+        )
+        snap_row = cur.fetchone()
+        snapshot_cents = snap_row[0] if snap_row else 0
+
+        bill_total = (opening_cents or 0) + new_purchases + snapshot_cents
+        if bill_total > 0:
+            date_label = due_date.strftime("%d/%m")
+            items.append((due_date, date_label, "💳", f"Fatura {card_name}", bill_total))
 
     conn.close()
 
@@ -3018,6 +3059,11 @@ FORMATO OBRIGATÓRIO de cada resposta:
 
 NUNCA adicione após a resposta:
 - Perguntas de qualquer tipo ("Quer...?", "Gostaria...?", "Posso...?")
+- "Quer adicionar algum gasto agora?"
+- "Quer adicionar mais algum gasto?"
+- "Quer que eu te lembre quando a data estiver próxima?"
+- "Quer que eu verifique algo específico para abril?"
+- "Claro! Estou aqui para ajudar sempre que precisar."
 - Sugestões ("Você pode também...", "Que tal...")
 - Ofertas de ajuda ("Se precisar de mais...", "Estou aqui para...")
 - Comentários sobre os dados ("Parece que você está gastando muito...")
@@ -3313,14 +3359,19 @@ CERTO: colar o bloco exato que a tool retornou, começando pelo primeiro caracte
 REGRA 2 — ZERO PERGUNTAS APÓS CONSULTAS (SEM EXCEÇÕES PARA FILTROS):
 Para get_transactions_by_merchant e get_category_breakdown: regra ABSOLUTA, zero exceções.
 Para outros resumos: não adicione perguntas de follow-up.
-PROIBIDO após qualquer consulta:
+PROIBIDO após qualquer ação (consulta, registro, cadastro de cartão, etc.):
+- "Quer adicionar algum gasto agora?"
+- "Quer adicionar mais algum gasto?"
+- "Quer que eu te lembre quando a data estiver próxima?"
 - "Quer que eu detalhe outros gastos do mês?"
 - "Quer ver o resumo detalhado de despesas por categoria?"
 - "Quer que eu separe por categoria?"
 - "Quer ver o total?"
+- "Quer que eu verifique algo específico para abril?"
 - "Gostaria de ver mais?"
 - "Posso mostrar...?"
-- Qualquer frase com "Quer que eu...", "Posso...", "Gostaria..."
+- "Claro! Estou aqui para ajudar sempre que precisar."
+- Qualquer frase com "Quer que eu...", "Posso...", "Gostaria...", "Estou aqui para..."
 
 REGRA 3 — "Anotado!" EXCLUSIVO DE save_transaction:
 "Anotado!" aparece SOMENTE na confirmação de registro de gasto/receita.
@@ -3515,7 +3566,8 @@ Cartão criado automaticamente em save_transaction com card_name — nunca peça
 "aluguel 1500 todo dia 5" → register_recurring(user_phone, name="Aluguel", amount=1500, category="Moradia", day_of_month=5)
 "quais meus gastos fixos?" → get_recurring(user_phone)
 "cancelei a Netflix" → deactivate_recurring(user_phone, name="Netflix")
-"compromissos futuros" / "próximos 30 dias" → get_upcoming_commitments(user_phone, days=30)
+"compromissos futuros" / "o que tenho pra pagar" / "próximos 30 dias" → get_upcoming_commitments(user_phone, days=45)
+"o que pago em abril" / "compromissos de abril" → get_upcoming_commitments(user_phone, days=60)
 "minhas parcelas" → get_installments_summary(user_phone)
 
 ── SALÁRIO / CICLO ────────────────────────────────────────────
