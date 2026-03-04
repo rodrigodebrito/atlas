@@ -1894,11 +1894,12 @@ def get_month_comparison(user_phone: str) -> str:
 
 
 @tool
-def get_upcoming_commitments(user_phone: str, days: int = 30) -> str:
+def get_upcoming_commitments(user_phone: str, days: int = 60, month: str = "") -> str:
     """
     Lista compromissos financeiros nos próximos N dias:
     gastos fixos recorrentes e faturas de cartão que vencem nesse período.
-    days: número de dias à frente (padrão 30). Use 7 para "próxima semana", 90 para "3 meses".
+    days: número de dias à frente (padrão 60).
+    month: filtro opcional no formato YYYY-MM (ex: "2026-04") para mostrar só aquele mês.
     """
     today = _now_br()
     conn = _get_conn()
@@ -1913,21 +1914,9 @@ def get_upcoming_commitments(user_phone: str, days: int = 30) -> str:
 
     items = []
 
-    # ── Gastos fixos recorrentes ──────────────────────────────────────────
-    for offset in range(1, days + 1):
-        target = today + timedelta(days=offset)
-        target_day = target.day
-        target_date_label = target.strftime("%d/%m")
-        cur.execute(
-            "SELECT name, amount_cents FROM recurring_transactions WHERE user_id = ? AND active = 1 AND day_of_month = ?",
-            (user_id, target_day),
-        )
-        for rec_name, amount_cents in cur.fetchall():
-            items.append((target, target_date_label, "📋", rec_name, amount_cents))
-
-    # ── Faturas de cartão: calcula a data real de vencimento ──────────────
-    # Em vez de iterar por dia, calcula a próxima due_date de cada cartão
-    # levando em conta o ciclo de fechamento.
+    # ── Faturas de cartão PRIMEIRO: calcula data correta por ciclo de fechamento ──
+    # Isso também constrói card_bill_names para excluir do loop de recorrentes.
+    card_bill_names: set = set()
     cur.execute(
         "SELECT id, name, closing_day, due_day, current_bill_opening_cents FROM credit_cards WHERE user_id = ?",
         (user_id,),
@@ -1936,20 +1925,22 @@ def get_upcoming_commitments(user_phone: str, days: int = 30) -> str:
         if not closing_day or not due_day:
             continue
 
+        # Sempre marcar o nome como "tratado pelo loop de cartão",
+        # mesmo se bill_total = 0, para evitar duplicata no loop de recorrentes.
+        card_bill_names.add(f"Fatura {card_name}")
+
         # Próxima data de fechamento
         if today.day <= closing_day:
-            # Ainda não fechou este mês
             next_close_day = min(closing_day, calendar.monthrange(today.year, today.month)[1])
             next_close = today.replace(day=next_close_day)
         else:
-            # Já fechou este mês → próximo fechamento é no mês seguinte
             ny = today.year + (1 if today.month == 12 else 0)
             nm = 1 if today.month == 12 else today.month + 1
             next_close_day = min(closing_day, calendar.monthrange(ny, nm)[1])
             next_close = today.replace(year=ny, month=nm, day=next_close_day)
 
-        # Data de vencimento: se due_day > closing_day → mesmo mês do fechamento
-        #                      se due_day <= closing_day → mês seguinte ao fechamento
+        # Data de vencimento: due_day > closing_day → mesmo mês do fechamento
+        #                      due_day <= closing_day → mês seguinte ao fechamento
         if due_day > closing_day:
             due_date = next_close.replace(day=min(due_day, calendar.monthrange(next_close.year, next_close.month)[1]))
         else:
@@ -1959,9 +1950,9 @@ def get_upcoming_commitments(user_phone: str, days: int = 30) -> str:
 
         delta_days = (due_date - today).days
         if not (1 <= delta_days <= days):
-            continue  # fora da janela
+            continue
 
-        # Valor da fatura = opening_cents (current_bill) + compras + snapshot da fatura futura
+        # Valor da fatura: opening_cents + compras do ciclo atual + snapshot
         period_start = _bill_period_start(closing_day)
         cur.execute(
             "SELECT SUM(amount_cents) FROM transactions WHERE user_id = ? AND card_id = ? AND occurred_at >= ?",
@@ -1969,7 +1960,6 @@ def get_upcoming_commitments(user_phone: str, days: int = 30) -> str:
         )
         new_purchases = cur.fetchone()[0] or 0
 
-        # Snapshot de fatura futura (registrado via set_future_bill)
         bill_month_str = f"{next_close.year}-{next_close.month:02d}"
         cur.execute(
             "SELECT opening_cents FROM card_bill_snapshots WHERE card_id = ? AND bill_month = ?",
@@ -1979,21 +1969,77 @@ def get_upcoming_commitments(user_phone: str, days: int = 30) -> str:
         snapshot_cents = snap_row[0] if snap_row else 0
 
         bill_total = (opening_cents or 0) + new_purchases + snapshot_cents
+
+        # Fallback: se bill_total = 0, busca o valor no gasto recorrente vinculado a este cartão
+        if bill_total == 0:
+            cur.execute(
+                "SELECT amount_cents FROM recurring_transactions WHERE card_id = ? AND active = 1 LIMIT 1",
+                (card_id,),
+            )
+            rec_fallback = cur.fetchone()
+            if rec_fallback:
+                bill_total = rec_fallback[0]
+            else:
+                # Tenta por nome: "Fatura <card_name>" sem card_id linkado
+                cur.execute(
+                    "SELECT amount_cents FROM recurring_transactions WHERE user_id = ? AND active = 1 AND LOWER(name) = LOWER(?) LIMIT 1",
+                    (user_id, f"Fatura {card_name}"),
+                )
+                rec_fallback2 = cur.fetchone()
+                if rec_fallback2:
+                    bill_total = rec_fallback2[0]
+
         if bill_total > 0:
             date_label = due_date.strftime("%d/%m")
             items.append((due_date, date_label, "💳", f"Fatura {card_name}", bill_total))
 
+    # ── Gastos fixos recorrentes (excluindo faturas de cartão já tratadas acima) ──
+    for offset in range(1, days + 1):
+        target = today + timedelta(days=offset)
+        target_day = target.day
+        target_date_label = target.strftime("%d/%m")
+        # card_id IS NULL: exclui recorrentes vinculados a cartão (tratados pelo loop acima)
+        cur.execute(
+            "SELECT name, amount_cents FROM recurring_transactions WHERE user_id = ? AND active = 1 AND day_of_month = ? AND card_id IS NULL",
+            (user_id, target_day),
+        )
+        for rec_name, amount_cents in cur.fetchall():
+            if rec_name in card_bill_names:  # segurança extra: exclui pelo nome
+                continue
+            items.append((target, target_date_label, "📋", rec_name, amount_cents))
+
     conn.close()
 
     if not items:
+        if month:
+            return f"Nenhum compromisso encontrado em {month}."
         return f"Nenhum compromisso encontrado nos próximos {days} dias."
 
     # Sort by date
     items.sort(key=lambda x: x[0])
 
+    # Filtro por mês específico
+    if month:
+        items = [item for item in items if item[0].strftime("%Y-%m") == month]
+        if not items:
+            return f"Nenhum compromisso encontrado em {month}."
+
     total = sum(i[4] for i in items)
-    period_label = f"próximos {days} dias" if days != 7 else "próxima semana"
-    lines = [f"*{user_name}*, seus compromissos nos {period_label}:"]
+
+    if month:
+        try:
+            dt = datetime.strptime(month, "%Y-%m")
+            months_pt = ["", "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+                         "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
+            period_label = f"{months_pt[dt.month]}/{dt.year}"
+        except Exception:
+            period_label = month
+    elif days == 7:
+        period_label = "próxima semana"
+    else:
+        period_label = f"próximos {days} dias"
+
+    lines = [f"*{user_name}*, seus compromissos em {period_label}:"]
     lines.append("")
 
     current_month_label = ""
@@ -3566,8 +3612,9 @@ Cartão criado automaticamente em save_transaction com card_name — nunca peça
 "aluguel 1500 todo dia 5" → register_recurring(user_phone, name="Aluguel", amount=1500, category="Moradia", day_of_month=5)
 "quais meus gastos fixos?" → get_recurring(user_phone)
 "cancelei a Netflix" → deactivate_recurring(user_phone, name="Netflix")
-"compromissos futuros" / "o que tenho pra pagar" / "próximos 30 dias" → get_upcoming_commitments(user_phone, days=45)
-"o que pago em abril" / "compromissos de abril" → get_upcoming_commitments(user_phone, days=60)
+"compromissos futuros" / "o que tenho pra pagar" → get_upcoming_commitments(user_phone, days=60)
+"o que pago em abril" / "compromissos de abril" / "o que tenho em abril" → get_upcoming_commitments(user_phone, days=60, month="2026-04")
+"o que pago em maio" → get_upcoming_commitments(user_phone, days=90, month="2026-05")
 "minhas parcelas" → get_installments_summary(user_phone)
 
 ── SALÁRIO / CICLO ────────────────────────────────────────────
