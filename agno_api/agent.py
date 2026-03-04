@@ -1720,28 +1720,23 @@ def get_next_bill(user_phone: str, card_name: str) -> str:
         d = min(closing_day, calendar.monthrange(y, m)[1])
         next_close = today.replace(year=y, month=m, day=d)
 
-    # O ciclo ATUAL vai de cycle_start até next_close
-    # O ciclo SEGUINTE (= próxima fatura) vai de next_close até next_close + 1 mês
+    # "Próxima fatura" = o ciclo que está ABERTO agora e vai fechar em next_close.
+    # ex: ML fecha dia 2, hoje dia 4 → ciclo aberto: 02/mar → 02/abr → vence 07/abr
+    period_start = _bill_period_start(closing_day)   # início do ciclo atual (último fechamento)
     next_close_str = next_close.strftime("%Y-%m-%d")
-    y2 = next_close.year + (1 if next_close.month == 12 else 0)
-    m2 = 1 if next_close.month == 12 else next_close.month + 1
-    d2 = min(closing_day, calendar.monthrange(y2, m2)[1])
-    cycle_end = next_close.replace(year=y2, month=m2, day=d2)
-    cycle_end_str = cycle_end.strftime("%Y-%m-%d")
 
-    # Próxima fatura = ciclo que fecha em cycle_end (ex: fecha Abr/25)
-    next_month = f"{cycle_end.year}-{cycle_end.month:02d}"
-    days_current_closes = (next_close - today).days  # dias até fechar a fatura atual
-    days_next_closes = (cycle_end - today).days        # dias até fechar a próxima fatura
+    # Mês de referência da fatura = mês em que next_close cai (ex: "2026-04" para fechar dia 2/abr)
+    next_month = f"{next_close.year}-{next_close.month:02d}"
+    days_until_close = (next_close - today).days  # dias até fechar esta fatura
 
-    # Transações do próximo ciclo (novo sistema: occurred_at entre next_close e cycle_end)
+    # Transações do ciclo atual (desde o último fechamento até o próximo)
     cur.execute(
         """SELECT merchant, category, amount_cents, installments, installment_number, installment_group_id
            FROM transactions
            WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE'
              AND occurred_at >= ? AND occurred_at < ?
            ORDER BY occurred_at""",
-        (user_id, card_id, next_close_str, cycle_end_str)
+        (user_id, card_id, period_start, next_close_str)
     )
     next_cycle_rows = cur.fetchall()
 
@@ -1754,7 +1749,7 @@ def get_next_bill(user_phone: str, card_name: str) -> str:
     )
     recurring_rows = cur.fetchall()
 
-    # Snapshot de fatura (se houver valor pré-registrado)
+    # Snapshot de fatura (valor pré-registrado via set_future_bill)
     cur.execute(
         "SELECT opening_cents FROM card_bill_snapshots WHERE card_id = ? AND bill_month = ?",
         (card_id, next_month)
@@ -1776,7 +1771,7 @@ def get_next_bill(user_phone: str, card_name: str) -> str:
     total_next = snapshot_cents + total_installments + total_recurring
 
     lines = [f"📅 Próxima fatura estimada — {name} ({next_month})"]
-    lines.append(f"   Fatura atual fecha em {days_current_closes} dias (dia {closing_day}/{next_close.month:02d}) • Próxima vence dia {due_day}")
+    lines.append(f"   Fecha em {days_until_close} dias (dia {closing_day}/{next_close.month:02d}) • Vence dia {due_day}")
     lines.append("")
 
     if snapshot_cents > 0:
