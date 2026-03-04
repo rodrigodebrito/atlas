@@ -291,7 +291,8 @@ def get_fast_model():
 class ParsedTransaction(BaseModel):
     date: str = Field(description="Data da compra YYYY-MM-DD")
     merchant: str = Field(description="Nome do estabelecimento")
-    amount: float = Field(description="Valor em reais")
+    amount: float = Field(description="Valor em reais (sempre positivo)")
+    type: str = Field(default="debit", description="'debit' para compras, 'credit' para estornos/devoluções")
     category: str = Field(description="Categoria ATLAS ou 'Indefinido' se incerto")
     installment: str = Field(default="", description="Ex: '2/6' se parcelado, '' se à vista")
     confidence: float = Field(default=1.0, description="Confiança na categoria: 0.0-1.0")
@@ -3604,24 +3605,44 @@ Sua tarefa: extrair TODAS as transações visíveis na imagem da fatura.
 Para cada transação, identifique:
 - date: data da compra no formato YYYY-MM-DD (use o ano da fatura; se não houver ano, deduza pelo mês)
 - merchant: nome do estabelecimento exatamente como aparece na fatura
-- amount: valor em reais como número (ex: 89.90)
+- amount: valor em reais como número POSITIVO (ex: 89.90)
+- type: "debit" para compras/gastos (coluna DÉBITO), "credit" para estornos/devoluções (coluna CRÉDITO)
 - category: classifique em UMA das categorias:
   Alimentação | Transporte | Saúde | Moradia | Lazer | Assinaturas | Educação | Vestuário | Investimento | Pets | Outros | Indefinido
   Use "Indefinido" quando não tiver certeza razoável sobre a categoria.
 - confidence: número de 0.0 a 1.0 indicando sua confiança na categoria escolhida.
-  Use < 0.6 quando o merchant for ambíguo (ex: Amazon, Mercado Livre, lojas genéricas).
+  Use < 0.6 quando o merchant for ambíguo (ex: nomes de pessoas, siglas, códigos).
 - installment: se parcelado, escreva "X/Y" (ex: "2/6"); se à vista, deixe ""
 
-Regras:
-- Ignore linhas de pagamento, crédito, ajuste ou saldo anterior
-- Se um valor parecer IOF ou encargo, coloque em "Outros"
+REGRAS CRÍTICAS — DÉBITO vs CRÉDITO:
+- Faturas têm colunas DÉBITO e CRÉDITO. Valores na coluna CRÉDITO são estornos/devoluções.
+- Marque type="credit" para valores na coluna CRÉDITO (estornos, devoluções, cancelamentos).
+- Marque type="debit" para valores na coluna DÉBITO (compras normais).
+- NUNCA some créditos como se fossem débitos. Eles REDUZEM o total da fatura.
+
+REGRAS DE CATEGORIZAÇÃO:
+- Hostinger, EBN, DM HOSTINGER → Assinaturas (hosting)
+- ANTHROPIC, CLAUDE AI, ELEVENLABS, OpenAI → Assinaturas (IA/tech)
+- IOF COMPRA INTERNACIONAL → Outros (taxa bancária)
+- NET PGT, CLARO, VIVO, TIM → Moradia (telecom)
+- FARM, RIACHUELO, RENNER, C&A, ZARA → Vestuário
+- COBASI, PET, PETSHOP, RAÇÃO → Pets
+- DROGASIL, DROGARIA, DROGACITY, DROGA LIDER → Saúde
+- SUPERMERCADO, D VILLE, CARREFOUR → Alimentação
+- POSTO, COMBUSTI, AUTO POSTO → Transporte
+- RESTAURAN, BURGER, PIZZARIA, ESPETO, SABOR → Alimentação
+- Nomes de pessoas (ex: HELIO RODRIGUES, NILSON DIAS) → Indefinido (confidence 0.3)
+
+OUTRAS REGRAS:
+- Ignore linhas de pagamento de fatura anterior, saldo anterior e ajustes
 - Não invente transações — só extraia o que está claramente visível
 - Se não conseguir ler uma linha, pule-a
-- Detecte o nome do cartão e o mês/ano de referência da fatura
+- Detecte o nome do cartão/banco e o mês/ano de referência da fatura
 - Se confidence < 0.6, defina category como "Indefinido"
+- O "total" retornado deve ser: soma dos débitos MENOS soma dos créditos
 
 Retorne APENAS JSON válido, sem texto adicional, neste formato exato:
-{"transactions":[{"date":"YYYY-MM-DD","merchant":"...","amount":0.0,"category":"...","installment":"","confidence":1.0}],"bill_month":"YYYY-MM","total":0.0,"card_name":"..."}
+{"transactions":[{"date":"YYYY-MM-DD","merchant":"...","amount":0.0,"type":"debit","category":"...","installment":"","confidence":1.0}],"bill_month":"YYYY-MM","total":0.0,"card_name":"..."}
 """
 
 statement_agent = Agent(
@@ -4264,14 +4285,20 @@ def _generate_statement_insights(transactions: list, user_id: str, bill_month: s
     }
     from collections import defaultdict
 
-    # Agrupamentos
+    # Separa débitos e créditos
+    debits = [tx for tx in transactions if tx.get("type", "debit") == "debit"]
+    credits = [tx for tx in transactions if tx.get("type", "debit") == "credit"]
+
+    # Agrupamentos (só débitos para categorias e merchants)
     cat_totals: dict = defaultdict(float)
     merchant_totals: dict = defaultdict(float)
-    for tx in transactions:
+    for tx in debits:
         cat_totals[tx["category"]] += tx["amount"]
         merchant_totals[tx["merchant"]] += tx["amount"]
 
-    total = sum(cat_totals.values())
+    total_debits = sum(cat_totals.values())
+    total_credits = sum(tx["amount"] for tx in credits)
+    total = total_debits - total_credits
     top_merchants = sorted(merchant_totals.items(), key=lambda x: -x[1])[:3]
     top_cats = sorted(cat_totals.items(), key=lambda x: -x[1])[:5]
 
@@ -4307,7 +4334,10 @@ def _generate_statement_insights(transactions: list, user_id: str, bill_month: s
         mo_label = bill_month
 
     lines = [f"📊 *Fatura — {mo_label}*", ""]
-    lines.append(f"💸 *Total: R${total:,.2f}* em {len(transactions)} transações".replace(",", "."))
+    if credits:
+        lines.append(f"💸 *Total: R${total:,.2f}* (R${total_debits:,.2f} em débitos — R${total_credits:,.2f} em créditos) · {len(transactions)} transações".replace(",", "."))
+    else:
+        lines.append(f"💸 *Total: R${total:,.2f}* em {len(transactions)} transações".replace(",", "."))
     lines.append("")
 
     if top_merchants:
@@ -4549,8 +4579,15 @@ async def import_statement_endpoint(
     potential_duplicates = []
     import_source = f"fatura:{det_card}:{bill_month}"
 
+    credit_count = 0
     for tx in transactions:
         try:
+            # Pula créditos (estornos/devoluções) — não são gastos
+            if tx.get("type", "debit") == "credit":
+                credit_count += 1
+                skipped += 1
+                continue
+
             amount_cents = round(tx["amount"] * 100)
             if amount_cents <= 0:
                 skipped += 1
@@ -4712,12 +4749,18 @@ def report_fatura(id: str = "", user_phone: str = ""):
         return _HTMLResponse("<h2>Este relatório expirou (30 min). Envie a fatura novamente.</h2>", status_code=410)
 
     txs = _json_r.loads(txs_json)
-    total = sum(t["amount"] for t in txs)
 
     def _fmt_brl(v: float) -> str:
         """Formata valor como R$ no padrão BR: 1.234,56"""
         s = f"{v:,.2f}"  # 1,234.56
         return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+    # Separa débitos e créditos
+    debits = [t for t in txs if t.get("type", "debit") == "debit"]
+    credits = [t for t in txs if t.get("type", "debit") == "credit"]
+    total_debits = sum(t["amount"] for t in debits)
+    total_credits = sum(t["amount"] for t in credits)
+    total = total_debits - total_credits
 
     _months_pt = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"]
     try:
@@ -4725,10 +4768,10 @@ def report_fatura(id: str = "", user_phone: str = ""):
     except Exception:
         mo_label = bill_month
 
-    # Agrupamento por categoria para o gráfico
+    # Agrupamento por categoria para o gráfico (só débitos)
     from collections import defaultdict as _dd
     cat_totals = _dd(float)
-    for t in txs:
+    for t in debits:
         cat_totals[t.get("category", "Outros")] += t["amount"]
     cat_labels = list(cat_totals.keys())
     cat_values = [cat_totals[c] for c in cat_labels]
@@ -4748,13 +4791,16 @@ def report_fatura(id: str = "", user_phone: str = ""):
     for t in txs:
         cat = t.get("category","?")
         conf = t.get("confidence", 1.0)
+        is_credit = t.get("type", "debit") == "credit"
         badge = '<span class="badge-indef">❓</span>' if cat == "Indefinido" or conf < 0.6 else ""
         inst = f' <small>({t["installment"]})</small>' if t.get("installment") else ""
         color = cat_colors.get(cat, "#9E9E9E")
+        credit_style = ' style="color:#4CAF50;font-weight:600"' if is_credit else ""
+        credit_prefix = "-" if is_credit else ""
         rows_html += f"""<tr data-cat="{cat}">
           <td>{t.get("date","")}</td>
-          <td>{t.get("merchant","")}{inst}</td>
-          <td style="text-align:right">R${_fmt_brl(t["amount"])}</td>
+          <td>{t.get("merchant","")}{inst}{' <small style="color:#4CAF50">CRÉDITO</small>' if is_credit else ''}</td>
+          <td style="text-align:right{';color:#4CAF50;font-weight:600' if is_credit else ''}">{credit_prefix}R${_fmt_brl(t["amount"])}</td>
           <td><span class="cat-tag" style="background:{color}">{cat}</span>{badge}</td>
         </tr>"""
 
@@ -4814,7 +4860,7 @@ def report_fatura(id: str = "", user_phone: str = ""):
 <div class="header">
   <div class="sub">💳 {card_name}</div>
   <div class="total">R${_fmt_brl(total)}</div>
-  <div class="sub">{len(txs)} transações · {mo_label} &nbsp;·&nbsp; <span class="status">{status_badge}</span></div>
+  <div class="sub">{len(txs)} transações · {mo_label}{f' · <span style="font-size:0.75rem">R${_fmt_brl(total_debits)} débitos — R${_fmt_brl(total_credits)} créditos</span>' if credits else ''} &nbsp;·&nbsp; <span class="status">{status_badge}</span></div>
 </div>
 
 <div class="card">
