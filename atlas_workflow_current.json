@@ -286,7 +286,7 @@
                 "conditions": [
                   {
                     "id": "bf854624-77ee-461e-a072-e373dcecf4f8",
-                    "leftValue": "={{ $('Info1').item.json.info_arquivo }}",
+                    "leftValue": "={{ $('Info1').item.json.attachment_file_type }}",
                     "rightValue": "",
                     "operator": {
                       "type": "string",
