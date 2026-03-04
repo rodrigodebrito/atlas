@@ -3698,6 +3698,10 @@ REGRAS CRÍTICAS — DÉBITO vs CRÉDITO:
 - Marque type="credit" para valores na coluna CRÉDITO (estornos, devoluções, cancelamentos).
 - Marque type="debit" para valores na coluna DÉBITO (compras normais).
 - NUNCA some créditos como se fossem débitos. Eles REDUZEM o total da fatura.
+- DICA: na Caixa, linhas com prefixo "HTM" na coluna CRÉDITO são estornos → type="credit".
+- Se a fatura mostra um total final (ex: "Total R$4.837,32C"), USE esse valor como "total" no JSON.
+  O sufixo "C" significa crédito (saldo a pagar). Confie no total impresso na fatura.
+- VALIDAÇÃO: some seus débitos e subtraia créditos. Se divergir do total impresso, revise os types.
 
 REGRAS DE CATEGORIZAÇÃO:
 - Hostinger, EBN, DM HOSTINGER → Assinaturas (hosting)
@@ -4393,8 +4397,10 @@ def get_daily_reminders():
 
 from fastapi import Form as _Form
 
-def _generate_statement_insights(transactions: list, user_id: str, bill_month: str) -> str:
-    """Gera texto de insights do mentor a partir das transações parseadas."""
+def _generate_statement_insights(transactions: list, user_id: str, bill_month: str, stated_total: float = 0.0) -> str:
+    """Gera texto de insights do mentor a partir das transações parseadas.
+    stated_total: total impresso na fatura (do LLM). Se fornecido e diferente do calculado, prevalece.
+    """
     if not transactions:
         return ""
 
@@ -4419,7 +4425,13 @@ def _generate_statement_insights(transactions: list, user_id: str, bill_month: s
 
     total_debits = sum(cat_totals.values())
     total_credits = sum(tx["amount"] for tx in credits)
-    total = total_debits - total_credits
+    calculated_total = total_debits - total_credits
+
+    # Se o total impresso na fatura foi informado, usa ele (mais confiável)
+    if stated_total > 0:
+        total = stated_total
+    else:
+        total = calculated_total
     top_merchants = sorted(merchant_totals.items(), key=lambda x: -x[1])[:3]
     top_cats = sorted(cat_totals.items(), key=lambda x: -x[1])[:5]
 
@@ -4610,8 +4622,8 @@ async def parse_statement_endpoint(
                     tx["confidence"] = 1.0
                     break
 
-    # Gera insights
-    insights_text = _generate_statement_insights(tx_dicts, user_id, bill_month)
+    # Gera insights (passa total da fatura como referência)
+    insights_text = _generate_statement_insights(tx_dicts, user_id, bill_month, parsed.total)
 
     # Salva pending import (TTL 30 min)
     import_id = str(uuid.uuid4())
