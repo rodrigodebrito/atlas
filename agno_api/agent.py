@@ -135,6 +135,7 @@ def _init_sqlite_tables():
         "ALTER TABLE users ADD COLUMN salary_day INTEGER DEFAULT 0",
         "ALTER TABLE users ADD COLUMN reminder_days_before INTEGER DEFAULT 3",
         "ALTER TABLE transactions ADD COLUMN card_id TEXT DEFAULT NULL",
+        "ALTER TABLE transactions ADD COLUMN installment_group_id TEXT DEFAULT NULL",
     ]:
         try:
             conn.execute(migration)
@@ -232,6 +233,7 @@ def _init_postgres_tables():
     for migration in [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_days_before INTEGER DEFAULT 3",
         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS card_id TEXT DEFAULT NULL",
+        "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS installment_group_id TEXT DEFAULT NULL",
     ]:
         try:
             cur.execute(migration)
@@ -384,24 +386,47 @@ def save_transaction(
     tx_id = str(uuid.uuid4())
     # Usa a data informada pelo modelo ou fallback para agora em BRT
     if occurred_at:
-        # Aceita "YYYY-MM-DD" ou "YYYY-MM-DDTHH:MM:SS" — normaliza para ISO com hora
         try:
-            if len(occurred_at) == 10:  # apenas data
-                now = occurred_at + "T12:00:00"
+            if len(occurred_at) == 10:
+                base_dt = datetime.fromisoformat(occurred_at + "T12:00:00")
             else:
-                now = occurred_at[:19]
+                base_dt = datetime.fromisoformat(occurred_at[:19])
         except Exception:
-            now = _now_br().isoformat()
+            base_dt = _now_br()
     else:
-        now = _now_br().isoformat()
-    cur.execute(
-        """INSERT INTO transactions
-           (id, user_id, type, amount_cents, total_amount_cents, installments, installment_number,
-            category, merchant, payment_method, notes, occurred_at, card_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (tx_id, user_id, transaction_type, amount_cents, total_amount_cents,
-         installments, 1, category, merchant, payment_method, notes, now, card_id),
-    )
+        base_dt = _now_br()
+
+    if installments > 1:
+        # Cria um registro por parcela, cada um com occurred_at no mês correto
+        group_id = tx_id  # 1ª parcela é o anchor do grupo
+        for i in range(1, installments + 1):
+            inst_id = tx_id if i == 1 else str(uuid.uuid4())
+            # Desloca o mês: parcela i = base_dt + (i-1) meses
+            target_month = base_dt.month + (i - 1)
+            target_year = base_dt.year + (target_month - 1) // 12
+            target_month = ((target_month - 1) % 12) + 1
+            target_day = min(base_dt.day, calendar.monthrange(target_year, target_month)[1])
+            inst_dt = base_dt.replace(year=target_year, month=target_month, day=target_day)
+            inst_occurred = inst_dt.strftime("%Y-%m-%dT%H:%M:%S")
+            cur.execute(
+                """INSERT INTO transactions
+                   (id, user_id, type, amount_cents, total_amount_cents, installments, installment_number,
+                    category, merchant, payment_method, notes, occurred_at, card_id, installment_group_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (inst_id, user_id, transaction_type, amount_cents, total_amount_cents,
+                 installments, i, category, merchant, payment_method, notes,
+                 inst_occurred, card_id, group_id),
+            )
+    else:
+        now = base_dt.strftime("%Y-%m-%dT%H:%M:%S")
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, total_amount_cents, installments, installment_number,
+                category, merchant, payment_method, notes, occurred_at, card_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (tx_id, user_id, transaction_type, amount_cents, total_amount_cents,
+             installments, 1, category, merchant, payment_method, notes, now, card_id),
+        )
     conn.commit()
     conn.close()
 
@@ -429,8 +454,8 @@ def save_transaction(
                 f"Ex: _\"fecha 25 vence 10\"_ — prometo que não pergunto mais 😄"
             )
 
-    # Calcula label de data
-    tx_date = now[:10]  # YYYY-MM-DD
+    # Calcula label de data (usa a data da 1ª parcela = base_dt)
+    tx_date = base_dt.strftime("%Y-%m-%d")
     today_str = _now_br().strftime("%Y-%m-%d")
     yesterday_str = (_now_br() - timedelta(days=1)).strftime("%Y-%m-%d")
     if tx_date == today_str:
@@ -703,39 +728,80 @@ def get_installments_summary(user_phone: str) -> str:
         conn.close()
         return "Nenhum dado encontrado."
 
+    today_str = _now_br().strftime("%Y-%m-%dT%H:%M:%S")
+
+    # Parcelas com group_id (novo sistema): busca anchor (installment_number=1) de grupos ativos
     cur.execute(
-        """SELECT merchant, category, amount_cents, total_amount_cents,
-                  installments, occurred_at
+        """SELECT installment_group_id, merchant, category, amount_cents, total_amount_cents, installments
            FROM transactions
-           WHERE user_id = ? AND type = 'EXPENSE' AND installments > 1
+           WHERE user_id = ? AND type = 'EXPENSE' AND installment_group_id IS NOT NULL
+             AND installment_number = 1
            ORDER BY occurred_at DESC""",
         (user_id,),
     )
-    rows = cur.fetchall()
+    group_anchors = cur.fetchall()
+
+    # Parcelas sem group_id (sistema legado): cálculo por offset de mês
+    cur.execute(
+        """SELECT merchant, category, amount_cents, total_amount_cents, installments, occurred_at
+           FROM transactions
+           WHERE user_id = ? AND type = 'EXPENSE' AND installments > 1
+             AND installment_group_id IS NULL
+           ORDER BY occurred_at DESC""",
+        (user_id,),
+    )
+    legacy_rows = cur.fetchall()
     conn.close()
 
-    if not rows:
+    if not group_anchors and not legacy_rows:
         return "Nenhuma compra parcelada registrada."
 
     total_monthly = 0
     total_commitment = 0
     lines = ["💳 Compras parceladas:"]
 
-    for merchant, category, parcela, total, n_parcelas, occurred_at in rows:
-        purchase_month = occurred_at[:7]
-        current_month = _now_br().strftime("%Y-%m")
+    # Novo sistema: conta registros futuros do grupo
+    conn2 = _get_conn()
+    cur2 = conn2.cursor()
+    for group_id, merchant, category, parcela, total, n_parcelas in group_anchors:
+        cur2.execute(
+            "SELECT COUNT(*) FROM transactions WHERE installment_group_id = ? AND occurred_at > ?",
+            (group_id, today_str),
+        )
+        pending = cur2.fetchone()[0]
+        if pending == 0:
+            continue  # todas já vencidas
+        nome = merchant or category
+        restante = parcela * (pending + 1)  # pending futuras + a de hoje (corrente)
+        # Parcela corrente = a que tem occurred_at <= hoje mais recente
+        cur2.execute(
+            "SELECT occurred_at FROM transactions WHERE installment_group_id = ? AND occurred_at <= ? ORDER BY occurred_at DESC LIMIT 1",
+            (group_id, today_str),
+        )
+        cur_row = cur2.fetchone()
+        parcelas_restantes = pending + (1 if cur_row else 0)
+        restante = parcela * parcelas_restantes
+        total_monthly += parcela
+        total_commitment += restante
+        lines.append(
+            f"\n  🛍️ {nome} ({category})"
+            f"\n     R${parcela/100:.2f}/mês × {parcelas_restantes} parcelas restantes"
+            f"\n     Restante: R${restante/100:.2f} de R${total/100:.2f} total"
+        )
+    conn2.close()
 
-        # meses desde a compra
+    # Sistema legado: offset de mês
+    current_month = _now_br().strftime("%Y-%m")
+    for merchant, category, parcela, total, n_parcelas, occurred_at in legacy_rows:
+        purchase_month = occurred_at[:7]
         py, pm = map(int, purchase_month.split("-"))
         cy, cm = map(int, current_month.split("-"))
         months_elapsed = (cy - py) * 12 + (cm - pm)
         parcelas_pagas = min(months_elapsed + 1, n_parcelas)
         parcelas_restantes = max(n_parcelas - parcelas_pagas, 0)
-        restante = parcela * parcelas_restantes
-
         if parcelas_restantes == 0:
-            continue  # quitada
-
+            continue
+        restante = parcela * parcelas_restantes
         nome = merchant or category
         total_monthly += parcela
         total_commitment += restante
@@ -898,19 +964,28 @@ def delete_last_transaction(user_phone: str) -> str:
         conn.close()
         return "Nenhuma transação encontrada."
     cur.execute(
-        "SELECT id, amount_cents, category, merchant FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+        "SELECT id, amount_cents, total_amount_cents, installments, category, merchant, installment_group_id FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
         (user_id,),
     )
     row = cur.fetchone()
     if not row:
         conn.close()
         return "Nenhuma transação para apagar."
-    tx_id, amount_cents, category, merchant = row
-    cur.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
-    conn.commit()
-    conn.close()
+    tx_id, amount_cents, total_cents, installments, category, merchant, group_id = row
     merchant_info = f" ({merchant})" if merchant else ""
-    return f"OK — R${amount_cents/100:.2f} {category}{merchant_info} apagado."
+
+    if group_id:
+        # Parcelado novo sistema: apaga todas as parcelas do grupo
+        cur.execute("DELETE FROM transactions WHERE installment_group_id = ?", (group_id,))
+        conn.commit()
+        conn.close()
+        total_fmt = f"R${total_cents/100:.2f}" if total_cents else f"R${amount_cents*installments/100:.2f}"
+        return f"✅ Apagado! {installments}x {category}{merchant_info} ({total_fmt} total) removido."
+    else:
+        cur.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+        conn.commit()
+        conn.close()
+        return f"✅ Apagado! R${amount_cents/100:.2f} {category}{merchant_info} removido."
 
 
 @tool
@@ -1634,15 +1709,41 @@ def get_next_bill(user_phone: str, card_name: str) -> str:
 
     today = _now_br()
 
-    # Parcelas ativas vinculadas a este cartão
+    # Determina o próximo ciclo de fechamento
+    if today.day < closing_day:
+        # Ainda não fechou neste mês → próximo fechamento = este mês
+        next_close = today.replace(day=closing_day)
+    else:
+        # Já fechou → próximo fechamento = mês que vem
+        y = today.year + (1 if today.month == 12 else 0)
+        m = 1 if today.month == 12 else today.month + 1
+        d = min(closing_day, calendar.monthrange(y, m)[1])
+        next_close = today.replace(year=y, month=m, day=d)
+
+    # O ciclo ATUAL vai de cycle_start até next_close
+    # O ciclo SEGUINTE (= próxima fatura) vai de next_close até next_close + 1 mês
+    next_close_str = next_close.strftime("%Y-%m-%d")
+    y2 = next_close.year + (1 if next_close.month == 12 else 0)
+    m2 = 1 if next_close.month == 12 else next_close.month + 1
+    d2 = min(closing_day, calendar.monthrange(y2, m2)[1])
+    cycle_end = next_close.replace(year=y2, month=m2, day=d2)
+    cycle_end_str = cycle_end.strftime("%Y-%m-%d")
+
+    # Próxima fatura = ciclo que fecha em cycle_end (ex: fecha Abr/25)
+    next_month = f"{cycle_end.year}-{cycle_end.month:02d}"
+    days_current_closes = (next_close - today).days  # dias até fechar a fatura atual
+    days_next_closes = (cycle_end - today).days        # dias até fechar a próxima fatura
+
+    # Transações do próximo ciclo (novo sistema: occurred_at entre next_close e cycle_end)
     cur.execute(
-        """SELECT merchant, category, amount_cents, installments, occurred_at
+        """SELECT merchant, category, amount_cents, installments, installment_number, installment_group_id
            FROM transactions
-           WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND installments > 1
+           WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE'
+             AND occurred_at >= ? AND occurred_at < ?
            ORDER BY occurred_at""",
-        (user_id, card_id)
+        (user_id, card_id, next_close_str, cycle_end_str)
     )
-    installment_rows = cur.fetchall()
+    next_cycle_rows = cur.fetchall()
 
     # Gastos fixos vinculados a este cartão
     cur.execute(
@@ -1653,13 +1754,7 @@ def get_next_bill(user_phone: str, card_name: str) -> str:
     )
     recurring_rows = cur.fetchall()
 
-    # Snapshots de faturas futuras pré-existentes (registrados com set_future_bill)
-    # Próximo mês
-    if today.month == 12:
-        next_month = f"{today.year + 1}-01"
-    else:
-        next_month = f"{today.year}-{today.month + 1:02d}"
-
+    # Snapshot de fatura (se houver valor pré-registrado)
     cur.execute(
         "SELECT opening_cents FROM card_bill_snapshots WHERE card_id = ? AND bill_month = ?",
         (card_id, next_month)
@@ -1669,36 +1764,19 @@ def get_next_bill(user_phone: str, card_name: str) -> str:
 
     conn.close()
 
-    # Dias até fechamento do PRÓXIMO ciclo
-    if today.day < closing_day:
-        days_to_close = closing_day - today.day
-    else:
-        days_to_close = (30 - today.day) + closing_day
-
-    # Calcular parcelas que caem no próximo ciclo
     installment_items = []
     total_installments = 0
-
-    for merchant, category, parcela, n_parcelas, occurred_at in installment_rows:
-        purchase_date = datetime.fromisoformat(occurred_at[:19])
-        py, pm = purchase_date.year, purchase_date.month
-        cy, cm = today.year, today.month
-        months_elapsed = (cy - py) * 12 + (cm - pm)
-
-        current_inst = months_elapsed + 1
-        next_inst = current_inst + 1
-
-        if next_inst <= n_parcelas:
-            parcelas_restantes = n_parcelas - next_inst
-            nome = merchant or category
-            installment_items.append((nome, parcela, next_inst, n_parcelas, parcelas_restantes))
-            total_installments += parcela
+    for merchant, category, parcela, n_parcelas, inst_num, group_id in next_cycle_rows:
+        restantes = n_parcelas - inst_num
+        nome = merchant or category
+        installment_items.append((nome, parcela, inst_num, n_parcelas, restantes))
+        total_installments += parcela
 
     total_recurring = sum(r[1] for r in recurring_rows)
     total_next = snapshot_cents + total_installments + total_recurring
 
     lines = [f"📅 Próxima fatura estimada — {name} ({next_month})"]
-    lines.append(f"   Fecha em ~{days_to_close} dias (dia {closing_day}) • Vence dia {due_day}")
+    lines.append(f"   Fatura atual fecha em {days_current_closes} dias (dia {closing_day}/{next_close.month:02d}) • Próxima vence dia {due_day}")
     lines.append("")
 
     if snapshot_cents > 0:
