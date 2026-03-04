@@ -290,8 +290,9 @@ class ParsedTransaction(BaseModel):
     date: str = Field(description="Data da compra YYYY-MM-DD")
     merchant: str = Field(description="Nome do estabelecimento")
     amount: float = Field(description="Valor em reais")
-    category: str = Field(description="Categoria ATLAS")
+    category: str = Field(description="Categoria ATLAS ou 'Indefinido' se incerto")
     installment: str = Field(default="", description="Ex: '2/6' se parcelado, '' se à vista")
+    confidence: float = Field(default=1.0, description="Confiança na categoria: 0.0-1.0")
 
 class StatementParseResult(BaseModel):
     transactions: List[ParsedTransaction] = Field(default_factory=list)
@@ -1159,7 +1160,7 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
         "Alimentação": "🍽️", "Transporte": "🚗", "Saúde": "💊",
         "Moradia": "🏠", "Lazer": "🎮", "Assinaturas": "📱",
         "Educação": "📚", "Vestuário": "👟", "Investimento": "📈",
-        "Pets": "🐾", "Outros": "📦",
+        "Pets": "🐾", "Outros": "📦", "Indefinido": "❓",
     }
 
     # Separate by type; include card info for expenses
@@ -2334,7 +2335,7 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
         "Alimentação": "🍽️", "Transporte": "🚗", "Saúde": "💊",
         "Moradia": "🏠", "Lazer": "🎮", "Assinaturas": "📱",
         "Educação": "📚", "Vestuário": "👟", "Investimento": "📈",
-        "Pets": "🐾", "Outros": "📦",
+        "Pets": "🐾", "Outros": "📦", "Indefinido": "❓",
     }
 
     exp_rows = [(r[1], r[2], r[3]) for r in tx_rows if r[0] == "EXPENSE"]
@@ -3603,7 +3604,10 @@ Para cada transação, identifique:
 - merchant: nome do estabelecimento exatamente como aparece na fatura
 - amount: valor em reais como número (ex: 89.90)
 - category: classifique em UMA das categorias:
-  Alimentação | Transporte | Saúde | Moradia | Lazer | Assinaturas | Educação | Vestuário | Investimento | Pets | Outros
+  Alimentação | Transporte | Saúde | Moradia | Lazer | Assinaturas | Educação | Vestuário | Investimento | Pets | Outros | Indefinido
+  Use "Indefinido" quando não tiver certeza razoável sobre a categoria.
+- confidence: número de 0.0 a 1.0 indicando sua confiança na categoria escolhida.
+  Use < 0.6 quando o merchant for ambíguo (ex: Amazon, Mercado Livre, lojas genéricas).
 - installment: se parcelado, escreva "X/Y" (ex: "2/6"); se à vista, deixe ""
 
 Regras:
@@ -3612,9 +3616,10 @@ Regras:
 - Não invente transações — só extraia o que está claramente visível
 - Se não conseguir ler uma linha, pule-a
 - Detecte o nome do cartão e o mês/ano de referência da fatura
+- Se confidence < 0.6, defina category como "Indefinido"
 
 Retorne APENAS JSON válido, sem texto adicional, neste formato exato:
-{"transactions":[{"date":"YYYY-MM-DD","merchant":"...","amount":0.0,"category":"...","installment":""}],"bill_month":"YYYY-MM","total":0.0,"card_name":"..."}
+{"transactions":[{"date":"YYYY-MM-DD","merchant":"...","amount":0.0,"category":"...","installment":"","confidence":1.0}],"bill_month":"YYYY-MM","total":0.0,"card_name":"..."}
 """
 
 statement_agent = Agent(
@@ -4160,7 +4165,7 @@ def _generate_statement_insights(transactions: list, user_id: str, bill_month: s
         "Alimentação": "🍽️", "Transporte": "🚗", "Saúde": "💊",
         "Moradia": "🏠", "Lazer": "🎮", "Assinaturas": "📱",
         "Educação": "📚", "Vestuário": "👟", "Investimento": "📈",
-        "Pets": "🐾", "Outros": "📦",
+        "Pets": "🐾", "Outros": "📦", "Indefinido": "❓",
     }
     from collections import defaultdict
 
@@ -4230,6 +4235,15 @@ def _generate_statement_insights(transactions: list, user_id: str, bill_month: s
         sign = "+" if diff >= 0 else ""
         lines.append(f"📈 *vs. média dos últimos {len(history_lines)} meses:*")
         lines.append(f"  Total: {sign}R${diff:,.2f} vs R${avg:,.2f} de média".replace(",", "."))
+        lines.append("")
+
+    # Destaca transações com categoria indefinida
+    indefinidos = [tx for tx in transactions if tx.get("category") == "Indefinido" or tx.get("confidence", 1.0) < 0.6]
+    if indefinidos:
+        lines.append(f"❓ *{len(indefinidos)} transação(ões) com categoria indefinida:*")
+        for tx in indefinidos[:5]:
+            lines.append(f"  • {tx['merchant']} — R${tx['amount']:,.2f}".replace(",", "."))
+        lines.append("_Você pode definir a categoria após importar._")
         lines.append("")
 
     return "\n".join(lines)
