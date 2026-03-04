@@ -155,6 +155,18 @@ def _init_sqlite_tables():
             conn.commit()
         except Exception:
             pass
+    # Tabela de regras merchant→categoria (memória de categorização)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS merchant_category_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            merchant_pattern TEXT NOT NULL,
+            category TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(user_id, merchant_pattern)
+        );
+    """)
+    conn.commit()
     conn.close()
 
 if DB_TYPE == "sqlite":
@@ -266,6 +278,17 @@ def _init_postgres_tables():
             cur.execute(migration)
         except Exception:
             pass
+    # Tabela de regras merchant→categoria (memória de categorização)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS merchant_category_rules (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            merchant_pattern TEXT NOT NULL,
+            category TEXT NOT NULL,
+            created_at TEXT DEFAULT (now()::text),
+            UNIQUE(user_id, merchant_pattern)
+        );
+    """)
     conn.commit()
     cur.close()
     conn.close()
@@ -1062,6 +1085,61 @@ def update_last_transaction(
             parts.append(f"local: {merchant}")
 
         return f"OK — corrigido: {' | '.join(parts)}."
+
+    except Exception as e:
+        return f"ERRO: {str(e)}"
+
+
+@tool(description="""Atualiza a categoria de TODAS as transações de um estabelecimento e salva a regra para futuras importações.
+Use quando o usuário disser: "HELIO RODRIGUES é alimentação", "muda Talentos pra Lazer", "X é categoria Y".
+Isso atualiza TODAS as transações existentes desse merchant E memoriza para futuras faturas.
+Categorias válidas: Alimentação, Transporte, Saúde, Moradia, Lazer, Assinaturas, Educação, Vestuário, Investimento, Pets, Outros.""")
+def update_merchant_category(user_phone: str, merchant_query: str, category: str) -> str:
+    """Atualiza categoria de todas as transações de um merchant e salva regra."""
+    valid_cats = ["Alimentação", "Transporte", "Saúde", "Moradia", "Lazer",
+                  "Assinaturas", "Educação", "Vestuário", "Investimento", "Pets", "Outros"]
+    if category not in valid_cats:
+        return f"Categoria inválida. Use uma de: {', '.join(valid_cats)}"
+
+    try:
+        conn = _get_conn()
+        cur = conn.cursor()
+
+        cur.execute("SELECT id FROM users WHERE phone=?", (user_phone,))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return "ERRO: usuário não encontrado."
+        user_id = row[0]
+
+        # Atualiza TODAS as transações que contêm o merchant (case-insensitive)
+        pattern = f"%{merchant_query}%"
+        cur.execute(
+            "UPDATE transactions SET category=? WHERE user_id=? AND LOWER(merchant) LIKE LOWER(?)",
+            (category, user_id, pattern)
+        )
+        updated = cur.rowcount
+
+        # Salva/atualiza a regra para futuras importações (UPSERT)
+        merchant_key = merchant_query.upper().strip()
+        if DB_TYPE == "postgres":
+            cur.execute(
+                """INSERT INTO merchant_category_rules (user_id, merchant_pattern, category)
+                   VALUES (%s, %s, %s)
+                   ON CONFLICT (user_id, merchant_pattern) DO UPDATE SET category = EXCLUDED.category""",
+                (user_id, merchant_key, category)
+            )
+        else:
+            cur.execute(
+                """INSERT INTO merchant_category_rules (user_id, merchant_pattern, category)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(user_id, merchant_pattern) DO UPDATE SET category = excluded.category""",
+                (user_id, merchant_key, category)
+            )
+        conn.commit()
+        conn.close()
+
+        return f"✅ *{updated} transação(ões)* de _{merchant_query}_ atualizadas para *{category}*.\n📝 Regra salva: nas próximas faturas, _{merchant_query}_ será automaticamente categorizado como *{category}*."
 
     except Exception as e:
         return f"ERRO: {str(e)}"
@@ -3916,6 +3994,12 @@ Cartão criado automaticamente em save_transaction com card_name — nunca peça
   "foi 150 não 200" → update_last_transaction(user_phone, amount=150)
   "o local era Magazine Luiza" → update_last_transaction(user_phone, merchant="Magazine Luiza")
 
+RECATEGORIZAR MERCHANT (atualiza TODAS as transações + salva regra para futuras faturas):
+  "HELIO RODRIGUES NAZAR é alimentação" / "muda Talentos pra Lazer" / "X é categoria Y"
+  → update_merchant_category(user_phone, merchant_query="HELIO RODRIGUES NAZAR", category="Alimentação")
+  ⚠️ REGRA: quando o usuário disser que um ESTABELECIMENTO pertence a uma CATEGORIA,
+  use update_merchant_category (atualiza tudo + memoriza), NÃO update_last_transaction.
+
 ── AJUDA ──────────────────────────────────────────────────────
 
 "ajuda" / "menu" / "o que você faz?" / "comandos" → responda com menu EXATO abaixo, sem chamar tool:
@@ -4153,7 +4237,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=6,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, delete_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement],
     add_datetime_to_context=True,
     markdown=True,
 )
@@ -4509,8 +4593,23 @@ async def parse_statement_endpoint(
     detected_card = card_name or parsed.card_name or "cartão"
     bill_month = parsed.bill_month or _now_br().strftime("%Y-%m")
 
-    # Gera insights
+    # Aplica regras de categorização do usuário antes de gerar insights
     tx_dicts = [t.model_dump() for t in parsed.transactions]
+    cur.execute(
+        "SELECT merchant_pattern, category FROM merchant_category_rules WHERE user_id=?",
+        (user_id,)
+    )
+    user_rules = {row[0].upper(): row[1] for row in cur.fetchall()}
+    if user_rules:
+        for tx in tx_dicts:
+            merchant_upper = tx.get("merchant", "").upper()
+            for pattern, cat in user_rules.items():
+                if pattern in merchant_upper:
+                    tx["category"] = cat
+                    tx["confidence"] = 1.0
+                    break
+
+    # Gera insights
     insights_text = _generate_statement_insights(tx_dicts, user_id, bill_month)
 
     # Salva pending import (TTL 30 min)
@@ -4601,6 +4700,21 @@ async def import_statement_endpoint(
         return {"message": "O prazo para importar expirou (30 min). Envie o print da fatura novamente."}
 
     transactions = _json.loads(txns_json)
+
+    # Aplica regras de categorização do usuário (merchant_category_rules)
+    cur.execute(
+        "SELECT merchant_pattern, category FROM merchant_category_rules WHERE user_id=?",
+        (user_id,)
+    )
+    user_rules = {row[0].upper(): row[1] for row in cur.fetchall()}
+    if user_rules:
+        for tx in transactions:
+            merchant_upper = tx.get("merchant", "").upper()
+            for pattern, cat in user_rules.items():
+                if pattern in merchant_upper:
+                    tx["category"] = cat
+                    tx["confidence"] = 1.0
+                    break
 
     # Resolve card_id se o cartão estiver cadastrado
     card_id = None
