@@ -4862,6 +4862,66 @@ async def import_statement_endpoint(
     }
 
 
+@app.post("/v1/clear-imports")
+async def clear_imports_endpoint(
+    user_phone: str = _Form(...),
+    import_source_filter: str = _Form(""),
+):
+    """
+    Apaga todas as transações importadas de fatura do usuário.
+    Se import_source_filter fornecido, apaga só as com aquele import_source.
+    Também limpa pending_statement_imports correspondentes.
+    """
+    user_phone = user_phone.strip()
+    if user_phone and not user_phone.startswith("+"):
+        user_phone = "+" + user_phone
+
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id FROM users WHERE phone=?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return {"error": "Usuário não encontrado.", "message": "Usuário não encontrado."}
+    user_id = row[0]
+
+    if import_source_filter:
+        cur.execute(
+            "SELECT COUNT(*) FROM transactions WHERE user_id=? AND import_source=?",
+            (user_id, import_source_filter)
+        )
+        count = cur.fetchone()[0]
+        cur.execute(
+            "DELETE FROM transactions WHERE user_id=? AND import_source=?",
+            (user_id, import_source_filter)
+        )
+    else:
+        cur.execute(
+            "SELECT COUNT(*) FROM transactions WHERE user_id=? AND import_source IS NOT NULL",
+            (user_id,)
+        )
+        count = cur.fetchone()[0]
+        cur.execute(
+            "DELETE FROM transactions WHERE user_id=? AND import_source IS NOT NULL",
+            (user_id,)
+        )
+
+    # Limpa pending_statement_imports também (reseta imported_at)
+    cur.execute(
+        "UPDATE pending_statement_imports SET imported_at=NULL WHERE user_id=?",
+        (user_id,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "message": f"🗑️ {count} transações importadas removidas com sucesso.",
+        "deleted": count,
+    }
+
+
 @app.get("/v1/pending-import")
 def get_pending_import(user_phone: str):
     """Retorna o import_id pendente mais recente do usuário (para o n8n usar no fluxo 'importar')."""
