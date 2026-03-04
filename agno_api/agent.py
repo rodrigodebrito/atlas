@@ -4357,11 +4357,12 @@ async def parse_statement_endpoint(
             messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": f"Extraia TODAS as transações desta fatura e retorne JSON válido.\n\n{STATEMENT_INSTRUCTIONS}"},
+                    {"type": "text", "text": f"Extraia TODAS as transações desta fatura, incluindo TODAS as páginas. Não pare antes de processar o documento inteiro. Retorne JSON válido.\n\n{STATEMENT_INSTRUCTIONS}"},
                     file_content,
                 ],
             }],
             response_format={"type": "json_object"},
+            max_tokens=16000,
         )
         raw_json = completion.choices[0].message.content
         parsed = StatementParseResult.model_validate(_json_vision.loads(raw_json))
