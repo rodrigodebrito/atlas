@@ -4303,43 +4303,36 @@ async def parse_statement_endpoint(
         or raw_bytes[:4] == b"%PDF"
     )
 
-    # Extrai transações via visão
+    # Extrai transações via visão — OpenAI gpt-4o direto (imagem ou PDF)
     try:
+        import openai as _openai_lib
+        import json as _json_vision
+        _oai = _openai_lib.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
         if is_pdf:
-            # PDF: chama OpenAI diretamente com file content type
-            import openai as _openai_lib
-            import json as _json_pdf
-            _oai = _openai_lib.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-            completion = await _oai.chat.completions.create(
-                model="gpt-4o",
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": f"Extraia TODAS as transações desta fatura e retorne JSON válido.\n\n{STATEMENT_INSTRUCTIONS}"},
-                        {"type": "file", "file": {"filename": "fatura.pdf", "file_data": f"data:application/pdf;base64,{file_b64}"}},
-                    ],
-                }],
-                response_format={"type": "json_object"},
-            )
-            raw_json = completion.choices[0].message.content
-            parsed = StatementParseResult.model_validate(_json_pdf.loads(raw_json))
+            media_type = "application/pdf"
+            file_content = {"type": "file", "file": {"filename": "fatura.pdf", "file_data": f"data:{media_type};base64,{file_b64}"}}
         else:
-            # Imagem: usa Agno statement_agent
-            import json as _json_img
-            img_obj = _AgnoImage(base64_data=file_b64)
-            result = await statement_agent.arun(
-                "Extraia todas as transações desta fatura de cartão de crédito.",
-                images=[img_obj],
-            )
-            raw = result.content if isinstance(result.content, str) else str(result.content)
-            raw = raw.strip().strip("```").strip()
-            if raw.startswith("json"):
-                raw = raw[4:].strip()
-            parsed = StatementParseResult.model_validate(_json_img.loads(raw))
+            media_type = content_type if content_type.startswith("image/") else "image/jpeg"
+            file_content = {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{file_b64}"}}
+
+        completion = await _oai.chat.completions.create(
+            model="gpt-4o",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"Extraia TODAS as transações desta fatura e retorne JSON válido.\n\n{STATEMENT_INSTRUCTIONS}"},
+                    file_content,
+                ],
+            }],
+            response_format={"type": "json_object"},
+        )
+        raw_json = completion.choices[0].message.content
+        parsed = StatementParseResult.model_validate(_json_vision.loads(raw_json))
     except Exception as e:
         conn.close()
         err_type = "PDF" if is_pdf else "imagem"
-        return {"error": str(e), "message": f"Não consegui analisar o {err_type}. Certifique-se que é um arquivo claro da fatura."}
+        return {"error": str(e), "message": f"Não consegui analisar o {err_type}. Tente novamente com um print mais claro."}
 
     if not parsed.transactions:
         conn.close()
