@@ -4618,12 +4618,17 @@ async def import_statement_endpoint(
             dup_note += f"\n  • {d['fatura']} vs '{d['atlas']}' — R${d['amount']:,.2f} em {d['date']}".replace(",", ".")
         dup_note += "\n_Verifique e delete manualmente se necessário._"
 
+    report_url = f"https://atlas-m3wb.onrender.com/v1/report/fatura?id={imp_id}"
+
     return {
         "message": (
             f"✅ *{imported} transações importadas*{card_link}{skip_note}{dup_note}\n\n"
             f"Origem salva: `{import_source}`\n"
-            f"Pergunte _\"como tá meu mês?\"_ para ver o resumo atualizado."
+            f"Pergunte _\"como tá meu mês?\"_ para ver o resumo atualizado.\n\n"
+            f"📊 *Ver relatório detalhado:*\n{report_url}"
         ),
+        "import_id": imp_id,
+        "report_url": report_url,
         "imported": imported,
         "skipped": skipped,
         "potential_duplicates": len(potential_duplicates),
@@ -4649,6 +4654,215 @@ def get_pending_import(user_phone: str):
     row = cur.fetchone()
     conn.close()
     return {"import_id": row[0] if row else None}
+
+
+@app.get("/v1/report/fatura")
+def report_fatura(id: str = "", user_phone: str = ""):
+    """Gera relatório HTML interativo de uma fatura importada ou pendente."""
+    from fastapi.responses import HTMLResponse as _HTMLResponse
+    import json as _json_r
+
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    row = None
+    if id:
+        cur.execute(
+            "SELECT transactions_json, card_name, bill_month, created_at, imported_at, expires_at "
+            "FROM pending_statement_imports WHERE id=?", (id,)
+        )
+        row = cur.fetchone()
+    elif user_phone:
+        cur.execute("SELECT id FROM users WHERE phone=?", (user_phone,))
+        u = cur.fetchone()
+        if u:
+            cur.execute(
+                "SELECT transactions_json, card_name, bill_month, created_at, imported_at, expires_at "
+                "FROM pending_statement_imports WHERE user_id=? ORDER BY created_at DESC LIMIT 1", (u[0],)
+            )
+            row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return _HTMLResponse("<h2>Relatório não encontrado ou expirado.</h2>", status_code=404)
+
+    txs_json, card_name, bill_month, created_at, imported_at, expires_at = row
+    now_str = _now_br().strftime("%Y-%m-%dT%H:%M:%S")
+    if not imported_at and expires_at and now_str > expires_at:
+        return _HTMLResponse("<h2>Este relatório expirou (30 min). Envie a fatura novamente.</h2>", status_code=410)
+
+    txs = _json_r.loads(txs_json)
+    total = sum(t["amount"] for t in txs)
+
+    def _fmt_brl(v: float) -> str:
+        """Formata valor como R$ no padrão BR: 1.234,56"""
+        s = f"{v:,.2f}"  # 1,234.56
+        return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+    _months_pt = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"]
+    try:
+        mo_label = _months_pt[int(bill_month[5:7])-1] + "/" + bill_month[2:4]
+    except Exception:
+        mo_label = bill_month
+
+    # Agrupamento por categoria para o gráfico
+    from collections import defaultdict as _dd
+    cat_totals = _dd(float)
+    for t in txs:
+        cat_totals[t.get("category", "Outros")] += t["amount"]
+    cat_labels = list(cat_totals.keys())
+    cat_values = [cat_totals[c] for c in cat_labels]
+
+    cat_colors = {
+        "Alimentação":"#4CAF50","Transporte":"#2196F3","Saúde":"#E91E63",
+        "Moradia":"#FF9800","Lazer":"#9C27B0","Assinaturas":"#00BCD4",
+        "Educação":"#3F51B5","Vestuário":"#F44336","Investimento":"#009688",
+        "Pets":"#795548","Outros":"#9E9E9E","Indefinido":"#FF5722",
+    }
+    colors_js = "[" + ",".join(f'"{cat_colors.get(c,"#9E9E9E")}"' for c in cat_labels) + "]"
+    labels_js = "[" + ",".join(f'"{c}"' for c in cat_labels) + "]"
+    values_js = "[" + ",".join(f'{v:.2f}' for v in cat_values) + "]"
+
+    # Linhas da tabela
+    rows_html = ""
+    for t in txs:
+        cat = t.get("category","?")
+        conf = t.get("confidence", 1.0)
+        badge = '<span class="badge-indef">❓</span>' if cat == "Indefinido" or conf < 0.6 else ""
+        inst = f' <small>({t["installment"]})</small>' if t.get("installment") else ""
+        color = cat_colors.get(cat, "#9E9E9E")
+        rows_html += f"""<tr data-cat="{cat}">
+          <td>{t.get("date","")}</td>
+          <td>{t.get("merchant","")}{inst}</td>
+          <td style="text-align:right">R${_fmt_brl(t["amount"])}</td>
+          <td><span class="cat-tag" style="background:{color}">{cat}</span>{badge}</td>
+        </tr>"""
+
+    # Botões de filtro
+    all_cats = sorted(set(t.get("category","Outros") for t in txs))
+    filter_btns = '<button class="filter-btn active" onclick="filterCat(\'all\',this)">Todas</button>'
+    for c in all_cats:
+        color = cat_colors.get(c, "#9E9E9E")
+        filter_btns += f'<button class="filter-btn" onclick="filterCat(\'{c}\',this)" style="--cat-color:{color}">{c}</button>'
+
+    status_badge = '✅ Importada' if imported_at else '⏳ Pendente de importação'
+
+    html = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fatura {card_name} — {mo_label}</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: #f0f2f5; color: #111; }}
+  .header {{ background: linear-gradient(135deg, #128c7e, #075e54);
+             color: white; padding: 20px 16px 16px; }}
+  .header h1 {{ font-size: 1.3rem; font-weight: 700; }}
+  .header .sub {{ font-size: 0.85rem; opacity: 0.85; margin-top: 4px; }}
+  .total {{ font-size: 2rem; font-weight: 800; margin: 8px 0 4px; }}
+  .status {{ display: inline-block; background: rgba(255,255,255,0.2);
+             border-radius: 12px; padding: 2px 10px; font-size: 0.78rem; }}
+  .card {{ background: white; border-radius: 12px; margin: 12px;
+           padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }}
+  .card h2 {{ font-size: 0.9rem; color: #666; text-transform: uppercase;
+              letter-spacing: .05em; margin-bottom: 12px; }}
+  .chart-wrap {{ max-width: 280px; margin: 0 auto; }}
+  .filters {{ display: flex; flex-wrap: wrap; gap: 6px; }}
+  .filter-btn {{ border: none; border-radius: 20px; padding: 6px 14px;
+                 font-size: 0.82rem; cursor: pointer; background: #eee;
+                 color: #333; transition: all .15s; }}
+  .filter-btn.active {{ background: var(--cat-color, #128c7e); color: white; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
+  th {{ text-align: left; padding: 8px 6px; border-bottom: 2px solid #eee;
+        font-size: 0.75rem; color: #888; text-transform: uppercase; }}
+  td {{ padding: 10px 6px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }}
+  tr:last-child td {{ border-bottom: none; }}
+  .cat-tag {{ display: inline-block; border-radius: 10px; padding: 2px 8px;
+              font-size: 0.75rem; color: white; white-space: nowrap; }}
+  .badge-indef {{ margin-left: 4px; }}
+  tr.hidden {{ display: none; }}
+  .legend {{ display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }}
+  .legend-item {{ display: flex; align-items: center; gap: 8px; font-size: 0.82rem; }}
+  .legend-dot {{ width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="sub">💳 {card_name}</div>
+  <div class="total">R${_fmt_brl(total)}</div>
+  <div class="sub">{len(txs)} transações · {mo_label} &nbsp;·&nbsp; <span class="status">{status_badge}</span></div>
+</div>
+
+<div class="card">
+  <h2>Por Categoria</h2>
+  <div class="chart-wrap">
+    <canvas id="pieChart"></canvas>
+  </div>
+  <div class="legend" id="legend"></div>
+</div>
+
+<div class="card">
+  <h2>Filtrar</h2>
+  <div class="filters">{filter_btns}</div>
+</div>
+
+<div class="card">
+  <h2>Transações <span id="count-label" style="font-weight:400;color:#999">({len(txs)})</span></h2>
+  <table>
+    <thead><tr><th>Data</th><th>Estabelecimento</th><th style="text-align:right">Valor</th><th>Categoria</th></tr></thead>
+    <tbody id="txTable">{rows_html}</tbody>
+  </table>
+</div>
+
+<script>
+const labels = {labels_js};
+const values = {values_js};
+const colors = {colors_js};
+
+const ctx = document.getElementById('pieChart').getContext('2d');
+new Chart(ctx, {{
+  type: 'doughnut',
+  data: {{ labels, datasets: [{{ data: values, backgroundColor: colors, borderWidth: 2 }}] }},
+  options: {{
+    plugins: {{ legend: {{ display: false }} }},
+    cutout: '60%',
+  }}
+}});
+
+// Legenda manual
+const legend = document.getElementById('legend');
+labels.forEach((l, i) => {{
+  const pct = (values[i] / {total} * 100).toFixed(0);
+  const valStr = values[i].toFixed(2).replace('.',',').replace(/\\B(?=(\\d{{3}})+(?!\\d))/g, '.');
+  legend.innerHTML += `<div class="legend-item">
+    <div class="legend-dot" style="background:${{colors[i]}}"></div>
+    <span>${{l}}</span>
+    <span style="margin-left:auto;color:#666">R$${{valStr}} (${{pct}}%)</span>
+  </div>`;
+}});
+
+// Filtro por categoria
+function filterCat(cat, btn) {{
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const rows = document.querySelectorAll('#txTable tr');
+  let count = 0;
+  rows.forEach(r => {{
+    const show = cat === 'all' || r.dataset.cat === cat;
+    r.classList.toggle('hidden', !show);
+    if (show) count++;
+  }});
+  document.getElementById('count-label').textContent = '(' + count + ')';
+}}
+</script>
+</body>
+</html>"""
+
+    return _HTMLResponse(content=html)
 
 
 @app.get("/health")
