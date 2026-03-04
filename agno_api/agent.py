@@ -540,7 +540,7 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     cur.execute(
         """SELECT t.category, t.merchant, t.amount_cents, t.occurred_at,
                   t.card_id, t.installments, t.installment_number,
-                  c.name as card_name, c.closing_day, c.due_day
+                  c.name as card_name, c.closing_day, c.due_day, t.total_amount_cents
            FROM transactions t
            LEFT JOIN credit_cards c ON t.card_id = c.id
            WHERE t.user_id = ? AND t.type = 'EXPENSE' AND t.occurred_at LIKE ?
@@ -594,7 +594,7 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     # Group individual transactions by category, anotando crédito
     from collections import defaultdict
     cat_txs: dict = defaultdict(list)
-    for cat, merchant, amount, occurred, card_id, inst_total, inst_num, card_name, closing_day, due_day in tx_rows:
+    for cat, merchant, amount, occurred, card_id, inst_total, inst_num, card_name, closing_day, due_day, total_amt in tx_rows:
         label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
         if card_id:
             # Crédito — calcula mês de vencimento da fatura
@@ -605,8 +605,11 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
             else:
                 due_lbl = "?"
             short_card = card_name.split()[0] if card_name else "cartão"
-            inst_suffix = f" ({inst_num}/{inst_total})" if inst_total and inst_total > 1 else ""
-            item = f"• {label}: R${amount/100:,.2f}{inst_suffix} 💳 fat. {short_card} ({due_lbl})".replace(",", ".")
+            if inst_total and inst_total > 1 and total_amt and total_amt > amount:
+                inst_suffix = f" R${total_amt/100:,.2f} em {inst_total}x (R${amount/100:,.2f}/parc.)".replace(",", ".")
+            else:
+                inst_suffix = f" R${amount/100:,.2f}".replace(",", ".")
+            item = f"• {label}:{inst_suffix} 💳 fat. {short_card} ({due_lbl})"
         else:
             # Caixa / débito / PIX
             cash_expenses += amount
@@ -1073,7 +1076,7 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     cur.execute(
         f"""SELECT t.type, t.category, t.merchant, t.amount_cents,
                    t.card_id, t.occurred_at, t.installments, t.installment_number,
-                   c.name as card_name, c.closing_day, c.due_day
+                   c.name as card_name, c.closing_day, c.due_day, t.total_amount_cents
             FROM transactions t
             LEFT JOIN credit_cards c ON t.card_id = c.id
             WHERE t.user_id = ? {type_filter} AND ({date_conditions})
@@ -1108,7 +1111,7 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
         cat_txs: dict = defaultdict(list)
         cash_total = 0
         credit_total = 0
-        for _, cat, merchant, amount, card_id, occurred, inst_total, inst_num, card_name, closing_day, due_day in tx_list:
+        for _, cat, merchant, amount, card_id, occurred, inst_total, inst_num, card_name, closing_day, due_day, total_amt in tx_list:
             cat_totals[cat] += amount
             label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
             if card_id:
@@ -1118,8 +1121,11 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
                 else:
                     due_lbl = "?"
                 short_card = card_name.split()[0] if card_name else "cartão"
-                inst_suffix = f" ({inst_num}/{inst_total})" if inst_total and inst_total > 1 else ""
-                item = f"• {label}: R${amount/100:,.2f}{inst_suffix} 💳 fat. {short_card} ({due_lbl})".replace(",", ".")
+                if inst_total and inst_total > 1 and total_amt and total_amt > amount:
+                    inst_suffix = f" R${total_amt/100:,.2f} em {inst_total}x (R${amount/100:,.2f}/parc.)".replace(",", ".")
+                else:
+                    inst_suffix = f" R${amount/100:,.2f}".replace(",", ".")
+                item = f"• {label}:{inst_suffix} 💳 fat. {short_card} ({due_lbl})"
             else:
                 cash_total += amount
                 item = f"• {label}: R${amount/100:,.2f}".replace(",", ".")
