@@ -4034,7 +4034,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=6,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, delete_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, delete_last_transaction, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement],
     add_datetime_to_context=True,
     markdown=True,
 )
@@ -4504,6 +4504,42 @@ async def import_statement_endpoint(
 
 
 @app.get("/v1/pending-import")
+@tool(description="Mostra as transações extraídas da fatura enviada pelo usuário que ainda não foram importadas. Use quando o usuário perguntar sobre 'as transações da fatura', 'o que tinha na fatura', 'quais são as transações' após ter enviado uma imagem/PDF de fatura. Retorna a lista completa com merchant, valor e categoria.")
+def get_pending_statement(user_phone: str) -> str:
+    """Retorna as transações pendentes da fatura analisada (ainda não importadas)."""
+    import json as _json_ps
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE phone=?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return "Nenhuma fatura pendente encontrada."
+    user_id = row[0]
+    now_str = _now_br().strftime("%Y-%m-%dT%H:%M:%S")
+    cur.execute(
+        "SELECT transactions_json, card_name, bill_month, created_at FROM pending_statement_imports "
+        "WHERE user_id=? AND imported_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
+        (user_id, now_str)
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return "Nenhuma fatura pendente encontrada. Envie a imagem da fatura para analisar."
+    txs = _json_ps.loads(row[0])
+    card = row[1] or "cartão"
+    month = row[2] or ""
+    lines = [f"📋 *Transações da fatura {card} — {month}* ({len(txs)} itens)\n"]
+    for i, tx in enumerate(txs, 1):
+        cat = tx.get("category", "?")
+        conf = tx.get("confidence", 1.0)
+        flag = " ❓" if cat == "Indefinido" or conf < 0.6 else ""
+        inst = f" ({tx['installment']})" if tx.get("installment") else ""
+        lines.append(f"{i}. {tx['merchant']}{inst} — R${tx['amount']:,.2f} | {cat}{flag}".replace(",", "."))
+    lines.append(f"\n_Para importar, responda_ *importar*")
+    return "\n".join(lines)
+
+
 def get_pending_import(user_phone: str):
     """Retorna o import_id pendente mais recente do usuário (para o n8n usar no fluxo 'importar')."""
     conn = _get_conn()
