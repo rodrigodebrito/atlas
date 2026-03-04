@@ -2003,12 +2003,19 @@ def get_upcoming_commitments(user_phone: str, days: int = 60, month: str = "") -
 
         c2_delta = (c2_due - today).days
         if 1 <= c2_delta <= days:
-            # Valor do próximo ciclo = snapshot + compras novas (NÃO usa opening_cents — ele é do ciclo 1)
             c2_month_str = f"{next_close.year}-{next_close.month:02d}"
             c2_snap = _get_snapshot(card_id, c2_month_str)
             period_start = _bill_period_start(closing_day)
             c2_new = _get_new_purchases(user_id, card_id, period_start)
-            c2_amount = c2_snap + c2_new
+            if c2_snap > 0:
+                # Snapshot é autoritativo (sobrepõe opening_cents)
+                c2_amount = c2_snap + c2_new
+            elif today.day <= closing_day:
+                # Cartão ainda não fechou → opening_cents é o saldo em aberto deste ciclo
+                c2_amount = (opening_cents or 0) + c2_new
+            else:
+                # Cartão já fechou → opening_cents foi para Ciclo 1; próximo ciclo = só compras novas
+                c2_amount = c2_new
             if c2_amount == 0:
                 c2_amount = _fallback_recurring(user_id, card_id, card_name)
             if c2_amount > 0:
