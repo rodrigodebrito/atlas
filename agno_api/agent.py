@@ -4359,6 +4359,11 @@ async def parse_statement_endpoint(
     import httpx as _httpx
     from agno.media import Image as _AgnoImage
 
+    # Normaliza telefone: "+" vira espaço em query strings não-encoded (n8n)
+    user_phone = user_phone.strip()
+    if user_phone and not user_phone.startswith("+"):
+        user_phone = "+" + user_phone
+
     conn = _get_conn()
     cur = conn.cursor()
 
@@ -4484,6 +4489,11 @@ async def import_statement_endpoint(
     Se import_id não fornecido, usa o mais recente do usuário (nos últimos 30 min).
     """
     import json as _json
+
+    # Normaliza telefone: "+" vira espaço em query strings não-encoded (n8n)
+    user_phone = user_phone.strip()
+    if user_phone and not user_phone.startswith("+"):
+        user_phone = "+" + user_phone
 
     conn = _get_conn()
     cur = conn.cursor()
@@ -4638,6 +4648,10 @@ async def import_statement_endpoint(
 @app.get("/v1/pending-import")
 def get_pending_import(user_phone: str):
     """Retorna o import_id pendente mais recente do usuário (para o n8n usar no fluxo 'importar')."""
+    # Normaliza telefone: "+" vira espaço em query strings não-encoded (n8n)
+    user_phone = user_phone.strip()
+    if user_phone and not user_phone.startswith("+"):
+        user_phone = "+" + user_phone
     conn = _get_conn()
     cur = conn.cursor()
     cur.execute("SELECT id FROM users WHERE phone=?", (user_phone,))
@@ -4661,6 +4675,12 @@ def report_fatura(id: str = "", user_phone: str = ""):
     """Gera relatório HTML interativo de uma fatura importada ou pendente."""
     from fastapi.responses import HTMLResponse as _HTMLResponse
     import json as _json_r
+
+    # Normaliza telefone: "+" vira espaço em query strings não-encoded
+    if user_phone:
+        user_phone = user_phone.strip()
+        if not user_phone.startswith("+"):
+            user_phone = "+" + user_phone
 
     conn = _get_conn()
     cur = conn.cursor()
