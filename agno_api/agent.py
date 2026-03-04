@@ -2354,12 +2354,12 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     Resumo da semana atual (segunda a hoje) com lançamentos por categoria.
     filter_type: "ALL" (padrão), "EXPENSE" (só gastos), "INCOME" (só receitas).
     """
-    from collections import defaultdict
+    from collections import defaultdict, Counter
     today = _now_br()
     days_since_monday = today.weekday()
-    today_str = today.strftime("%Y-%m-%d")
-    start_label = (today - timedelta(days=days_since_monday)).strftime("%d/%m")
-    end_label = today.strftime("%d/%m")
+    monday = today - timedelta(days=days_since_monday)
+    start_label = monday.strftime("%d/%m/%Y")
+    end_label = today.strftime("%d/%m/%Y")
 
     # Gera os dias da semana (segunda até hoje) como strings YYYY-MM-DD
     week_dates = [
@@ -2383,10 +2383,10 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
 
     type_filter = "" if filter_type == "ALL" else f"AND type = '{filter_type}'"
     cur.execute(
-        f"""SELECT type, category, merchant, amount_cents
+        f"""SELECT type, category, merchant, amount_cents, occurred_at
            FROM transactions
            WHERE user_id = ? {type_filter} AND ({date_conditions})
-           ORDER BY amount_cents DESC""",
+           ORDER BY occurred_at, amount_cents DESC""",
         (user_id,) + date_params,
     )
     tx_rows = cur.fetchall()
@@ -2418,30 +2418,50 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
         "Pets": "🐾", "Outros": "📦", "Indefinido": "❓",
     }
 
-    exp_rows = [(r[1], r[2], r[3]) for r in tx_rows if r[0] == "EXPENSE"]
-    inc_rows = [(r[1], r[2], r[3]) for r in tx_rows if r[0] == "INCOME"]
+    # type, category, merchant, amount_cents, occurred_at
+    exp_rows = [(r[1], r[2], r[3], r[4]) for r in tx_rows if r[0] == "EXPENSE"]
+    inc_rows = [(r[1], r[2], r[3], r[4]) for r in tx_rows if r[0] == "INCOME"]
 
     filter_label = {"EXPENSE": " — apenas gastos", "INCOME": " — apenas receitas", "ALL": ""}.get(filter_type, "")
     period = f"{start_label}" if start_label == end_label else f"{start_label} a {end_label}"
-    lines = [f"*{user_name}*, sua semana ({period}){filter_label}:"]
+    lines = [f"📅 *{user_name}*, sua semana ({period}){filter_label}:"]
     lines.append("")
 
     top_cat_name, top_pct_val = "", 0.0
     alertas = []
 
+    # Para insights: rastreia gastos por dia e frequência de merchants
+    day_totals: dict = defaultdict(int)
+    merchant_freq: Counter = Counter()
+
+    def _date_label(occurred_at: str) -> str:
+        """Extrai DD/MM do occurred_at."""
+        try:
+            return f"{occurred_at[8:10]}/{occurred_at[5:7]}"
+        except Exception:
+            return ""
+
     def add_cat_block(rows_list, ref_total):
         cat_totals: dict = defaultdict(int)
         cat_txs: dict = defaultdict(list)
-        for cat, merchant, amount in rows_list:
+        for cat, merchant, amount, occurred in rows_list:
             cat_totals[cat] += amount
             label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
-            cat_txs[cat].append((label, amount))
+            dt_lbl = _date_label(occurred)
+            cat_txs[cat].append((occurred, dt_lbl, label, amount))
+            # Rastreia para insights
+            if rows_list is exp_rows_ref:
+                day_totals[occurred[:10]] += amount
+                if merchant and merchant.strip():
+                    merchant_freq[merchant.strip()] += 1
         for cat, total_cat in sorted(cat_totals.items(), key=lambda x: -x[1]):
             pct = total_cat / ref_total * 100 if ref_total else 0
             emoji = cat_emoji.get(cat, "💸")
             lines.append(f"{emoji} *{cat}* — R${total_cat/100:,.2f} ({pct:.0f}%)".replace(",", "."))
-            for label, amt in cat_txs[cat]:
-                lines.append(f"  • {label}: R${amt/100:,.2f}".replace(",", "."))
+            # Ordena por data, depois por valor desc
+            sorted_txs = sorted(cat_txs[cat], key=lambda x: (x[0], -x[3]))
+            for occurred, dt_lbl, label, amt in sorted_txs:
+                lines.append(f"  • {dt_lbl} — {label}: R${amt/100:,.2f}".replace(",", "."))
             lines.append("")
             # Alerta só se houver histórico do mês anterior para comparar
             prev_val = prev_month_totals.get(cat, 0)
@@ -2452,6 +2472,8 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
                     proj = daily_pace * 30
                     alertas.append(f"⚠️ {cat}: ritmo R${proj/100:.0f}/mês vs R${prev_val/100:.0f} em {prev_month_dt.strftime('%b')}")
         return cat_totals
+
+    exp_rows_ref = exp_rows  # referência para add_cat_block saber quais são expenses
 
     if filter_type in ("ALL", "EXPENSE") and exp_rows:
         total_exp = sum(r[2] for r in exp_rows)
@@ -2471,11 +2493,29 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
             top_cat_name, top_pct_val = tc, ct[tc] / total_inc * 100
 
     if alertas:
+        lines.append("")
         lines.append("🔔 *Alertas:*")
         lines.extend(alertas)
 
+    # Metadata para o LLM gerar insight personalizado
     if top_cat_name:
         lines.append(f"__top_category:{top_cat_name}:{top_pct_val:.0f}%")
+
+    # __insight: dia mais gastador + merchant mais frequente
+    insight_parts = []
+    if day_totals:
+        top_day = max(day_totals, key=day_totals.get)
+        top_day_lbl = f"{top_day[8:10]}/{top_day[5:7]}"
+        top_day_val = day_totals[top_day] / 100
+        insight_parts.append(f"dia_top={top_day_lbl} R${top_day_val:,.2f}".replace(",", "."))
+    if merchant_freq:
+        top_merchant, top_count = merchant_freq.most_common(1)[0]
+        if top_count >= 2:
+            insight_parts.append(f"frequente={top_merchant} ({top_count}x)")
+    if top_cat_name:
+        insight_parts.append(f"cat_top={top_cat_name} ({top_pct_val:.0f}%)")
+    if insight_parts:
+        lines.append(f"__insight:{' | '.join(insight_parts)}")
 
     return "\n".join(lines)
 
@@ -3452,6 +3492,16 @@ PROIBIDO (lista atualizada com exemplos reais):
 ⛔ PARA get_transactions_by_merchant: também proibido adicionar nome do usuário antes do output.
 O output começa com 🔍 — copie a partir do 🔍, não adicione nada antes.
 
+💡 EXCEÇÃO — INSIGHT PARA get_week_summary:
+Após copiar o retorno de get_week_summary INTEGRALMENTE, adicione UMA frase curta de insight
+no final. Use os dados da linha `__insight:` (NÃO mostre a linha __insight: ao usuário).
+A frase deve ser:
+- Tom leve, informal, pode ter humor ("Restaurante Talentos tá virando sua segunda casa hein 😄")
+- Baseada nos dados reais (dia com mais gastos, merchant mais frequente, categoria top)
+- NUNCA invente dados. Use APENAS o que está no __insight.
+- Máximo 2 frases. Pode incluir uma sugestão prática curta se fizer sentido.
+Remova as linhas que começam com `__` (são metadata interna) antes de enviar.
+
 Você é o ATLAS — assistente financeiro via WhatsApp.
 Tom: amigável, direto, informal. Português brasileiro natural.
 Use WhatsApp markdown: *negrito*, _itálico_, ~tachado~.
@@ -3540,10 +3590,14 @@ Se renda cadastrada mas sem receita lançada no mês: adicione após o insight:
 
 ## FORMATO: RESUMO SEMANAL (get_week_summary)
 
-A tool já retorna o dado formatado com nome, período, categorias e lançamentos.
+A tool já retorna o dado formatado com nome, período, datas por transação, categorias e lançamentos.
 Apresente o dado retornado DIRETAMENTE — não reformate nem resuma.
-Adicione UMA linha de insight ao final usando `__top_category` (mesma regra do mensal).
-Remova a linha `__top_category:...` da resposta final.
+Remova TODAS as linhas que começam com `__` (metadata interna: __top_category, __insight).
+Use `__insight:` para gerar UMA frase curta de insight personalizado ao final:
+- Tom leve, informal, humorado (ex: "Restaurante Talentos tá virando sua segunda casa hein 😄")
+- Baseada nos dados reais do __insight (dia mais gastador, merchant frequente, categoria top)
+- Pode incluir sugestão prática curta se fizer sentido
+- NUNCA invente dados. Máximo 2 frases.
 
 ## FORMATO: RESUMO DIÁRIO (get_today_total)
 
