@@ -5369,6 +5369,53 @@ def get_pending_import(user_phone: str):
     return {"import_id": row[0] if row else None}
 
 
+@app.get("/v1/debug/transactions")
+def debug_transactions(user_phone: str, month: str = "", import_source: str = "", limit: int = 20):
+    """Debug: lista transações com filtros opcionais."""
+    user_phone = user_phone.strip()
+    if user_phone and not user_phone.startswith("+"):
+        user_phone = "+" + user_phone
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE phone=?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return {"error": "user not found"}
+    user_id = row[0]
+    conditions = ["user_id = ?"]
+    params: list = [user_id]
+    if month:
+        conditions.append("occurred_at LIKE ?")
+        params.append(f"{month}%")
+    if import_source:
+        conditions.append("import_source LIKE ?")
+        params.append(f"%{import_source}%")
+    where = " AND ".join(conditions)
+    cur.execute(
+        f"SELECT id, type, amount_cents, category, merchant, occurred_at, card_id, import_source FROM transactions WHERE {where} ORDER BY occurred_at DESC LIMIT ?",
+        params + [limit],
+    )
+    rows = cur.fetchall()
+    cur.execute(f"SELECT COUNT(*) FROM transactions WHERE {where}", params)
+    total = cur.fetchone()[0]
+    # Also check pending_statement_imports
+    cur.execute("SELECT id, card_name, bill_month, imported_at, created_at FROM pending_statement_imports WHERE user_id=? ORDER BY created_at DESC LIMIT 5", (user_id,))
+    imports = cur.fetchall()
+    conn.close()
+    return {
+        "total": total,
+        "transactions": [
+            {"id": r[0], "type": r[1], "amount": r[2]/100, "category": r[3], "merchant": r[4], "date": r[5], "card_id": r[6], "import_source": r[7]}
+            for r in rows
+        ],
+        "recent_imports": [
+            {"id": r[0], "card_name": r[1], "bill_month": r[2], "imported_at": r[3], "created_at": r[4]}
+            for r in imports
+        ],
+    }
+
+
 @app.get("/v1/report/fatura")
 def report_fatura(id: str = "", user_phone: str = ""):
     """Gera relatório HTML interativo de uma fatura importada ou pendente."""
