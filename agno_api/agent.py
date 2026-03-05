@@ -1024,15 +1024,30 @@ def get_last_transaction(user_phone: str) -> str:
     )
 
 
-@tool(description="""Corrige a última transação registrada.
-Para corrigir data: passe occurred_at no formato YYYY-MM-DD (ex: occurred_at="2026-03-15").
-Para corrigir parcelamento: passe APENAS installments (ex: installments=10).
-Para corrigir valor: passe APENAS amount com o valor TOTAL em reais (ex: amount=150).
-Para corrigir merchant/local: passe merchant (ex: merchant="Magazine Luiza").
-Para corrigir categoria: passe category (ex: category="Alimentação").
-Para corrigir tipo: passe type_ ("expense" ou "income").
-Aceita qualquer categoria — padrão ou personalizada do usuário.
-Pode corrigir MÚLTIPLOS campos de uma vez (ex: occurred_at + amount).
+@tool(description="""Corrige uma transação do usuário. Pode ser a última OU qualquer outra.
+
+IDENTIFICAÇÃO — como encontrar a transação:
+  Sem find_* → corrige a ÚLTIMA transação (mais recente).
+  find_merchant="Herbalife" → busca pela mais recente com esse merchant.
+  find_date="2026-03-02" → busca pela mais recente nessa data.
+  find_merchant + find_date → busca por merchant + data (mais preciso).
+  find_amount=42.0 → busca por valor (útil quando há ambiguidade).
+  Pode combinar qualquer find_* para refinar a busca.
+
+CORREÇÃO — o que mudar:
+  occurred_at="2026-03-15" → muda a data.
+  amount=150 → muda o valor.
+  merchant="Magazine Luiza" → muda o local.
+  category="Alimentação" → muda a categoria.
+  type_="income" ou "expense" → muda o tipo.
+  installments=10 → muda parcelamento.
+  payment_method="CREDIT" → muda forma de pagamento.
+
+Exemplos:
+  "corrige a Herbalife de 02/03 para 36 reais" → find_merchant="Herbalife", find_date="2026-03-02", amount=36
+  "muda o Restaurante Talentos do dia 04 para Lazer" → find_merchant="Talentos", find_date="2026-03-04", category="Lazer"
+  "esse é dia 15" (logo após lançamento) → occurred_at="2026-03-15" (sem find_*, pega a última)
+
 ⚠️ Se o usuário quer mudar a categoria de um ESTABELECIMENTO inteiro (ex: "Talentos é Lazer"),
 use update_merchant_category em vez desta — ela atualiza TODAS as transações do merchant.""")
 def update_last_transaction(
@@ -1044,8 +1059,11 @@ def update_last_transaction(
     merchant: str = "",
     occurred_at: str = "",
     type_: str = "",
+    find_merchant: str = "",
+    find_date: str = "",
+    find_amount: float = 0,
 ) -> str:
-    """Corrige a última transação registrada."""
+    """Corrige uma transação (última ou por filtro find_*)."""
     try:
         conn = _get_conn()
         cur = conn.cursor()
@@ -1057,20 +1075,42 @@ def update_last_transaction(
             return "ERRO: usuário não encontrado."
         user_id = user_row[0]
 
+        # --- Busca a transação alvo ---
+        search_conditions = ["user_id = ?"]
+        search_params: list = [user_id]
+
+        if find_merchant:
+            search_conditions.append("LOWER(merchant) LIKE LOWER(?)")
+            search_params.append(f"%{find_merchant}%")
+        if find_date:
+            search_conditions.append("occurred_at LIKE ?")
+            search_params.append(f"{find_date}%")
+        if find_amount > 0:
+            find_amount_cents = round(find_amount * 100)
+            search_conditions.append("amount_cents = ?")
+            search_params.append(find_amount_cents)
+
+        where = " AND ".join(search_conditions)
         cur.execute(
-            """SELECT id, amount_cents, total_amount_cents, installments, installment_group_id
-               FROM transactions WHERE user_id = ?
+            f"""SELECT id, amount_cents, total_amount_cents, installments, installment_group_id, merchant, occurred_at
+               FROM transactions WHERE {where}
                ORDER BY created_at DESC LIMIT 1""",
-            (user_id,),
+            search_params,
         )
         row = cur.fetchone()
         if not row:
             conn.close()
-            return "ERRO: nenhuma transação encontrada."
+            hint = ""
+            if find_merchant:
+                hint += f" merchant={find_merchant}"
+            if find_date:
+                hint += f" data={find_date}"
+            if find_amount > 0:
+                hint += f" valor=R${find_amount:.2f}"
+            return f"ERRO: nenhuma transação encontrada com{hint}."
 
+        tx_id, curr_amount, curr_total, curr_inst, group_id, found_merchant, found_date = row
         amount_cents = round(amount * 100)
-
-        tx_id, curr_amount, curr_total, curr_inst, group_id = row
         curr_total = curr_total or 0
         base_total = curr_total if curr_total > 0 else curr_amount
         if amount_cents > 0:
@@ -1095,7 +1135,6 @@ def update_last_transaction(
         if type_ and type_ in ("expense", "income", "credit"):
             fields["type"] = type_
         if occurred_at:
-            # Normaliza para YYYY-MM-DD HH:MM:SS
             if len(occurred_at) == 10:
                 fields["occurred_at"] = occurred_at + "T12:00:00"
             else:
@@ -1105,7 +1144,7 @@ def update_last_transaction(
             conn.close()
             return "Nenhuma alteração informada."
 
-        # Se parcelado com group_id e mudou data, atualiza todas as parcelas (ajustando meses)
+        # Se parcelado com group_id e mudou data, atualiza todas as parcelas
         if occurred_at and group_id:
             from dateutil.relativedelta import relativedelta as _rd
             base_dt = datetime.fromisoformat(fields["occurred_at"][:19])
@@ -1117,13 +1156,11 @@ def update_last_transaction(
             for p_id, p_num in parcels:
                 p_dt = base_dt + _rd(months=(p_num - 1))
                 cur.execute("UPDATE transactions SET occurred_at=? WHERE id=?", (p_dt.strftime("%Y-%m-%dT12:00:00"), p_id))
-            # Remove occurred_at from fields dict since we handled it above
             fields.pop("occurred_at", None)
 
         if fields:
             set_clause = ", ".join(f"{col} = ?" for col in fields)
             if group_id:
-                # Atualiza todas as parcelas do grupo
                 cur.execute(
                     f"UPDATE transactions SET {set_clause} WHERE installment_group_id = ?",
                     list(fields.values()) + [group_id],
@@ -1135,6 +1172,13 @@ def update_last_transaction(
                 )
         conn.commit()
         conn.close()
+
+        # Monta resposta
+        found_label = found_merchant or "transação"
+        found_d = found_date[:10] if found_date else ""
+        ref = f"{found_label}"
+        if found_d:
+            ref += f" ({found_d[8:10]}/{found_d[5:7]})"
 
         parts = []
         if occurred_at:
@@ -1153,7 +1197,7 @@ def update_last_transaction(
         if type_:
             parts.append(f"tipo: {type_}")
 
-        return f"OK — corrigido: {' | '.join(parts)}."
+        return f"OK — {ref} corrigido: {' | '.join(parts)}."
 
     except Exception as e:
         return f"ERRO: {str(e)}"
@@ -1211,31 +1255,72 @@ def update_merchant_category(user_phone: str, merchant_query: str, category: str
         return f"ERRO: {str(e)}"
 
 
-@tool
-def delete_last_transaction(user_phone: str) -> str:
-    """
-    Apaga a última transação registrada pelo usuário.
-    Use quando o usuário disser 'apaga', 'cancela', 'exclui', 'foi erro', 'não era isso'.
-    """
+@tool(description="""Apaga UMA transação específica. Pode ser a última OU qualquer outra.
+
+IDENTIFICAÇÃO — como encontrar a transação:
+  Sem find_* → apaga a ÚLTIMA transação (mais recente).
+  find_merchant="Herbalife" → busca pela mais recente com esse merchant.
+  find_date="2026-03-02" → busca pela mais recente nessa data.
+  find_merchant + find_date → busca por merchant + data (mais preciso).
+  find_amount=42.0 → busca por valor.
+
+Exemplos:
+  "apaga" / "cancela" / "foi erro" → sem find_* (apaga a última)
+  "apaga a Herbalife do dia 02" → find_merchant="Herbalife", find_date="2026-03-02"
+  "apaga o Restaurante Talentos do dia 04/03" → find_merchant="Talentos", find_date="2026-03-04"
+  "apaga o de 65 reais do dia 02" → find_amount=65, find_date="2026-03-02"
+
+⚠️ Para apagar MÚLTIPLAS transações (todas de um merchant/período), use delete_transactions.""")
+def delete_last_transaction(
+    user_phone: str,
+    find_merchant: str = "",
+    find_date: str = "",
+    find_amount: float = 0,
+) -> str:
+    """Apaga uma transação (última ou por filtro find_*)."""
     conn = _get_conn()
     cur = conn.cursor()
     user_id = _get_user_id(cur, user_phone)
     if not user_id:
         conn.close()
         return "Nenhuma transação encontrada."
+
+    # --- Busca a transação alvo ---
+    search_conditions = ["user_id = ?"]
+    search_params: list = [user_id]
+
+    if find_merchant:
+        search_conditions.append("LOWER(merchant) LIKE LOWER(?)")
+        search_params.append(f"%{find_merchant}%")
+    if find_date:
+        search_conditions.append("occurred_at LIKE ?")
+        search_params.append(f"{find_date}%")
+    if find_amount > 0:
+        find_amount_cents = round(find_amount * 100)
+        search_conditions.append("amount_cents = ?")
+        search_params.append(find_amount_cents)
+
+    where = " AND ".join(search_conditions)
     cur.execute(
-        "SELECT id, amount_cents, total_amount_cents, installments, category, merchant, installment_group_id FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
-        (user_id,),
+        f"SELECT id, amount_cents, total_amount_cents, installments, category, merchant, installment_group_id FROM transactions WHERE {where} ORDER BY created_at DESC LIMIT 1",
+        search_params,
     )
     row = cur.fetchone()
     if not row:
         conn.close()
-        return "Nenhuma transação para apagar."
+        hint = ""
+        if find_merchant:
+            hint += f" merchant={find_merchant}"
+        if find_date:
+            hint += f" data={find_date}"
+        if find_amount > 0:
+            hint += f" valor=R${find_amount:.2f}"
+        return f"Nenhuma transação encontrada{hint}."
+
     tx_id, amount_cents, total_cents, installments, category, merchant, group_id = row
     merchant_info = f" ({merchant})" if merchant else ""
 
     if group_id:
-        # Parcelado novo sistema: apaga todas as parcelas do grupo
         cur.execute("DELETE FROM transactions WHERE installment_group_id = ?", (group_id,))
         conn.commit()
         conn.close()
@@ -4240,28 +4325,38 @@ Cartão criado automaticamente em save_transaction com card_name — nunca peça
 
 ── CORREÇÕES ──────────────────────────────────────────────────
 
-"apaga" / "cancela" / "foi erro" → delete_last_transaction(user_phone) → "✅ Apagado! R$X [categoria] removido."
-"apaga todos da Herbalife" → delete_transactions(user_phone, merchant="Herbalife")
-"apaga todos da Herbalife deste mês" → delete_transactions(user_phone, merchant="Herbalife", month="2026-03")
-"apaga tudo do dia 02/03" → delete_transactions(user_phone, date="2026-03-02")
-"apaga tudo desta semana" → delete_transactions(user_phone, week=True)
-"apaga todos os gastos de alimentação" → delete_transactions(user_phone, category="Alimentação", transaction_type="expense")
-⚠️ REGRA: "apaga todos/todas" + filtro (merchant, período, categoria) → delete_transactions
-   "apaga" sozinho ou "apaga a última" → delete_last_transaction
-"corrige" / "errei" / "na verdade" / "foi parcelado" → update_last_transaction(user_phone, <só o campo que muda>)
+APAGAR UMA transação:
+  "apaga" / "cancela" / "foi erro" → delete_last_transaction(user_phone)
+  "apaga a Herbalife do dia 02" → delete_last_transaction(user_phone, find_merchant="Herbalife", find_date="2026-03-02")
+  "apaga o de 65 reais do dia 02" → delete_last_transaction(user_phone, find_amount=65, find_date="2026-03-02")
+  "apaga o Restaurante Talentos do dia 04/03" → delete_last_transaction(user_phone, find_merchant="Talentos", find_date="2026-03-04")
+
+APAGAR MÚLTIPLAS transações:
+  "apaga todos da Herbalife" → delete_transactions(user_phone, merchant="Herbalife")
+  "apaga todos da Herbalife deste mês" → delete_transactions(user_phone, merchant="Herbalife", month="2026-03")
+  "apaga tudo do dia 02/03" → delete_transactions(user_phone, date="2026-03-02")
+  "apaga tudo desta semana" → delete_transactions(user_phone, week=True)
+  "apaga todos os gastos de alimentação" → delete_transactions(user_phone, category="Alimentação", transaction_type="expense")
+
+⚠️ REGRA DE APAGAR:
+  "apaga" sozinho / "apaga a última" → delete_last_transaction (sem find_*)
+  "apaga o/a [X] do dia [Y]" → delete_last_transaction com find_merchant/find_date/find_amount
+  "apaga todos/todas" + filtro → delete_transactions
+
+CORRIGIR UMA transação:
+  "corrige" / "errei" / "na verdade" → update_last_transaction (sem find_* = última)
+  "corrige a Herbalife de 02/03 para 36" → update_last_transaction(find_merchant="Herbalife", find_date="2026-03-02", amount=36)
+  "muda o Talentos do dia 04 para Lazer" → update_last_transaction(find_merchant="Talentos", find_date="2026-03-04", category="Lazer")
+  "esse é dia 15" (logo após lançamento) → update_last_transaction(occurred_at="2026-03-15")
+  "foi 150 não 200" → update_last_transaction(amount=150)
+  "o local era Magazine Luiza" → update_last_transaction(merchant="Magazine Luiza")
+  "era receita" → update_last_transaction(type_="income")
   installments → recalcula parcela automaticamente (não passe amount junto)
-  payment_method → CREDIT | DEBIT | PIX | CASH
-  "foi 150 não 200" → update_last_transaction(user_phone, amount=150)
-  "o local era Magazine Luiza" → update_last_transaction(user_phone, merchant="Magazine Luiza")
-  "esse é dia 15" / "era dia 15" / "a data é 15/03" → update_last_transaction(user_phone, occurred_at="2026-03-15")
-  "era receita" / "foi receita não gasto" → update_last_transaction(user_phone, type_="income")
-  "era gasto" / "foi gasto não receita" → update_last_transaction(user_phone, type_="expense")
 
 ⚠️ REGRA CRÍTICA DE CORREÇÃO:
-  Quando o usuário diz algo como "esse é dia X", "era dia X", "a data é X",
-  "muda pra dia X", "na verdade é dia X" → É CORREÇÃO da última transação.
-  SEMPRE use update_last_transaction com occurred_at. NUNCA crie uma nova transação.
-  Se o usuário corrigir a data E outro campo junto, passe AMBOS na mesma chamada.
+  Quando o usuário diz "esse é dia X", "era dia X", "muda pra dia X" → CORREÇÃO, não novo lançamento.
+  SEMPRE use update_last_transaction. NUNCA crie nova transação quando é correção.
+  Se corrigir data E outro campo junto, passe AMBOS na mesma chamada.
 
 RECATEGORIZAR MERCHANT (atualiza TODAS as transações + salva regra para futuras faturas):
   "HELIO RODRIGUES NAZAR é alimentação" / "muda Talentos pra Lazer" / "X é categoria Y"
