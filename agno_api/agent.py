@@ -4947,7 +4947,7 @@ async def import_statement_endpoint(
             )
             old_fmt = f"R${old_bill/100:,.2f}".replace(",", ".")
             new_fmt = f"R${total_imported_cents/100:,.2f}".replace(",", ".")
-            bill_update_note = f"\n💳 Valor da fatura do {det_card} atualizado: {old_fmt} → {new_fmt}"
+            bill_update_note = f"\n💳 Valor da fatura do {det_card} atualizado: {old_fmt} → {new_fmt}\n_Errou? Diga \"fatura do {det_card} é {old_fmt}\" para desfazer._"
 
     # Marca como importado
     cur.execute(
