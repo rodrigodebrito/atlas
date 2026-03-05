@@ -167,6 +167,17 @@ def _init_sqlite_tables():
             UNIQUE(user_id, merchant_pattern)
         );
     """)
+    # Tabela de regras merchant→cartão padrão
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS merchant_card_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            merchant_pattern TEXT NOT NULL,
+            card_id TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(user_id, merchant_pattern)
+        );
+    """)
     conn.commit()
     conn.close()
 
@@ -286,6 +297,17 @@ def _init_postgres_tables():
             user_id TEXT NOT NULL,
             merchant_pattern TEXT NOT NULL,
             category TEXT NOT NULL,
+            created_at TEXT DEFAULT (now()::text),
+            UNIQUE(user_id, merchant_pattern)
+        );
+    """)
+    # Tabela de regras merchant→cartão padrão
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS merchant_card_rules (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            merchant_pattern TEXT NOT NULL,
+            card_id TEXT NOT NULL,
             created_at TEXT DEFAULT (now()::text),
             UNIQUE(user_id, merchant_pattern)
         );
@@ -497,6 +519,42 @@ def save_transaction(
             (tx_id, user_id, transaction_type, amount_cents, total_amount_cents,
              installments, 1, category, merchant, payment_method, notes, now, card_id),
         )
+    # --- Auto-aprendizado: salva merchant→categoria + merchant→cartão ---
+    if merchant and category and transaction_type == "EXPENSE":
+        merchant_key = merchant.upper().strip()
+        if merchant_key:
+            try:
+                if DB_TYPE == "postgres":
+                    cur.execute(
+                        """INSERT INTO merchant_category_rules (user_id, merchant_pattern, category)
+                           VALUES (%s, %s, %s)
+                           ON CONFLICT (user_id, merchant_pattern) DO UPDATE SET category = EXCLUDED.category""",
+                        (user_id, merchant_key, category)
+                    )
+                    if card_id:
+                        cur.execute(
+                            """INSERT INTO merchant_card_rules (user_id, merchant_pattern, card_id)
+                               VALUES (%s, %s, %s)
+                               ON CONFLICT (user_id, merchant_pattern) DO UPDATE SET card_id = EXCLUDED.card_id""",
+                            (user_id, merchant_key, card_id)
+                        )
+                else:
+                    cur.execute(
+                        """INSERT INTO merchant_category_rules (user_id, merchant_pattern, category)
+                           VALUES (?, ?, ?)
+                           ON CONFLICT(user_id, merchant_pattern) DO UPDATE SET category = excluded.category""",
+                        (user_id, merchant_key, category)
+                    )
+                    if card_id:
+                        cur.execute(
+                            """INSERT INTO merchant_card_rules (user_id, merchant_pattern, card_id)
+                               VALUES (?, ?, ?)
+                               ON CONFLICT(user_id, merchant_pattern) DO UPDATE SET card_id = excluded.card_id""",
+                            (user_id, merchant_key, card_id)
+                        )
+            except Exception:
+                pass  # não impede a transação principal
+
     conn.commit()
     conn.close()
 
@@ -822,15 +880,46 @@ def get_user(user_phone: str) -> str:
     user_id, name, income, salary_day = row
     cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id = ?", (user_id,))
     count = cur.fetchone()[0]
+
+    # Carrega preferências aprendidas (merchant→categoria e merchant→cartão)
+    learned_categories = []
+    try:
+        cur.execute(
+            "SELECT merchant_pattern, category FROM merchant_category_rules WHERE user_id=? ORDER BY created_at DESC LIMIT 20",
+            (user_id,)
+        )
+        for mp, cat in cur.fetchall():
+            learned_categories.append(f"{mp}→{cat}")
+    except Exception:
+        pass
+
+    learned_cards = []
+    try:
+        cur.execute(
+            """SELECT mcr.merchant_pattern, cc.name FROM merchant_card_rules mcr
+               JOIN credit_cards cc ON cc.id = mcr.card_id
+               WHERE mcr.user_id=? ORDER BY mcr.created_at DESC LIMIT 10""",
+            (user_id,)
+        )
+        for mp, cname in cur.fetchall():
+            learned_cards.append(f"{mp}→{cname}")
+    except Exception:
+        pass
+
     conn.close()
 
     is_new = name == "Usuário"
     has_income = (income or 0) > 0
-    return (
+    result = (
         f"is_new={is_new} | name={name} | has_income={has_income} "
         f"| monthly_income=R${(income or 0)/100:.2f} | transaction_count={count}"
         f" | salary_day={salary_day or 0}"
     )
+    if learned_categories:
+        result += f"\n__learned_categories: {', '.join(learned_categories)}"
+    if learned_cards:
+        result += f"\n__learned_cards: {', '.join(learned_cards)}"
+    return result
 
 
 @tool
@@ -4168,6 +4257,15 @@ Se o usuário quer apagar algo → CHAME delete_last_transaction ou delete_trans
 Se o usuário quer corrigir algo → CHAME update_last_transaction.
 Se o usuário quer ver algo → CHAME a tool de consulta correspondente.
 SEMPRE resolva com TOOL CALLS, nunca com instruções manuais.
+
+REGRA 10 — MEMÓRIA APRENDIDA (PREFERÊNCIAS DO USUÁRIO):
+O get_user retorna campos __learned_categories e __learned_cards com padrões aprendidos.
+Formato: "IFOOD→Alimentação, UBER→Transporte" e "IFOOD→Nubank".
+USE essas preferências:
+- Se o merchant combina com um padrão aprendido, USE a categoria aprendida (não invente outra).
+- Se o merchant combina com um cartão aprendido e o usuário não especificou cartão, USE o cartão aprendido.
+- Se o usuário corrigir a categoria, a regra será atualizada automaticamente para futuras vezes.
+Isso evita que o usuário precise corrigir a mesma coisa repetidamente.
 
 ╔══════════════════════════════════════════════════════════════╗
 ║  IDENTIDADE E TOM                                           ║
