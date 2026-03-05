@@ -1457,8 +1457,16 @@ def delete_transactions(
     week: bool = False,
     category: str = "",
     transaction_type: str = "",
+    confirm: bool = False,
 ) -> str:
-    """Apaga transações por filtro (merchant, data, período)."""
+    """Apaga MÚLTIPLAS transações por filtro.
+
+    FLUXO OBRIGATÓRIO (2 etapas):
+    1ª chamada: confirm=False (padrão) → LISTA o que será apagado e pede confirmação ao usuário
+    2ª chamada: confirm=True → APAGA de fato (só após o usuário confirmar com "sim"/"confirma")
+
+    NUNCA passe confirm=True na primeira chamada. SEMPRE liste primeiro.
+    """
     conn = _get_conn()
     cur = conn.cursor()
     user_id = _get_user_id(cur, user_phone)
@@ -1488,7 +1496,6 @@ def delete_transactions(
     if week:
         today = _now_br()
         week_start = today - timedelta(days=today.weekday())
-        week_end = week_start + timedelta(days=6)
         date_conditions = " OR ".join(["occurred_at LIKE ?"] * 7)
         conditions.append(f"({date_conditions})")
         for i in range(7):
@@ -1504,7 +1511,7 @@ def delete_transactions(
 
     where = " AND ".join(conditions)
 
-    # Primeiro mostra o que será apagado
+    # Busca transações que casam
     cur.execute(
         f"SELECT id, amount_cents, merchant, category, occurred_at FROM transactions WHERE {where} ORDER BY occurred_at",
         params,
@@ -1514,18 +1521,34 @@ def delete_transactions(
         conn.close()
         return "Nenhuma transação encontrada com esses filtros."
 
-    # Também apaga parcelas vinculadas (installment_group_id)
+    total_cents = sum(r[1] for r in rows)
+    total_fmt = f"R${total_cents/100:,.2f}".replace(",", ".")
+
+    # ETAPA 1: listar e pedir confirmação
+    if not confirm:
+        conn.close()
+        lines = [f"⚠️ *{len(rows)} transação(ões) encontradas* ({total_fmt} total):"]
+        for _, amt, merch, cat, occ in rows[:15]:
+            d = occ[:10]
+            d_fmt = f"{d[8:10]}/{d[5:7]}"
+            m_info = f" — {merch}" if merch else ""
+            lines.append(f"  • {d_fmt}{m_info}: R${amt/100:.2f} ({cat})")
+        if len(rows) > 15:
+            lines.append(f"  _...e mais {len(rows) - 15}_")
+        lines.append("")
+        lines.append("Confirma a exclusão? Responda *sim* para apagar.")
+        return "\n".join(lines)
+
+    # ETAPA 2: apagar de fato (confirm=True)
     cur.execute(
         f"SELECT DISTINCT installment_group_id FROM transactions WHERE {where} AND installment_group_id IS NOT NULL",
         params,
     )
     group_ids = [r[0] for r in cur.fetchall()]
 
-    # Apaga as transações diretas
     cur.execute(f"DELETE FROM transactions WHERE {where}", params)
     deleted = cur.rowcount
 
-    # Apaga parcelas restantes de grupos afetados
     for gid in group_ids:
         cur.execute("DELETE FROM transactions WHERE installment_group_id = ?", (gid,))
         deleted += cur.rowcount
@@ -1533,10 +1556,6 @@ def delete_transactions(
     conn.commit()
     conn.close()
 
-    total_cents = sum(r[1] for r in rows)
-    total_fmt = f"R${total_cents/100:,.2f}".replace(",", ".")
-
-    # Monta resumo do que foi apagado
     lines = [f"✅ *{deleted} transação(ões) apagadas* ({total_fmt} total):"]
     for _, amt, merch, cat, occ in rows[:10]:
         d = occ[:10]
@@ -4429,17 +4448,25 @@ APAGAR UMA transação:
   "apaga o de 65 reais do dia 02" → delete_last_transaction(user_phone, find_amount=65, find_date="2026-03-02")
   "apaga o Restaurante Talentos do dia 04/03" → delete_last_transaction(user_phone, find_merchant="Talentos", find_date="2026-03-04")
 
-APAGAR MÚLTIPLAS transações:
-  "apaga todos da Herbalife" → delete_transactions(user_phone, merchant="Herbalife")
+APAGAR MÚLTIPLAS transações (FLUXO DE 2 ETAPAS — OBRIGATÓRIO):
+  1ª etapa: delete_transactions(user_phone, merchant="Herbalife") → SEM confirm → LISTA e pede confirmação
+  2ª etapa: quando o usuário confirmar ("sim", "confirma") → delete_transactions(..., confirm=True) → APAGA
+
+  Exemplos:
+  "apaga todos da Herbalife" → delete_transactions(user_phone, merchant="Herbalife") [confirm=False]
+    → usuário diz "sim" → delete_transactions(user_phone, merchant="Herbalife", confirm=True)
   "apaga todos da Herbalife deste mês" → delete_transactions(user_phone, merchant="Herbalife", month="2026-03")
   "apaga tudo do dia 02/03" → delete_transactions(user_phone, date="2026-03-02")
   "apaga tudo desta semana" → delete_transactions(user_phone, week=True)
   "apaga todos os gastos de alimentação" → delete_transactions(user_phone, category="Alimentação", transaction_type="expense")
 
+  ⚠️ NUNCA passe confirm=True na primeira chamada. SEMPRE liste primeiro e peça confirmação.
+  Quando o usuário responder "sim" após a listagem → chame de novo com confirm=True e OS MESMOS filtros.
+
 ⚠️ REGRA DE APAGAR:
   "apaga" sozinho / "apaga a última" → delete_last_transaction (sem find_*)
   "apaga o/a [X] do dia [Y]" → delete_last_transaction com find_merchant/find_date/find_amount
-  "apaga todos/todas" + filtro → delete_transactions
+  "apaga todos/todas" + filtro → delete_transactions (2 etapas: listar → confirmar)
 
 CORRIGIR UMA transação:
   "corrige" / "errei" / "na verdade" → update_last_transaction (sem find_* = última)
@@ -4842,12 +4869,7 @@ def _pre_route(message: str) -> dict | None:
     if _re_router.match(r'(meus compromissos|compromissos(?: (?:do|deste|desse|este|esse) m[eê]s)?|quais (?:s[aã]o )?(?:os )?(?:meus )?compromissos|contas? (?:a |pra )pagar|o que (?:eu )?(?:tenho|vou ter) (?:pra|para) pagar|gastos? fixos|fixos)[\?\!\.]*$', msg):
         return {"response": _call(get_upcoming_commitments, user_phone)}
 
-    # --- APAGAR TODOS de merchant ---
-    m = _re_router.match(r'(?:apag|delet|remov|exclu)[aeiou]*\s+(?:tod[ao]s?\s+)?(?:(?:as?\s+)?(?:transa[çc][õo]es\s+)?d[aeo]s?\s+)(.+?)(?:\s+(?:d?est[ea]|d[eo])\s+m[eê]s)?[\?\!\.]*$', msg)
-    if m:
-        merchant = m.group(1).strip()
-        if merchant and merchant not in ("mês", "mes", "semana", "hoje", "ontem"):
-            return {"response": _call(delete_transactions, user_phone, merchant, "", current_month)}
+    # --- APAGAR TODOS de merchant → vai pro LLM (precisa de fluxo 2 etapas com confirmação) ---
 
     # --- CARTÕES ---
     if _re_router.match(r'(meus cart[õo]es|(?:minhas )?faturas?|ver (?:meus )?cart[õo]es|quais (?:s[aã]o )?(?:os )?(?:meus )?cart[õo]es|lista(?:r)? cart[õo]es)[\?\!\.]*$', msg):
