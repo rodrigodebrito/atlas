@@ -686,11 +686,17 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     # Group individual transactions by category, anotando crédito
     # Toda transação de crédito em tx_rows já passou pelo filtro _compute_due_month == month,
     # portanto pertence ao ciclo desta fatura e abate o saldo normalmente.
-    from collections import defaultdict
+    from collections import defaultdict, Counter
     cat_txs: dict = defaultdict(list)
     cat_totals_display: dict = defaultdict(int)
+    day_totals: dict = defaultdict(int)  # para insight: dia mais gastador
+    merchant_freq: Counter = Counter()   # para insight: merchant mais frequente
     for cat, merchant, amount, occurred, card_id, inst_total, inst_num, card_name, closing_day, due_day, total_amt in tx_rows:
         label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
+        dt_lbl = f"{occurred[8:10]}/{occurred[5:7]}" if occurred and len(occurred) >= 10 else ""
+        day_totals[occurred[:10]] += amount
+        if merchant and merchant.strip():
+            merchant_freq[merchant.strip()] += 1
         if card_id:
             credit_expenses += amount
             if closing_day and due_day:
@@ -703,12 +709,12 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
                 inst_suffix = f" R${total_amt/100:,.2f} em {inst_total}x (R${amount/100:,.2f}/parc.)".replace(",", ".")
             else:
                 inst_suffix = f" R${amount/100:,.2f}".replace(",", ".")
-            item = f"• {label}:{inst_suffix} 💳 fat. {short_card} ({due_lbl})"
+            item = f"• {dt_lbl} — {label}:{inst_suffix} 💳 fat. {short_card} ({due_lbl})"
         else:
             cash_expenses += amount
-            item = f"• {label}: R${amount/100:,.2f}".replace(",", ".")
+            item = f"• {dt_lbl} — {label}: R${amount/100:,.2f}".replace(",", ".")
         cat_totals_display[cat] += amount
-        cat_txs[cat].append((amount, item))
+        cat_txs[cat].append((occurred, amount, item))
 
     # Category emoji map
     cat_emoji = {
@@ -734,7 +740,8 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
             pct = total / total_expenses * 100 if total_expenses else 0
             emoji = cat_emoji.get(cat, "💸")
             lines.append(f"{emoji} *{cat}* — R${total/100:,.2f} ({pct:.0f}%)".replace(",", "."))
-            for _amt, item_line in sorted(cat_txs.get(cat, []), key=lambda x: -x[0]):
+            # Ordena por data, depois por valor desc
+            for _occ, _amt, item_line in sorted(cat_txs.get(cat, []), key=lambda x: (x[0], -x[1])):
                 lines.append(f"  {item_line}")
             lines.append("")
 
@@ -764,14 +771,33 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         lines.append(f"Você ainda não lançou receitas em {_mo_lbl}.")
 
     # Largest category for model insight
+    top_cat_name, top_pct_val = "", 0.0
     if filter_type in ("ALL", "EXPENSE") and cat_totals_display:
         top_cat, top_total = sorted(cat_totals_display.items(), key=lambda x: -x[1])[0]
         top_pct = top_total / total_expenses * 100 if total_expenses else 0
+        top_cat_name, top_pct_val = top_cat, top_pct
         lines.append(f"__top_category:{top_cat}:{top_pct:.0f}%")
     elif income_rows_detail:
         top_cat, top_total = sorted(income_rows_detail, key=lambda x: -x[1])[0]
         top_pct = top_total / income * 100 if income else 0
+        top_cat_name, top_pct_val = top_cat, top_pct
         lines.append(f"__top_category:{top_cat}:{top_pct:.0f}%")
+
+    # __insight: dia mais gastador + merchant mais frequente
+    insight_parts = []
+    if day_totals:
+        top_day = max(day_totals, key=day_totals.get)
+        top_day_lbl = f"{top_day[8:10]}/{top_day[5:7]}"
+        top_day_val = day_totals[top_day] / 100
+        insight_parts.append(f"dia_top={top_day_lbl} R${top_day_val:,.2f}".replace(",", "."))
+    if merchant_freq:
+        top_merchant, top_count = merchant_freq.most_common(1)[0]
+        if top_count >= 2:
+            insight_parts.append(f"frequente={top_merchant} ({top_count}x)")
+    if top_cat_name:
+        insight_parts.append(f"cat_top={top_cat_name} ({top_pct_val:.0f}%)")
+    if insight_parts:
+        lines.append(f"__insight:{' | '.join(insight_parts)}")
 
     return "\n".join(lines)
 
@@ -3571,19 +3597,18 @@ NUNCA adicione perguntas junto com o insight.
 
 ## FORMATO: RESUMO MENSAL (get_month_summary)
 
-A tool já retorna o dado formatado com nome, período, categorias e lançamentos.
+A tool já retorna o dado formatado com nome, período, datas DD/MM por transação, categorias e lançamentos.
 ⚠️ COPIE O RETORNO DA TOOL CARACTERE POR CARACTERE — preserve todas as quebras de linha (\n).
 NÃO comprima, NÃO reformule, NÃO coloque itens na mesma linha.
 Cada item deve ficar em sua própria linha, exatamente como a tool retornou.
-Apenas adicione UMA linha de insight ao final, baseada nos dados reais:
-
-Regras do insight:
-- Use `__top_category:X:Y%` (metadata interna, nunca mostre) para saber a categoria dominante
-- Insight deve ser pessoal e direto: ex: "Alimentação dominou o mês com 60% dos gastos."
-- Se saldo negativo: mencione isso no insight
+Remova TODAS as linhas que começam com `__` (metadata interna: __top_category, __insight).
+Use `__insight:` para gerar UMA frase curta de insight personalizado ao final:
+- Tom leve, informal, humorado (ex: "D Ville Supermercados tá levando boa parte do orçamento hein 😄")
+- Baseada nos dados reais do __insight (dia mais gastador, merchant frequente, categoria top)
+- Se saldo negativo: mencione com tom de alerta
 - Se saldo muito positivo (>50% da renda): parabenize
-- NUNCA invente dados — baseie-se só no que a tool retornou
-- A linha `__top_category:...` é metadata INTERNA — remova-a da resposta, use apenas para o insight
+- Pode incluir sugestão prática curta se fizer sentido
+- NUNCA invente dados. Máximo 2 frases.
 
 Se renda cadastrada mas sem receita lançada no mês: adicione após o insight:
 "_(Sua renda de R$X.XXX ainda não foi lançada esse mês)_"
