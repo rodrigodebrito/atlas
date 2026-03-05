@@ -4820,6 +4820,7 @@ _HELP_TEXT = """📋 *O que o ATLAS faz:*
 
 Digite qualquer gasto ou receita pra começar! 🎯"""
 
+from fastapi import Form as _Form
 
 @app.post("/v1/chat")
 async def chat_endpoint(
@@ -4922,8 +4923,6 @@ def get_daily_reminders():
 # ============================================================
 # FATURA ANALYZER — parse + import endpoints
 # ============================================================
-
-from fastapi import Form as _Form
 
 def _generate_statement_insights(transactions: list, user_id: str, bill_month: str, stated_total: float = 0.0) -> str:
     """Gera texto de insights do mentor a partir das transações parseadas.
