@@ -1786,6 +1786,9 @@ def _compute_due_month(occurred_at_str: str, closing_day: int, due_day: int) -> 
         txn_date = _date.fromisoformat(occurred_at_str[:10])
     except Exception:
         return ""
+    # Se closing_day/due_day não configurados, usa o mês da transação (sem deslocamento)
+    if not closing_day or not due_day:
+        return f"{txn_date.year}-{txn_date.month:02d}"
     # Em qual ciclo cai?
     if txn_date.day <= closing_day:
         close_yr, close_mo = txn_date.year, txn_date.month
@@ -4611,7 +4614,7 @@ atlas_agent = Agent(
     model=get_model(),
     db=db,
     add_history_to_context=True,
-    num_history_runs=6,
+    num_history_runs=10,
     tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement],
     add_datetime_to_context=True,
     markdown=True,
@@ -4973,7 +4976,11 @@ async def parse_statement_endpoint(
         return {"message": "Não encontrei transações nessa imagem. É um print da fatura do cartão?"}
 
     # Usa card_name da imagem se não foi informado
-    detected_card = card_name or parsed.card_name or "cartão"
+    # Filtra filenames que n8n pode enviar como card_name (ex: "2026-03-04_145110.pdf")
+    _clean_card = card_name.strip() if card_name else ""
+    if _clean_card and (_clean_card.endswith(".pdf") or _clean_card.endswith(".jpg") or _clean_card.endswith(".png") or _clean_card[0:4].isdigit()):
+        _clean_card = ""  # Ignora filenames, usa o que o GPT detectou
+    detected_card = _clean_card or parsed.card_name or "cartão"
     bill_month = parsed.bill_month or _now_br().strftime("%Y-%m")
 
     # Aplica regras de categorização do usuário antes de gerar insights
