@@ -303,7 +303,7 @@ if DB_TYPE == "postgres":
 # ============================================================
 
 def get_model():
-    return OpenAIChat(id="gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY"))
+    return OpenAIChat(id="gpt-4.1", api_key=os.getenv("OPENAI_API_KEY"))
 
 def get_fast_model():
     return OpenAIChat(id="gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY"))
@@ -4712,6 +4712,146 @@ def get_manual():
 # ============================================================
 # HEALTH CHECK
 # ============================================================
+
+# ============================================================
+# PRÉ-ROTEADOR — intercepta padrões comuns sem chamar LLM
+# ============================================================
+import re as _re_router
+
+def _extract_user_phone(message: str) -> str:
+    """Extrai user_phone do header [user_phone: +55...]."""
+    m = _re_router.search(r'\[user_phone:\s*(\+?\d+)\]', message)
+    return m.group(1) if m else ""
+
+def _extract_body(message: str) -> str:
+    """Extrai o corpo da mensagem (sem headers [user_phone:...] [user_name:...])."""
+    lines = message.strip().split("\n")
+    body_lines = [l for l in lines if not l.strip().startswith("[")]
+    return " ".join(body_lines).strip()
+
+def _pre_route(message: str) -> dict | None:
+    """
+    Tenta rotear mensagens comuns sem chamar o LLM.
+    Retorna {"response": "..."} se conseguiu, ou None para fallback ao agente.
+    """
+    user_phone = _extract_user_phone(message)
+    if not user_phone:
+        return None
+
+    body = _extract_body(message)
+    msg = body.lower().strip()
+    today = _now_br()
+    current_month = today.strftime("%Y-%m")
+
+    # --- RESUMO MENSAL ---
+    if _re_router.match(r'(como t[aá] meu m[eê]s|resumo do m[eê]s|meus gastos do m[eê]s|como (foi|esta|está) (meu |o )?m[eê]s)[\?\!\.]*$', msg):
+        return {"response": get_month_summary(user_phone, month=current_month, filter_type="ALL")}
+
+    # Resumo de mês específico
+    m = _re_router.match(r'(?:como (?:foi|tá|ta|está)|resumo d[eo]|me mostr[ea].*gastos d[eo]|gastos d[eo])\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)', msg)
+    if m:
+        month_names = {"janeiro":"01","fevereiro":"02","março":"03","marco":"03","abril":"04","maio":"05","junho":"06","julho":"07","agosto":"08","setembro":"09","outubro":"10","novembro":"11","dezembro":"12"}
+        mo = month_names.get(m.group(1).lower().replace("ç","c"), "")
+        if mo:
+            year = today.year if int(mo) <= today.month else today.year - 1
+            return {"response": get_month_summary(user_phone, month=f"{year}-{mo}", filter_type="ALL")}
+
+    # --- RESUMO SEMANAL ---
+    if _re_router.match(r'(como (?:foi|tá|ta|está) minha semana|resumo (?:da |desta )?semana|minha semana)[\?\!\.]*$', msg):
+        return {"response": get_week_summary(user_phone, filter_type="ALL")}
+
+    # --- GASTOS DE HOJE ---
+    if _re_router.match(r'(gastos? de hoje|o que gastei hoje|hoje)[\?\!\.]*$', msg):
+        return {"response": get_today_total(user_phone, filter_type="EXPENSE", days=1)}
+
+    # --- COMPROMISSOS ---
+    if _re_router.match(r'(meus compromissos|compromissos (?:do|deste|desse) m[eê]s|quais (?:são )?meus compromissos)[\?\!\.]*$', msg):
+        return {"response": get_upcoming_commitments(user_phone)}
+
+    # --- APAGAR TODOS de merchant ---
+    m = _re_router.match(r'(?:apag|delet|remov|exclu)[aeiou]*\s+(?:tod[ao]s?\s+)?(?:(?:as?\s+)?(?:transa[çc][õo]es\s+)?d[aeo]s?\s+)(.+?)(?:\s+(?:d?est[ea]|d[eo])\s+m[eê]s)?[\?\!\.]*$', msg)
+    if m:
+        merchant = m.group(1).strip()
+        # Remove palavras comuns que não são merchant
+        if merchant and merchant not in ("mês", "mes", "semana", "hoje", "ontem"):
+            return {"response": delete_transactions(user_phone, merchant=merchant, month=current_month)}
+
+    # --- CARTÕES ---
+    if _re_router.match(r'(meus cart[õo]es|minhas faturas|faturas)[\?\!\.]*$', msg):
+        return {"response": get_cards(user_phone)}
+
+    # --- METAS ---
+    if _re_router.match(r'(minhas metas|metas|ver metas)[\?\!\.]*$', msg):
+        return {"response": get_goals(user_phone)}
+
+    # --- AJUDA ---
+    if _re_router.match(r'(ajuda|help|menu|o que voc[eê] faz|comandos)[\?\!\.]*$', msg):
+        return {"response": _HELP_TEXT}
+
+    return None  # Fallback ao agente LLM
+
+_HELP_TEXT = """📋 *O que o ATLAS faz:*
+
+1️⃣ *Lançar gastos*
+• _"gastei 45 no iFood"_
+• _"tênis 300 em 3x no Nubank"_
+
+2️⃣ *Receitas*
+• _"recebi 4500 de salário"_
+• _"entrou 1200 de freela"_
+
+3️⃣ *Análises*
+• _"como tá meu mês?"_
+• _"posso comprar um tênis de 200?"_
+• _"vai sobrar até o fim do mês?"_
+
+4️⃣ *Cartões de crédito*
+• _"fatura do Nubank"_
+• _"paguei o cartão"_
+
+5️⃣ *Gastos fixos e metas*
+• _"aluguel 1500 todo dia 5"_
+• _"quero guardar 5000 pra viagem"_
+
+6️⃣ *Corrigir / Apagar*
+• _"corrige" / "apaga"_
+• _"apaga todos da Herbalife deste mês"_
+• _"muda o Talentos do dia 04 para Lazer"_
+
+Digite qualquer gasto ou receita pra começar! 🎯"""
+
+
+@app.post("/v1/chat")
+async def chat_endpoint(
+    user_phone: str = _Form(...),
+    message: str = _Form(...),
+    session_id: str = _Form(""),
+):
+    """
+    Endpoint principal de chat. Faz pré-roteamento para padrões comuns
+    e só chama o LLM para mensagens complexas/ambíguas.
+    """
+    # Monta mensagem com header
+    full_message = message
+    if "[user_phone:" not in message:
+        full_message = f"[user_phone: {user_phone}]\n{message}"
+
+    # 1. Tenta pré-roteamento (sem LLM)
+    routed = _pre_route(full_message)
+    if routed:
+        return {"content": routed["response"], "routed": True}
+
+    # 2. Fallback: chama o agente LLM
+    from agno.agent import RunResponse
+    if not session_id:
+        session_id = f"wa_{user_phone.replace('+','')}"
+
+    response: RunResponse = await atlas_agent.arun(
+        message=full_message,
+        session_id=session_id,
+    )
+    return {"content": response.content, "routed": False, "session_id": session_id}
+
 
 @app.get("/v1/reminders/daily")
 def get_daily_reminders():
