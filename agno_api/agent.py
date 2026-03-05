@@ -4314,6 +4314,9 @@ Se sua resposta contém "?" após um output de tool → APAGUE a pergunta.
 
 REGRA 3 — FOLLOW-UPS ("sim", "não", "ok"):
 "sim", "ok", "tá", "beleza" sem contexto claro → "Sim pra quê? 😄 Me diz o que precisa!"
+⚠️ EXCEÇÃO: se a ÚLTIMA mensagem do ATLAS listou transações pedindo confirmação de exclusão,
+  "sim" = confirmar a deleção → chame delete_transactions com confirm=True e OS MESMOS filtros.
+  Verifique no histórico: se sua última resposta contém "Confirma a exclusão?" → "sim" é confirmação.
 NUNCA responda com tutorial genérico ("Você pode me informar um gasto...").
 "não", "nao", "n" = recusa. NUNCA apague transação com "não".
 
@@ -4528,6 +4531,8 @@ APAGAR MÚLTIPLAS transações (FLUXO DE 2 ETAPAS — OBRIGATÓRIO):
   "apaga todos da Herbalife" → delete_transactions(user_phone, merchant="Herbalife") [confirm=False]
     → usuário diz "sim" → delete_transactions(user_phone, merchant="Herbalife", confirm=True)
   "apaga todos da Herbalife deste mês" → delete_transactions(user_phone, merchant="Herbalife", month="2026-03")
+  "apaga tudo de hoje" → delete_transactions(user_phone, date="2026-03-05") ← use a data de hoje
+  "apaga todos os gastos de hoje" → delete_transactions(user_phone, date="2026-03-05")
   "apaga tudo do dia 02/03" → delete_transactions(user_phone, date="2026-03-02")
   "apaga tudo desta semana" → delete_transactions(user_phone, week=True)
   "apaga todos os gastos de alimentação" → delete_transactions(user_phone, category="Alimentação", transaction_type="expense")
