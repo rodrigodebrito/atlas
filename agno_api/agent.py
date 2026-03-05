@@ -4851,7 +4851,7 @@ async def chat_endpoint(
         session_id = f"wa_{user_phone.replace('+','')}"
 
     response = await atlas_agent.arun(
-        message=full_message,
+        input=full_message,
         session_id=session_id,
     )
     content = response.content if hasattr(response, 'content') else str(response)
