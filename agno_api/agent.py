@@ -1248,6 +1248,115 @@ def delete_last_transaction(user_phone: str) -> str:
         return f"✅ Apagado! R${amount_cents/100:.2f} {category}{merchant_info} removido."
 
 
+@tool(description="""Apaga transações por filtro (merchant, data, período).
+Use quando o usuário pedir para apagar MÚLTIPLAS transações:
+  "apaga todos da Herbalife" → merchant="Herbalife"
+  "apaga todos da Herbalife deste mês" → merchant="Herbalife", month="2026-03"
+  "apaga tudo do dia 02/03" → date="2026-03-02"
+  "apaga todos os gastos do dia 5" → date="2026-03-05"
+  "apaga todas as transações desta semana" → week=True
+⚠️ Sempre passe pelo menos UM filtro (merchant, date, month ou week).
+⚠️ Para apagar apenas a ÚLTIMA transação, use delete_last_transaction.""")
+def delete_transactions(
+    user_phone: str,
+    merchant: str = "",
+    date: str = "",
+    month: str = "",
+    week: bool = False,
+    category: str = "",
+    transaction_type: str = "",
+) -> str:
+    """Apaga transações por filtro (merchant, data, período)."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "Nenhuma transação encontrada."
+
+    conditions = ["user_id = ?"]
+    params: list = [user_id]
+
+    if not merchant and not date and not month and not week and not category and not transaction_type:
+        conn.close()
+        return "ERRO: informe pelo menos um filtro (merchant, date, month, week, category)."
+
+    if merchant:
+        conditions.append("LOWER(merchant) LIKE LOWER(?)")
+        params.append(f"%{merchant}%")
+
+    if date:
+        conditions.append("occurred_at LIKE ?")
+        params.append(f"{date}%")
+
+    if month:
+        conditions.append("occurred_at LIKE ?")
+        params.append(f"{month}%")
+
+    if week:
+        today = _now_br()
+        week_start = today - timedelta(days=today.weekday())
+        week_end = week_start + timedelta(days=6)
+        date_conditions = " OR ".join(["occurred_at LIKE ?"] * 7)
+        conditions.append(f"({date_conditions})")
+        for i in range(7):
+            params.append(f"{(week_start + timedelta(days=i)).strftime('%Y-%m-%d')}%")
+
+    if category:
+        conditions.append("LOWER(category) = LOWER(?)")
+        params.append(category)
+
+    if transaction_type:
+        conditions.append("type = ?")
+        params.append(transaction_type.lower())
+
+    where = " AND ".join(conditions)
+
+    # Primeiro mostra o que será apagado
+    cur.execute(
+        f"SELECT id, amount_cents, merchant, category, occurred_at FROM transactions WHERE {where} ORDER BY occurred_at",
+        params,
+    )
+    rows = cur.fetchall()
+    if not rows:
+        conn.close()
+        return "Nenhuma transação encontrada com esses filtros."
+
+    # Também apaga parcelas vinculadas (installment_group_id)
+    cur.execute(
+        f"SELECT DISTINCT installment_group_id FROM transactions WHERE {where} AND installment_group_id IS NOT NULL",
+        params,
+    )
+    group_ids = [r[0] for r in cur.fetchall()]
+
+    # Apaga as transações diretas
+    cur.execute(f"DELETE FROM transactions WHERE {where}", params)
+    deleted = cur.rowcount
+
+    # Apaga parcelas restantes de grupos afetados
+    for gid in group_ids:
+        cur.execute("DELETE FROM transactions WHERE installment_group_id = ?", (gid,))
+        deleted += cur.rowcount
+
+    conn.commit()
+    conn.close()
+
+    total_cents = sum(r[1] for r in rows)
+    total_fmt = f"R${total_cents/100:,.2f}".replace(",", ".")
+
+    # Monta resumo do que foi apagado
+    lines = [f"✅ *{deleted} transação(ões) apagadas* ({total_fmt} total):"]
+    for _, amt, merch, cat, occ in rows[:10]:
+        d = occ[:10]
+        d_fmt = f"{d[8:10]}/{d[5:7]}"
+        m_info = f" — {merch}" if merch else ""
+        lines.append(f"  • {d_fmt}{m_info}: R${amt/100:.2f} ({cat})")
+    if len(rows) > 10:
+        lines.append(f"  _...e mais {len(rows) - 10}_")
+
+    return "\n".join(lines)
+
+
 @tool
 def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1) -> str:
     """
@@ -4132,6 +4241,13 @@ Cartão criado automaticamente em save_transaction com card_name — nunca peça
 ── CORREÇÕES ──────────────────────────────────────────────────
 
 "apaga" / "cancela" / "foi erro" → delete_last_transaction(user_phone) → "✅ Apagado! R$X [categoria] removido."
+"apaga todos da Herbalife" → delete_transactions(user_phone, merchant="Herbalife")
+"apaga todos da Herbalife deste mês" → delete_transactions(user_phone, merchant="Herbalife", month="2026-03")
+"apaga tudo do dia 02/03" → delete_transactions(user_phone, date="2026-03-02")
+"apaga tudo desta semana" → delete_transactions(user_phone, week=True)
+"apaga todos os gastos de alimentação" → delete_transactions(user_phone, category="Alimentação", transaction_type="expense")
+⚠️ REGRA: "apaga todos/todas" + filtro (merchant, período, categoria) → delete_transactions
+   "apaga" sozinho ou "apaga a última" → delete_last_transaction
 "corrige" / "errei" / "na verdade" / "foi parcelado" → update_last_transaction(user_phone, <só o campo que muda>)
   installments → recalcula parcela automaticamente (não passe amount junto)
   payment_method → CREDIT | DEBIT | PIX | CASH
