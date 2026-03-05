@@ -1025,11 +1025,14 @@ def get_last_transaction(user_phone: str) -> str:
 
 
 @tool(description="""Corrige a última transação registrada.
+Para corrigir data: passe occurred_at no formato YYYY-MM-DD (ex: occurred_at="2026-03-15").
 Para corrigir parcelamento: passe APENAS installments (ex: installments=10).
 Para corrigir valor: passe APENAS amount com o valor TOTAL em reais (ex: amount=150).
 Para corrigir merchant/local: passe merchant (ex: merchant="Magazine Luiza").
 Para corrigir categoria: passe category (ex: category="Alimentação").
+Para corrigir tipo: passe type_ ("expense" ou "income").
 Aceita qualquer categoria — padrão ou personalizada do usuário.
+Pode corrigir MÚLTIPLOS campos de uma vez (ex: occurred_at + amount).
 ⚠️ Se o usuário quer mudar a categoria de um ESTABELECIMENTO inteiro (ex: "Talentos é Lazer"),
 use update_merchant_category em vez desta — ela atualiza TODAS as transações do merchant.""")
 def update_last_transaction(
@@ -1039,6 +1042,8 @@ def update_last_transaction(
     category: str = "",
     amount: float = 0,
     merchant: str = "",
+    occurred_at: str = "",
+    type_: str = "",
 ) -> str:
     """Corrige a última transação registrada."""
     try:
@@ -1053,7 +1058,7 @@ def update_last_transaction(
         user_id = user_row[0]
 
         cur.execute(
-            """SELECT id, amount_cents, total_amount_cents, installments
+            """SELECT id, amount_cents, total_amount_cents, installments, installment_group_id
                FROM transactions WHERE user_id = ?
                ORDER BY created_at DESC LIMIT 1""",
             (user_id,),
@@ -1065,7 +1070,7 @@ def update_last_transaction(
 
         amount_cents = round(amount * 100)
 
-        tx_id, curr_amount, curr_total, curr_inst = row
+        tx_id, curr_amount, curr_total, curr_inst, group_id = row
         curr_total = curr_total or 0
         base_total = curr_total if curr_total > 0 else curr_amount
         if amount_cents > 0:
@@ -1087,20 +1092,54 @@ def update_last_transaction(
             fields["category"] = category
         if merchant:
             fields["merchant"] = merchant
+        if type_ and type_ in ("expense", "income", "credit"):
+            fields["type"] = type_
+        if occurred_at:
+            # Normaliza para YYYY-MM-DD HH:MM:SS
+            if len(occurred_at) == 10:
+                fields["occurred_at"] = occurred_at + "T12:00:00"
+            else:
+                fields["occurred_at"] = occurred_at
 
         if not fields:
             conn.close()
             return "Nenhuma alteração informada."
 
-        set_clause = ", ".join(f"{col} = ?" for col in fields)
-        cur.execute(
-            f"UPDATE transactions SET {set_clause} WHERE id = ?",
-            list(fields.values()) + [tx_id],
-        )
+        # Se parcelado com group_id e mudou data, atualiza todas as parcelas (ajustando meses)
+        if occurred_at and group_id:
+            from dateutil.relativedelta import relativedelta as _rd
+            base_dt = datetime.fromisoformat(fields["occurred_at"][:19])
+            cur.execute(
+                "SELECT id, installment_number FROM transactions WHERE installment_group_id=? ORDER BY installment_number",
+                (group_id,),
+            )
+            parcels = cur.fetchall()
+            for p_id, p_num in parcels:
+                p_dt = base_dt + _rd(months=(p_num - 1))
+                cur.execute("UPDATE transactions SET occurred_at=? WHERE id=?", (p_dt.strftime("%Y-%m-%dT12:00:00"), p_id))
+            # Remove occurred_at from fields dict since we handled it above
+            fields.pop("occurred_at", None)
+
+        if fields:
+            set_clause = ", ".join(f"{col} = ?" for col in fields)
+            if group_id:
+                # Atualiza todas as parcelas do grupo
+                cur.execute(
+                    f"UPDATE transactions SET {set_clause} WHERE installment_group_id = ?",
+                    list(fields.values()) + [group_id],
+                )
+            else:
+                cur.execute(
+                    f"UPDATE transactions SET {set_clause} WHERE id = ?",
+                    list(fields.values()) + [tx_id],
+                )
         conn.commit()
         conn.close()
 
         parts = []
+        if occurred_at:
+            d = occurred_at[:10]
+            parts.append(f"data: {d[8:10]}/{d[5:7]}/{d[:4]}")
         if installments > 0:
             parts.append(f"{installments}x de R${(base_total // installments)/100:.2f} (R${base_total/100:.2f} total)")
         elif amount_cents > 0:
@@ -1111,6 +1150,8 @@ def update_last_transaction(
             parts.append(f"categoria: {category}")
         if merchant:
             parts.append(f"local: {merchant}")
+        if type_:
+            parts.append(f"tipo: {type_}")
 
         return f"OK — corrigido: {' | '.join(parts)}."
 
@@ -3412,7 +3453,7 @@ Categorias de RENDA (INCOME):
 - Freela, projeto, cliente, PJ, nota fiscal → Freelance
 - Aluguel recebido, inquilino → Aluguel Recebido
 - Dividendo, rendimento, CDB, juros, tesouro → Investimentos
-- Aposentadoria, INSS, pensão, benefício → Benefício
+- Aposentadoria, INSS, pensão, benefício, vale-alimentação, vale-refeição, vale-supermercado, VA, VR → Benefício
 - Venda de item, marketplace, Mercado Livre → Venda
 - Presente, transferência recebida, Pix recebido sem contexto → Outros
 
@@ -3499,6 +3540,15 @@ Se o usuário responder apenas "não", "nao", "n", "nope", "nada" ou similar:
 - NUNCA chame delete_last_transaction em resposta a "não"/"nao"/"n" sozinhos.
 - Resposta correta: "Ok!" ou "Tudo bem!" e pare.
 - delete_last_transaction só deve ser chamado quando o usuário EXPLICITAMENTE pedir: "apaga", "deleta", "remove", "exclui" + contexto de transação.
+⛔ FIM DA REGRA.
+
+⛔ REGRA CRÍTICA — CORREÇÃO vs NOVO LANÇAMENTO:
+Quando o usuário menciona dados diferentes LOGO APÓS um lançamento (mesma conversa), é CORREÇÃO:
+- "esse é dia 15" / "era dia 15" / "na verdade dia 15" → update_last_transaction(occurred_at="2026-03-15")
+- "não, era 200" / "foi 200 não 150" → update_last_transaction(amount=200)
+- "era receita" → update_last_transaction(type_="income")
+NUNCA crie uma nova transação quando o usuário está claramente corrigindo a anterior.
+Sinais de correção: "esse é", "era", "na verdade", "muda pra", "corrige pra", "não era isso, é".
 ⛔ FIM DA REGRA.
 
 ⛔ REGRA DE FORMATO — TRANSAÇÕES (save_transaction):
@@ -3974,7 +4024,7 @@ RECEITAS (INCOME):
 - Freela, projeto, cliente, PJ → Freelance
 - Aluguel recebido, inquilino → Aluguel Recebido
 - Dividendo, rendimento, CDB, juros → Investimentos
-- Aposentadoria, INSS, benefício → Benefício
+- Aposentadoria, INSS, benefício, vale-alimentação, vale-refeição, vale-supermercado, VA, VR → Benefício
 - Venda, marketplace, Mercado Livre → Venda
 - Presente, Pix recebido sem contexto → Outros
 
@@ -4087,6 +4137,15 @@ Cartão criado automaticamente em save_transaction com card_name — nunca peça
   payment_method → CREDIT | DEBIT | PIX | CASH
   "foi 150 não 200" → update_last_transaction(user_phone, amount=150)
   "o local era Magazine Luiza" → update_last_transaction(user_phone, merchant="Magazine Luiza")
+  "esse é dia 15" / "era dia 15" / "a data é 15/03" → update_last_transaction(user_phone, occurred_at="2026-03-15")
+  "era receita" / "foi receita não gasto" → update_last_transaction(user_phone, type_="income")
+  "era gasto" / "foi gasto não receita" → update_last_transaction(user_phone, type_="expense")
+
+⚠️ REGRA CRÍTICA DE CORREÇÃO:
+  Quando o usuário diz algo como "esse é dia X", "era dia X", "a data é X",
+  "muda pra dia X", "na verdade é dia X" → É CORREÇÃO da última transação.
+  SEMPRE use update_last_transaction com occurred_at. NUNCA crie uma nova transação.
+  Se o usuário corrigir a data E outro campo junto, passe AMBOS na mesma chamada.
 
 RECATEGORIZAR MERCHANT (atualiza TODAS as transações + salva regra para futuras faturas):
   "HELIO RODRIGUES NAZAR é alimentação" / "muda Talentos pra Lazer" / "X é categoria Y"
