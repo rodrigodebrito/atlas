@@ -4745,7 +4745,7 @@ def _pre_route(message: str) -> dict | None:
 
     # --- RESUMO MENSAL ---
     if _re_router.match(r'(como t[aá] meu m[eê]s|resumo do m[eê]s|meus gastos do m[eê]s|como (foi|esta|está) (meu |o )?m[eê]s)[\?\!\.]*$', msg):
-        return {"response": get_month_summary(user_phone, month=current_month, filter_type="ALL")}
+        return {"response": get_month_summary.entrypoint(user_phone, month=current_month, filter_type="ALL")}
 
     # Resumo de mês específico
     m = _re_router.match(r'(?:como (?:foi|tá|ta|está)|resumo d[eo]|me mostr[ea].*gastos d[eo]|gastos d[eo])\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)', msg)
@@ -4754,35 +4754,34 @@ def _pre_route(message: str) -> dict | None:
         mo = month_names.get(m.group(1).lower().replace("ç","c"), "")
         if mo:
             year = today.year if int(mo) <= today.month else today.year - 1
-            return {"response": get_month_summary(user_phone, month=f"{year}-{mo}", filter_type="ALL")}
+            return {"response": get_month_summary.entrypoint(user_phone, month=f"{year}-{mo}", filter_type="ALL")}
 
     # --- RESUMO SEMANAL ---
     if _re_router.match(r'(como (?:foi|tá|ta|está) minha semana|resumo (?:da |desta )?semana|minha semana)[\?\!\.]*$', msg):
-        return {"response": get_week_summary(user_phone, filter_type="ALL")}
+        return {"response": get_week_summary.entrypoint(user_phone, filter_type="ALL")}
 
     # --- GASTOS DE HOJE ---
     if _re_router.match(r'(gastos? de hoje|o que gastei hoje|hoje)[\?\!\.]*$', msg):
-        return {"response": get_today_total(user_phone, filter_type="EXPENSE", days=1)}
+        return {"response": get_today_total.entrypoint(user_phone, filter_type="EXPENSE", days=1)}
 
     # --- COMPROMISSOS ---
     if _re_router.match(r'(meus compromissos|compromissos (?:do|deste|desse) m[eê]s|quais (?:são )?meus compromissos)[\?\!\.]*$', msg):
-        return {"response": get_upcoming_commitments(user_phone)}
+        return {"response": get_upcoming_commitments.entrypoint(user_phone)}
 
     # --- APAGAR TODOS de merchant ---
     m = _re_router.match(r'(?:apag|delet|remov|exclu)[aeiou]*\s+(?:tod[ao]s?\s+)?(?:(?:as?\s+)?(?:transa[çc][õo]es\s+)?d[aeo]s?\s+)(.+?)(?:\s+(?:d?est[ea]|d[eo])\s+m[eê]s)?[\?\!\.]*$', msg)
     if m:
         merchant = m.group(1).strip()
-        # Remove palavras comuns que não são merchant
         if merchant and merchant not in ("mês", "mes", "semana", "hoje", "ontem"):
-            return {"response": delete_transactions(user_phone, merchant=merchant, month=current_month)}
+            return {"response": delete_transactions.entrypoint(user_phone, merchant=merchant, month=current_month)}
 
     # --- CARTÕES ---
     if _re_router.match(r'(meus cart[õo]es|minhas faturas|faturas)[\?\!\.]*$', msg):
-        return {"response": get_cards(user_phone)}
+        return {"response": get_cards.entrypoint(user_phone)}
 
     # --- METAS ---
     if _re_router.match(r'(minhas metas|metas|ver metas)[\?\!\.]*$', msg):
-        return {"response": get_goals(user_phone)}
+        return {"response": get_goals.entrypoint(user_phone)}
 
     # --- AJUDA ---
     if _re_router.match(r'(ajuda|help|menu|o que voc[eê] faz|comandos)[\?\!\.]*$', msg):
