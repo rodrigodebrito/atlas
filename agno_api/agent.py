@@ -1632,7 +1632,7 @@ def register_card(
         conn.close()
         return "ERRO: usuário não encontrado."
 
-    # Verifica se já existe
+    # Verifica se já existe (match exato)
     existing = _find_card(cur, user_id, name)
     if existing:
         # Atualiza
@@ -1643,6 +1643,16 @@ def register_card(
         conn.commit()
         conn.close()
         return f"Cartão {existing[1]} atualizado. Fecha dia {closing_day}, vence dia {due_day}, limite R${limit:.0f}."
+
+    # Valida nome único: impede nomes que são substring de outros (causa ambiguidade)
+    cur.execute("SELECT name FROM credit_cards WHERE user_id=?", (user_id,))
+    all_cards = [r[0] for r in cur.fetchall()]
+    name_lower = name.lower()
+    for existing_name in all_cards:
+        en_lower = existing_name.lower()
+        if name_lower in en_lower or en_lower in name_lower:
+            conn.close()
+            return f"ERRO: Nome '{name}' conflita com cartão '{existing_name}' (substring). Use um nome mais específico para evitar ambiguidade."
 
     card_id = str(uuid.uuid4())
     cur.execute(
@@ -4831,6 +4841,8 @@ async def import_statement_endpoint(
     import_source = f"fatura:{det_card}:{bill_month}"
 
     credit_count = 0
+    card_dup_count = 0
+    total_imported_cents = 0
     for tx in transactions:
         try:
             # Pula créditos (estornos/devoluções) — não são gastos
@@ -4843,6 +4855,18 @@ async def import_statement_endpoint(
             if amount_cents <= 0:
                 skipped += 1
                 continue
+
+            # 0. Duplicata por cartão: mesmo card + valor + data (independente do merchant)
+            #    Pega "Cueca" manual vs "LOJA X" fatura — mesmo cartão, mesmo valor, mesma data
+            if card_id:
+                cur.execute(
+                    "SELECT id FROM transactions WHERE user_id=? AND card_id=? AND amount_cents=? AND occurred_at LIKE ?",
+                    (user_id, card_id, amount_cents, f"{tx['date']}%")
+                )
+                if cur.fetchone():
+                    card_dup_count += 1
+                    skipped += 1
+                    continue
 
             # 1. Duplicata exata: mesmo merchant (case-insensitive) + valor + data
             cur.execute(
@@ -4904,8 +4928,26 @@ async def import_statement_endpoint(
                  group_id, notes)
             )
             imported += 1
+            total_imported_cents += amount_cents
         except Exception:
             skipped += 1
+
+    # Atualiza current_bill_opening_cents se divergir do total importado
+    bill_update_note = ""
+    if card_id and total_imported_cents > 0:
+        cur.execute(
+            "SELECT current_bill_opening_cents FROM credit_cards WHERE id=?", (card_id,)
+        )
+        cb_row = cur.fetchone()
+        old_bill = cb_row[0] if cb_row and cb_row[0] else 0
+        if old_bill != total_imported_cents:
+            cur.execute(
+                "UPDATE credit_cards SET current_bill_opening_cents=? WHERE id=?",
+                (total_imported_cents, card_id)
+            )
+            old_fmt = f"R${old_bill/100:,.2f}".replace(",", ".")
+            new_fmt = f"R${total_imported_cents/100:,.2f}".replace(",", ".")
+            bill_update_note = f"\n💳 Valor da fatura do {det_card} atualizado: {old_fmt} → {new_fmt}"
 
     # Marca como importado
     cur.execute(
@@ -4927,7 +4969,8 @@ async def import_statement_endpoint(
         card_link = f" _(vinculadas ao cartão {det_card})_"
     else:
         card_link = ""
-    skip_note = f"\n{skipped} ignoradas (duplicatas exatas ou valor zero)." if skipped else ""
+    card_dup_note = f"\n🔄 {card_dup_count} já existiam no cartão — ignoradas automaticamente." if card_dup_count else ""
+    skip_note = f"\n{skipped} ignoradas (duplicatas ou valor zero)." if skipped else ""
 
     dup_note = ""
     if potential_duplicates:
@@ -4940,7 +4983,7 @@ async def import_statement_endpoint(
 
     return {
         "message": (
-            f"✅ *{imported} transações importadas*{card_link}{skip_note}{dup_note}\n\n"
+            f"✅ *{imported} transações importadas*{card_link}{card_dup_note}{skip_note}{bill_update_note}{dup_note}\n\n"
             f"Origem salva: `{import_source}`\n"
             f"Pergunte _\"como tá meu mês?\"_ para ver o resumo atualizado.\n\n"
             f"📊 *Ver relatório detalhado:*\n{report_url}"
