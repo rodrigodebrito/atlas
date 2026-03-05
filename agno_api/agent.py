@@ -4750,7 +4750,12 @@ def _pre_route(message: str) -> dict | None:
 
     # --- RESUMO MENSAL ---
     if _re_router.match(r'(como t[aá] meu m[eê]s|resumo do m[eê]s|meus gastos do m[eê]s|como (foi|esta|está) (meu |o )?m[eê]s)[\?\!\.]*$', msg):
-        return {"response": _call(get_month_summary, user_phone, current_month, "ALL")}
+        try:
+            result = _call(get_month_summary, user_phone, current_month, "ALL")
+            return {"response": result}
+        except Exception as e:
+            import traceback
+            return {"response": f"ERRO DEBUG: {type(e).__name__}: {e}\n{traceback.format_exc()}"}
 
     # Resumo de mês específico
     m = _re_router.match(r'(?:como (?:foi|tá|ta|está)|resumo d[eo]|me mostr[ea].*gastos d[eo]|gastos d[eo])\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)', msg)
