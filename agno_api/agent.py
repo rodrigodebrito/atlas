@@ -186,6 +186,13 @@ def _init_sqlite_tables():
             user_phone TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS pending_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_phone TEXT NOT NULL,
+            action_type TEXT NOT NULL,
+            action_data TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
     """)
     conn.commit()
     conn.close()
@@ -327,6 +334,13 @@ def _init_postgres_tables():
             id SERIAL PRIMARY KEY,
             message TEXT NOT NULL,
             user_phone TEXT DEFAULT '',
+            created_at TEXT DEFAULT (now()::text)
+        );
+        CREATE TABLE IF NOT EXISTS pending_actions (
+            id SERIAL PRIMARY KEY,
+            user_phone TEXT NOT NULL,
+            action_type TEXT NOT NULL,
+            action_data TEXT NOT NULL,
             created_at TEXT DEFAULT (now()::text)
         );
     """)
@@ -1598,6 +1612,25 @@ def delete_transactions(
 
     # ETAPA 1: listar e pedir confirmação
     if not confirm:
+        # Salva ação pendente no DB para o pré-roteador resolver "sim"
+        import json as _json_pa
+        action_data = _json_pa.dumps({
+            "merchant": merchant, "date": date, "month": month,
+            "week": week, "category": category, "transaction_type": transaction_type,
+        })
+        try:
+            conn2 = _get_conn()
+            cur2 = conn2.cursor()
+            # Remove ações pendentes antigas deste usuário
+            cur2.execute("DELETE FROM pending_actions WHERE user_phone = ?", (user_phone,))
+            cur2.execute(
+                "INSERT INTO pending_actions (user_phone, action_type, action_data) VALUES (?, ?, ?)",
+                (user_phone, "delete_transactions", action_data),
+            )
+            conn2.commit()
+            conn2.close()
+        except Exception:
+            pass
         conn.close()
         lines = [f"⚠️ *{len(rows)} transação(ões) encontradas* ({total_fmt} total):"]
         for _, amt, merch, cat, occ in rows[:15]:
@@ -4978,6 +5011,57 @@ def _pre_route(message: str) -> dict | None:
     def _call(tool_func, *args, **kwargs):
         fn = getattr(tool_func, 'entrypoint', None) or tool_func
         return fn(*args, **kwargs)
+
+    # --- CONFIRMAÇÃO / CANCELAMENTO DE AÇÃO PENDENTE ---
+    if _re_router.match(r'(sim|s|yes|confirma|confirmar|pode apagar|apaga|beleza|bora|ok|t[aá]|isso)[\?\!\.]*$', msg):
+        try:
+            import json as _json_pr
+            conn_pa = _get_conn()
+            cur_pa = conn_pa.cursor()
+            cur_pa.execute(
+                "SELECT id, action_type, action_data FROM pending_actions WHERE user_phone = ? ORDER BY created_at DESC LIMIT 1",
+                (user_phone,),
+            )
+            pa_row = cur_pa.fetchone()
+            if pa_row:
+                pa_id, action_type, action_data_str = pa_row
+                # Limpa a ação pendente
+                cur_pa.execute("DELETE FROM pending_actions WHERE user_phone = ?", (user_phone,))
+                conn_pa.commit()
+                conn_pa.close()
+
+                if action_type == "delete_transactions":
+                    data = _json_pr.loads(action_data_str)
+                    result = _call(
+                        delete_transactions, user_phone,
+                        merchant=data.get("merchant", ""),
+                        date=data.get("date", ""),
+                        month=data.get("month", ""),
+                        week=data.get("week", False),
+                        category=data.get("category", ""),
+                        transaction_type=data.get("transaction_type", ""),
+                        confirm=True,
+                    )
+                    return {"response": result}
+            else:
+                conn_pa.close()
+        except Exception:
+            pass
+
+    if _re_router.match(r'(n[aã]o|nao|n|cancela|cancelar|deixa|esquece|desiste)[\?\!\.]*$', msg):
+        try:
+            conn_pa = _get_conn()
+            cur_pa = conn_pa.cursor()
+            cur_pa.execute("SELECT id FROM pending_actions WHERE user_phone = ?", (user_phone,))
+            pa_row = cur_pa.fetchone()
+            if pa_row:
+                cur_pa.execute("DELETE FROM pending_actions WHERE user_phone = ?", (user_phone,))
+                conn_pa.commit()
+                conn_pa.close()
+                return {"response": "Ok, cancelado! Nada foi apagado. ✌️"}
+            conn_pa.close()
+        except Exception:
+            pass
 
     # --- RESUMO MENSAL ---
     if _re_router.match(r'(como t[aá] meu m[eê]s|resumo (?:do |mensal|deste |desse )?m[eê]s|meus gastos(?: do m[eê]s)?|como (?:foi|esta|está|tá|ta|anda|andou)(?: meu| o)? m[eê]s|me d[aá] (?:o )?resumo|resumo geral|vis[aã]o geral|saldo do m[eê]s|saldo mensal|quanto (?:eu )?(?:j[aá] )?gastei (?:esse|este|no) m[eê]s|total do m[eê]s|balan[çc]o do m[eê]s|extrato do m[eê]s|extrato mensal|como (?:est[aá]|tá|ta|anda) (?:minhas? )?finan[çc]as)[\?\!\.]*$', msg):
