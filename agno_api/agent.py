@@ -408,6 +408,66 @@ def _get_conn():
     return _PGConn(psycopg2.connect(DATABASE_URL))
 
 
+def _generate_inline_alerts(cur, user_id: str, user_phone: str, category: str, amount_cents: int) -> list[str]:
+    """
+    Gera alertas inteligentes inline após registrar um gasto.
+    Retorna lista de strings de alerta (pode ser vazia).
+    """
+    alerts = []
+    today = _now_br()
+    current_month = today.strftime("%Y-%m")
+
+    try:
+        # 1. ALERTA: Categoria estourou vs mês anterior
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND category = ? AND occurred_at LIKE ?",
+            (user_id, category, f"{current_month}%"),
+        )
+        cat_this_month = cur.fetchone()[0]
+
+        if today.month == 1:
+            prev_month = f"{today.year - 1}-12"
+        else:
+            prev_month = f"{today.year}-{today.month - 1:02d}"
+
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND category = ? AND occurred_at LIKE ?",
+            (user_id, category, f"{prev_month}%"),
+        )
+        cat_last_month = cur.fetchone()[0]
+
+        if cat_last_month > 0 and cat_this_month > cat_last_month * 1.3:
+            pct = round((cat_this_month / cat_last_month - 1) * 100)
+            cat_fmt = f"R${cat_this_month/100:,.2f}".replace(",", ".")
+            alerts.append(f"⚠️ _{category} já em {cat_fmt} — {pct}% acima do mês passado_")
+
+        # 2. ALERTA: Ritmo de gastos acelerado (projeção > renda)
+        cur.execute(
+            "SELECT monthly_income_cents FROM users WHERE id = ?", (user_id,)
+        )
+        income_row = cur.fetchone()
+        if income_row and income_row[0] and income_row[0] > 0:
+            income_cents = income_row[0]
+            day_of_month = today.day
+            if day_of_month >= 5:  # Só alerta após 5 dias (dados suficientes)
+                cur.execute(
+                    "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+                    (user_id, f"{current_month}%"),
+                )
+                total_spent = cur.fetchone()[0]
+                days_in_month = calendar.monthrange(today.year, today.month)[1]
+                projection = round(total_spent * days_in_month / day_of_month)
+                if projection > income_cents * 1.1:
+                    proj_fmt = f"R${projection/100:,.2f}".replace(",", ".")
+                    over = projection - income_cents
+                    over_fmt = f"R${over/100:,.2f}".replace(",", ".")
+                    alerts.append(f"📊 _No ritmo atual, vai gastar {proj_fmt} — {over_fmt} acima da renda_")
+    except Exception:
+        pass  # Alertas são best-effort, nunca devem quebrar o save
+
+    return alerts
+
+
 @tool
 def save_transaction(
     user_phone: str,
@@ -646,6 +706,18 @@ def save_transaction(
         result += ask_closing
     if card_is_new and not ask_closing:
         result += f"\n_Cartão {card_display_name} criado automaticamente. Para rastrear a fatura, diga o fechamento e vencimento._"
+
+    # --- ALERTAS INTELIGENTES INLINE ---
+    if transaction_type == "EXPENSE":
+        try:
+            _alert_conn = _get_conn()
+            _alert_cur = _alert_conn.cursor()
+            alerts = _generate_inline_alerts(_alert_cur, user_id, user_phone, category, amount_cents)
+            _alert_conn.close()
+            if alerts:
+                result += "\n\n" + "\n".join(alerts)
+        except Exception:
+            pass
 
     return result
 
@@ -4825,6 +4897,59 @@ def _extract_body(message: str) -> str:
     body_lines = [l for l in lines if not l.strip().startswith("[")]
     return " ".join(body_lines).strip()
 
+def _extract_user_name_header(message: str) -> str:
+    """Extrai user_name do header [user_name: João da Silva]."""
+    m = _re_router.search(r'\[user_name:\s*([^\]]+)\]', message)
+    return m.group(1).strip() if m else ""
+
+def _onboard_if_new(user_phone: str, message: str) -> dict | None:
+    """
+    Se o usuário é novo (não existe no DB), faz onboarding via pré-roteador:
+    salva o nome e retorna mensagem de boas-vindas fixa.
+    Retorna None se o usuário já existe.
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name FROM users WHERE phone = ?", (user_phone,))
+    row = cur.fetchone()
+    conn.close()
+
+    if row:
+        # Usuário existe — checa se ainda está com nome padrão (onboarding incompleto)
+        _, name = row
+        if name and name != "Usuário":
+            return None  # Usuário completo, prosseguir normalmente
+
+    # Usuário novo ou com nome padrão → onboarding fixo
+    full_name = _extract_user_name_header(message)
+    first_name = full_name.split()[0] if full_name else "amigo"
+
+    # Salva o nome no DB
+    fn = getattr(update_user_name, 'entrypoint', None) or update_user_name
+    fn(user_phone, first_name)
+
+    welcome = (
+        f"Tudo certo, {first_name}! 🎉\n"
+        "Sou o *ATLAS* — seu assistente financeiro no WhatsApp.\n"
+        "Pode me mandar seus gastos assim:\n\n"
+        "💸 *Gastos do dia a dia:*\n"
+        "• _\"almocei 35 no Restaurante\"_\n"
+        "• _\"mercado 120\"_\n"
+        "• _\"uber 18\"_\n\n"
+        "💳 *Compras no cartão:*\n"
+        "• _\"comprei tênis 300 no Nubank\"_\n"
+        "• _\"notebook 3000 em 6x no Inter\"_\n\n"
+        "💰 *Receitas:*\n"
+        "• _\"recebi 4500 de salário\"_\n"
+        "• _\"entrou 1200 de freela\"_\n\n"
+        "📊 *Ver como está:*\n"
+        "• _\"como tá meu mês?\"_\n"
+        "• _\"posso comprar um tênis de 200?\"_\n\n"
+        "Digite *ajuda* pra ver tudo que sei fazer 🎯\n"
+        "👉 Manual completo: https://atlas-m3wb.onrender.com/manual"
+    )
+    return {"response": welcome}
+
 def _pre_route(message: str) -> dict | None:
     """
     Tenta rotear mensagens comuns sem chamar o LLM.
@@ -4833,6 +4958,11 @@ def _pre_route(message: str) -> dict | None:
     user_phone = _extract_user_phone(message)
     if not user_phone:
         return None
+
+    # Onboarding: se usuário é novo, retorna boas-vindas fixas (sem LLM)
+    onboard = _onboard_if_new(user_phone, message)
+    if onboard:
+        return onboard
 
     body = _extract_body(message)
     msg = body.lower().strip()
@@ -4901,39 +5031,69 @@ def _pre_route(message: str) -> dict | None:
 
     # --- SAUDAÇÕES simples (sem chamar LLM) ---
     if _re_router.match(r'(oi|ol[aá]|e a[ií]|boa (?:tarde|noite|dia)|fala|eae|eai|salve|bom dia|boa tarde|boa noite)[\?\!\.]*$', msg):
-        return {"response": "Olá! 👋 Sou o *ATLAS*, seu assistente financeiro.\n\nMe diz o que precisa — pode lançar um gasto, pedir o resumo do mês, ou digitar *ajuda* pra ver tudo que eu faço."}
+        # Busca nome do usuário para saudação personalizada
+        _uname = ""
+        try:
+            _conn = _get_conn()
+            _cur = _conn.cursor()
+            _cur.execute("SELECT name FROM users WHERE phone = ?", (user_phone,))
+            _urow = _cur.fetchone()
+            _conn.close()
+            if _urow and _urow[0] and _urow[0] != "Usuário":
+                _uname = _urow[0]
+        except Exception:
+            pass
+        greeting = f"Olá, {_uname}! 👋" if _uname else "Olá! 👋"
+        return {"response": f"{greeting} Sou o *ATLAS*, seu assistente financeiro.\n\nMe diz o que precisa — pode lançar um gasto, pedir o resumo do mês, ou digitar *ajuda* pra ver tudo que eu faço."}
 
     return None  # Fallback ao agente LLM
 
-_HELP_TEXT = """📋 *O que o ATLAS faz:*
+_HELP_TEXT = """📋 *ATLAS — Manual Rápido*
 
-1️⃣ *Lançar gastos*
+💸 *Lançar gastos:*
 • _"gastei 45 no iFood"_
+• _"mercado 120"_
+• _"uber 18 ontem"_
 • _"tênis 300 em 3x no Nubank"_
+• _"notebook 3000 em 6x no Inter"_
 
-2️⃣ *Receitas*
+💰 *Receitas:*
 • _"recebi 4500 de salário"_
 • _"entrou 1200 de freela"_
 
-3️⃣ *Análises*
+📊 *Resumos e análises:*
 • _"como tá meu mês?"_
+• _"como foi minha semana?"_
+• _"gastos de hoje"_
+• _"gastos por categoria"_
+• _"meu score financeiro"_
+
+🧠 *Inteligência financeira:*
 • _"posso comprar um tênis de 200?"_
 • _"vai sobrar até o fim do mês?"_
+• _"quanto posso gastar por dia?"_
 
-4️⃣ *Cartões de crédito*
-• _"fatura do Nubank"_
-• _"paguei o cartão"_
+💳 *Cartões de crédito:*
+• _"meus cartões"_
+• _"fatura do Nubank 2300"_
+• _"minhas parcelas"_
 
-5️⃣ *Gastos fixos e metas*
+📌 *Gastos fixos:*
 • _"aluguel 1500 todo dia 5"_
+• _"Netflix 44,90 todo mês"_
+• _"meus compromissos"_
+
+🎯 *Metas:*
 • _"quero guardar 5000 pra viagem"_
+• _"guardei 500 na meta viagem"_
+• _"minhas metas"_
 
-6️⃣ *Corrigir / Apagar*
-• _"corrige" / "apaga"_
-• _"apaga todos da Herbalife deste mês"_
-• _"muda o Talentos do dia 04 para Lazer"_
+✏️ *Corrigir / Apagar:*
+• _"corrige" ou "apaga" (última transação)_
+• _"muda o Talentos de ontem pra Lazer"_
+• _"apaga todos do iFood deste mês"_
 
-Digite qualquer gasto ou receita pra começar! 🎯"""
+👉 Manual completo: https://atlas-m3wb.onrender.com/manual"""
 
 from fastapi import Form as _Form
 
@@ -5967,6 +6127,147 @@ def health_check():
 # ============================================================
 # RUN
 # ============================================================
+
+@app.get("/manual")
+def manual_page():
+    """Página HTML com manual completo do ATLAS."""
+    from fastapi.responses import HTMLResponse as _HTMLResponse
+    html = """<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ATLAS — Manual</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e0e0e0;line-height:1.6;padding:16px;max-width:600px;margin:0 auto}
+h1{font-size:1.8em;text-align:center;margin:20px 0 8px;color:#fff}
+.subtitle{text-align:center;color:#888;margin-bottom:24px;font-size:0.95em}
+.section{background:#1a1a2e;border-radius:12px;padding:16px;margin-bottom:16px;border:1px solid #2a2a3e}
+.section h2{font-size:1.1em;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.example{background:#12121e;border-radius:8px;padding:10px 12px;margin:6px 0;font-size:0.9em;border-left:3px solid #4a9eff}
+.example code{color:#4a9eff;font-family:'SF Mono',Consolas,monospace}
+.tip{background:#1a2e1a;border:1px solid #2e4a2e;border-radius:8px;padding:10px 12px;margin:6px 0;font-size:0.85em;color:#8fbc8f}
+.categories{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.cat{background:#2a2a3e;border-radius:16px;padding:4px 10px;font-size:0.8em;color:#aaa}
+.footer{text-align:center;color:#555;font-size:0.8em;margin-top:24px;padding-bottom:20px}
+</style>
+</head>
+<body>
+
+<h1>📊 ATLAS</h1>
+<p class="subtitle">Seu assistente financeiro no WhatsApp</p>
+
+<div class="section">
+<h2>💸 Lançar gastos</h2>
+<p>Basta descrever o gasto naturalmente:</p>
+<div class="example"><code>"gastei 45 no iFood"</code></div>
+<div class="example"><code>"almocei 35 no Restaurante Talentos"</code></div>
+<div class="example"><code>"mercado 120"</code></div>
+<div class="example"><code>"uber 18 ontem"</code></div>
+<div class="example"><code>"farmácia 42,50 anteontem"</code></div>
+<div class="tip">💡 O ATLAS categoriza automaticamente e aprende suas preferências com o tempo.</div>
+</div>
+
+<div class="section">
+<h2>💳 Compras no cartão</h2>
+<p>Mencione o nome do cartão — à vista ou parcelado:</p>
+<div class="example"><code>"comprei tênis 300 no Nubank"</code></div>
+<div class="example"><code>"notebook 3000 em 6x no Inter"</code></div>
+<div class="example"><code>"geladeira 2400 em 12x no Nubank"</code></div>
+<div class="tip">💡 Se o cartão não existir, o ATLAS cria automaticamente. Depois informe o fechamento e vencimento.</div>
+</div>
+
+<div class="section">
+<h2>💰 Receitas</h2>
+<div class="example"><code>"recebi 4500 de salário"</code></div>
+<div class="example"><code>"entrou 1200 de freela"</code></div>
+<div class="example"><code>"recebi 800 de aluguel"</code></div>
+<div class="tip">💡 A renda é usada para calcular seu score, projeções e o "posso comprar?".</div>
+</div>
+
+<div class="section">
+<h2>📊 Resumos</h2>
+<div class="example"><code>"como tá meu mês?"</code> — resumo do mês atual</div>
+<div class="example"><code>"como foi minha semana?"</code> — resumo semanal</div>
+<div class="example"><code>"gastos de hoje"</code> — o que gastou hoje</div>
+<div class="example"><code>"gastos por categoria"</code> — breakdown por categoria</div>
+<div class="example"><code>"como foi janeiro?"</code> — resumo de mês passado</div>
+</div>
+
+<div class="section">
+<h2>🧠 Inteligência financeira</h2>
+<p>O ATLAS analisa seus dados e responde com inteligência:</p>
+<div class="example"><code>"posso comprar um tênis de 200?"</code> — analisa renda, gastos, parcelas e responde YES/CAUTION/DEFER/NO</div>
+<div class="example"><code>"vai sobrar até o fim do mês?"</code> — 3 cenários: ritmo atual, cortando supérfluo, e meta 20%</div>
+<div class="example"><code>"meu score financeiro"</code> — nota de A+ a F com 4 componentes</div>
+<div class="example"><code>"quanto posso gastar por dia?"</code> — orçamento diário baseado no ciclo de salário</div>
+</div>
+
+<div class="section">
+<h2>💳 Cartões de crédito</h2>
+<div class="example"><code>"meus cartões"</code> — lista cartões e faturas</div>
+<div class="example"><code>"fatura do Nubank 2300"</code> — registra valor da fatura</div>
+<div class="example"><code>"minhas parcelas"</code> — lista parcelamentos ativos</div>
+<div class="example"><code>"fecha dia 25 vence dia 10"</code> — configura ciclo do cartão</div>
+</div>
+
+<div class="section">
+<h2>📌 Gastos fixos e compromissos</h2>
+<div class="example"><code>"aluguel 1500 todo dia 5"</code> — registra gasto fixo</div>
+<div class="example"><code>"Netflix 44,90 todo mês"</code></div>
+<div class="example"><code>"meus compromissos"</code> — lista contas a pagar</div>
+<div class="example"><code>"meus gastos fixos"</code> — lista recorrentes</div>
+<div class="tip">💡 O ATLAS envia lembretes automáticos antes dos vencimentos!</div>
+</div>
+
+<div class="section">
+<h2>🎯 Metas de economia</h2>
+<div class="example"><code>"quero guardar 5000 pra viagem"</code> — cria meta</div>
+<div class="example"><code>"guardei 500 na meta viagem"</code> — adiciona valor</div>
+<div class="example"><code>"minhas metas"</code> — vê progresso</div>
+</div>
+
+<div class="section">
+<h2>✏️ Corrigir e apagar</h2>
+<div class="example"><code>"corrige"</code> ou <code>"apaga"</code> — última transação</div>
+<div class="example"><code>"muda o Talentos de ontem pra Lazer"</code> — corrige categoria/valor/merchant</div>
+<div class="example"><code>"apaga todos do iFood deste mês"</code> — deleção em massa (pede confirmação)</div>
+<div class="tip">💡 Na deleção em massa, o ATLAS lista tudo antes de apagar e pede confirmação.</div>
+</div>
+
+<div class="section">
+<h2>⚙️ Configurações</h2>
+<div class="example"><code>"meu salário cai dia 5"</code> — configura ciclo salarial</div>
+<div class="example"><code>"recebi 4500 de salário"</code> — salva renda automaticamente</div>
+<div class="example"><code>"lembrete 5 dias antes"</code> — configura antecedência dos lembretes</div>
+</div>
+
+<div class="section">
+<h2>🏷️ Categorias automáticas</h2>
+<p>O ATLAS categoriza seus gastos automaticamente:</p>
+<div class="categories">
+<span class="cat">Alimentação</span>
+<span class="cat">Transporte</span>
+<span class="cat">Moradia</span>
+<span class="cat">Saúde</span>
+<span class="cat">Lazer</span>
+<span class="cat">Educação</span>
+<span class="cat">Assinaturas</span>
+<span class="cat">Vestuário</span>
+<span class="cat">Investimento</span>
+<span class="cat">Pets</span>
+<span class="cat">Outros</span>
+</div>
+<div class="tip">💡 O ATLAS aprende: se você sempre coloca iFood em "Alimentação", ele memoriza e usa automaticamente.</div>
+</div>
+
+<p class="footer">ATLAS — Assistente financeiro inteligente<br>Feito com ❤️ para simplificar suas finanças</p>
+
+</body>
+</html>"""
+    return _HTMLResponse(content=html)
+
 
 # Reconstroi middleware stack após todos os endpoints serem registrados
 app.middleware_stack = None
