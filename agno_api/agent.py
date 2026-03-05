@@ -4847,11 +4847,11 @@ def _pre_route(message: str) -> dict | None:
         return fn(*args, **kwargs)
 
     # --- RESUMO MENSAL ---
-    if _re_router.match(r'(como t[aá] meu m[eê]s|resumo do m[eê]s|meus gastos do m[eê]s|como (foi|esta|está) (meu |o )?m[eê]s)[\?\!\.]*$', msg):
+    if _re_router.match(r'(como t[aá] meu m[eê]s|resumo (?:do |mensal|deste |desse )?m[eê]s|meus gastos(?: do m[eê]s)?|como (?:foi|esta|está|tá|ta|anda|andou)(?: meu| o)? m[eê]s|me d[aá] (?:o )?resumo|resumo geral|vis[aã]o geral|saldo do m[eê]s|saldo mensal|quanto (?:eu )?(?:j[aá] )?gastei (?:esse|este|no) m[eê]s|total do m[eê]s|balan[çc]o do m[eê]s|extrato do m[eê]s|extrato mensal|como (?:est[aá]|tá|ta|anda) (?:minhas? )?finan[çc]as)[\?\!\.]*$', msg):
         return {"response": _call(get_month_summary, user_phone, current_month, "ALL")}
 
     # Resumo de mês específico
-    m = _re_router.match(r'(?:como (?:foi|tá|ta|está)|resumo d[eo]|me mostr[ea].*gastos d[eo]|gastos d[eo])\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)', msg)
+    m = _re_router.match(r'(?:como (?:foi|tá|ta|está)|resumo d[eo]|me mostr[ea].*(?:gastos?|resumo) d[eo]|gastos d[eo]|extrato d[eo])\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)', msg)
     if m:
         month_names = {"janeiro":"01","fevereiro":"02","março":"03","marco":"03","abril":"04","maio":"05","junho":"06","julho":"07","agosto":"08","setembro":"09","outubro":"10","novembro":"11","dezembro":"12"}
         mo = month_names.get(m.group(1).lower().replace("ç","c"), "")
@@ -4860,15 +4860,15 @@ def _pre_route(message: str) -> dict | None:
             return {"response": _call(get_month_summary, user_phone, f"{year}-{mo}", "ALL")}
 
     # --- RESUMO SEMANAL ---
-    if _re_router.match(r'(como (?:foi|tá|ta|está) minha semana|resumo (?:da |desta )?semana|minha semana)[\?\!\.]*$', msg):
+    if _re_router.match(r'(como (?:foi|tá|ta|está|anda) (?:minha )?semana|resumo (?:da |desta |dessa |semanal)?semana|minha semana|gastos? (?:da |desta |dessa )?semana|extrato (?:da |desta )?semana|quanto gastei (?:essa|esta|na) semana)[\?\!\.]*$', msg):
         return {"response": _call(get_week_summary, user_phone, "ALL")}
 
     # --- GASTOS DE HOJE ---
-    if _re_router.match(r'(gastos? de hoje|o que gastei hoje|hoje)[\?\!\.]*$', msg):
+    if _re_router.match(r'(gastos? de hoje|o que (?:eu )?gastei hoje|hoje|quanto (?:eu )?gastei hoje|extrato (?:de )?hoje|saldo (?:de )?hoje|me (?:d[aá]|fala|mostra) (?:o )?(?:saldo|extrato|gastos?)(?: de)? (?:de )?hoje|como (?:tá|ta|está) (?:o )?(?:dia de )?hoje)[\?\!\.]*$', msg):
         return {"response": _call(get_today_total, user_phone, "EXPENSE", 1)}
 
     # --- COMPROMISSOS ---
-    if _re_router.match(r'(meus compromissos|compromissos (?:do|deste|desse) m[eê]s|quais (?:são )?meus compromissos)[\?\!\.]*$', msg):
+    if _re_router.match(r'(meus compromissos|compromissos(?: (?:do|deste|desse|este|esse) m[eê]s)?|quais (?:s[aã]o )?(?:os )?(?:meus )?compromissos|contas? (?:a |pra )pagar|o que (?:eu )?(?:tenho|vou ter) (?:pra|para) pagar|gastos? fixos|fixos)[\?\!\.]*$', msg):
         return {"response": _call(get_upcoming_commitments, user_phone)}
 
     # --- APAGAR TODOS de merchant ---
@@ -4879,16 +4879,36 @@ def _pre_route(message: str) -> dict | None:
             return {"response": _call(delete_transactions, user_phone, merchant, "", current_month)}
 
     # --- CARTÕES ---
-    if _re_router.match(r'(meus cart[õo]es|minhas faturas|faturas)[\?\!\.]*$', msg):
+    if _re_router.match(r'(meus cart[õo]es|(?:minhas )?faturas?|ver (?:meus )?cart[õo]es|quais (?:s[aã]o )?(?:os )?(?:meus )?cart[õo]es|lista(?:r)? cart[õo]es)[\?\!\.]*$', msg):
         return {"response": _call(get_cards, user_phone)}
 
     # --- METAS ---
-    if _re_router.match(r'(minhas metas|metas|ver metas)[\?\!\.]*$', msg):
+    if _re_router.match(r'((?:minhas |ver |listar )?metas|objetivos|(?:minhas |ver )?metas financeiras)[\?\!\.]*$', msg):
         return {"response": _call(get_goals, user_phone)}
 
+    # --- GASTOS FIXOS / RECORRENTES ---
+    if _re_router.match(r'((?:meus |ver |listar )?(?:gastos? )?(?:fixos|recorrentes)|assinaturas|despesas? fixas)[\?\!\.]*$', msg):
+        return {"response": _call(get_recurring, user_phone)}
+
+    # --- SCORE FINANCEIRO ---
+    if _re_router.match(r'((?:meu )?score|nota financeira|sa[uú]de financeira|como (?:tá|ta|está) (?:minha )?sa[uú]de financeira)[\?\!\.]*$', msg):
+        return {"response": _call(get_financial_score, user_phone)}
+
+    # --- PARCELAS ---
+    if _re_router.match(r'((?:minhas |ver )?parcelas|parcelamentos?|compras? parceladas?)[\?\!\.]*$', msg):
+        return {"response": _call(get_installments_summary, user_phone)}
+
+    # --- CATEGORIAS (breakdown) ---
+    if _re_router.match(r'((?:ver )?categorias|gastos? por categoria|breakdown|quanto (?:gastei )?(?:em |por )cada categoria)[\?\!\.]*$', msg):
+        return {"response": _call(get_category_breakdown, user_phone, current_month)}
+
     # --- AJUDA ---
-    if _re_router.match(r'(ajuda|help|menu|o que voc[eê] faz|comandos)[\?\!\.]*$', msg):
+    if _re_router.match(r'(ajuda|help|menu|o que voc[eê] faz|comandos|como (?:te )?(?:uso|usar)|(?:o que|oque) (?:vc|voc[eê]) (?:faz|sabe fazer)|funcionalidades|recursos)[\?\!\.]*$', msg):
         return {"response": _HELP_TEXT}
+
+    # --- SAUDAÇÕES simples (sem chamar LLM) ---
+    if _re_router.match(r'(oi|ol[aá]|e a[ií]|boa (?:tarde|noite|dia)|fala|eae|eai|salve|bom dia|boa tarde|boa noite)[\?\!\.]*$', msg):
+        return {"response": "Olá! 👋 Sou o *ATLAS*, seu assistente financeiro.\n\nMe diz o que precisa — pode lançar um gasto, pedir o resumo do mês, ou digitar *ajuda* pra ver tudo que eu faço."}
 
     return None  # Fallback ao agente LLM
 
