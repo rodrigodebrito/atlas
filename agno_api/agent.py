@@ -4662,7 +4662,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.build_middleware_stack()
+# build_middleware_stack movido para o final do arquivo
 
 # ============================================================
 # MIDDLEWARE — sanitiza lone surrogates das respostas JSON
@@ -5808,6 +5808,10 @@ def health_check():
 # ============================================================
 # RUN
 # ============================================================
+
+# Reconstroi middleware stack após todos os endpoints serem registrados
+app.middleware_stack = None
+app.build_middleware_stack()
 
 if __name__ == "__main__":
     agent_os.serve(
