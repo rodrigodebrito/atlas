@@ -4750,12 +4750,7 @@ def _pre_route(message: str) -> dict | None:
 
     # --- RESUMO MENSAL ---
     if _re_router.match(r'(como t[aá] meu m[eê]s|resumo do m[eê]s|meus gastos do m[eê]s|como (foi|esta|está) (meu |o )?m[eê]s)[\?\!\.]*$', msg):
-        try:
-            result = _call(get_month_summary, user_phone, current_month, "ALL")
-            return {"response": result}
-        except Exception as e:
-            import traceback
-            return {"response": f"ERRO DEBUG: {type(e).__name__}: {e}\n{traceback.format_exc()}"}
+        return {"response": _call(get_month_summary, user_phone, current_month, "ALL")}
 
     # Resumo de mês específico
     m = _re_router.match(r'(?:como (?:foi|tá|ta|está)|resumo d[eo]|me mostr[ea].*gastos d[eo]|gastos d[eo])\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)', msg)
@@ -4852,15 +4847,15 @@ async def chat_endpoint(
         return {"content": routed["response"], "routed": True}
 
     # 2. Fallback: chama o agente LLM
-    from agno.agent import RunResponse
     if not session_id:
         session_id = f"wa_{user_phone.replace('+','')}"
 
-    response: RunResponse = await atlas_agent.arun(
+    response = await atlas_agent.arun(
         message=full_message,
         session_id=session_id,
     )
-    return {"content": response.content, "routed": False, "session_id": session_id}
+    content = response.content if hasattr(response, 'content') else str(response)
+    return {"content": content, "routed": False, "session_id": session_id}
 
 
 @app.get("/v1/reminders/daily")
