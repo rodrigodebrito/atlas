@@ -4828,14 +4828,22 @@ from fastapi import Form as _Form
 
 @app.post("/v1/chat")
 async def chat_endpoint(
-    user_phone: str = _Form(...),
+    user_phone: str = _Form(""),
     message: str = _Form(...),
     session_id: str = _Form(""),
 ):
     """
     Endpoint principal de chat. Faz pré-roteamento para padrões comuns
     e só chama o LLM para mensagens complexas/ambíguas.
+    user_phone pode vir como campo separado ou embutido no message como [user_phone: +55...]
     """
+    # Extrai phone do message se não veio separado
+    if not user_phone and "[user_phone:" in message:
+        import re as _re_phone
+        _m = _re_phone.search(r'\[user_phone:\s*([^\]]+)\]', message)
+        if _m:
+            user_phone = _m.group(1).strip()
+
     # Monta mensagem com header
     full_message = message
     if "[user_phone:" not in message:
