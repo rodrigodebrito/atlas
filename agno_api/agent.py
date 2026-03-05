@@ -178,6 +178,15 @@ def _init_sqlite_tables():
             UNIQUE(user_id, merchant_pattern)
         );
     """)
+    # Log de mensagens não roteadas (caíram no LLM)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS unrouted_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message TEXT NOT NULL,
+            user_phone TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
     conn.commit()
     conn.close()
 
@@ -310,6 +319,15 @@ def _init_postgres_tables():
             card_id TEXT NOT NULL,
             created_at TEXT DEFAULT (now()::text),
             UNIQUE(user_id, merchant_pattern)
+        );
+    """)
+    # Log de mensagens não roteadas (caíram no LLM)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS unrouted_messages (
+            id SERIAL PRIMARY KEY,
+            message TEXT NOT NULL,
+            user_phone TEXT DEFAULT '',
+            created_at TEXT DEFAULT (now()::text)
         );
     """)
     conn.commit()
@@ -4976,6 +4994,18 @@ async def chat_endpoint(
     if not session_id:
         session_id = f"wa_{user_phone.replace('+','')}"
 
+    # Loga mensagem não roteada para análise
+    body = _extract_body(full_message).strip()
+    if body and len(body) < 200:
+        try:
+            conn = _get_conn()
+            cur = conn.cursor()
+            cur.execute("INSERT INTO unrouted_messages (message, user_phone) VALUES (?, ?)", (body, user_phone or ""))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
     response = await atlas_agent.arun(
         input=full_message,
         session_id=session_id,
@@ -5697,6 +5727,30 @@ def debug_transactions(user_phone: str, month: str = "", import_source: str = ""
             {"id": r[0], "card_name": r[1], "bill_month": r[2], "imported_at": r[3], "created_at": r[4]}
             for r in imports
         ],
+    }
+
+
+@app.get("/v1/debug/unrouted")
+def debug_unrouted(limit: int = 50):
+    """Mostra mensagens que caíram no LLM (não roteadas), agrupadas por frequência."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT LOWER(TRIM(message)) as msg, COUNT(*) as cnt FROM unrouted_messages GROUP BY msg ORDER BY cnt DESC LIMIT ?",
+            (limit,)
+        )
+        rows = cur.fetchall()
+        cur.execute("SELECT COUNT(*) FROM unrouted_messages")
+        total = cur.fetchone()[0]
+    except Exception:
+        conn.close()
+        return {"total": 0, "messages": [], "note": "tabela ainda não criada — aguarde o próximo deploy"}
+    conn.close()
+    return {
+        "total": total,
+        "unique_patterns": len(rows),
+        "messages": [{"message": r[0], "count": r[1]} for r in rows],
     }
 
 
