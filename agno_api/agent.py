@@ -969,7 +969,26 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         top_cat_name, top_pct_val = top_cat, top_pct
         lines.append(f"__top_category:{top_cat}:{top_pct:.0f}%")
 
-    # __insight: dia mais gastador + merchant mais frequente
+    # Calcula compromissos restantes do mês (fixos + parcelas futuras)
+    pending_commitments = 0
+    try:
+        today_day = today.day
+        # Gastos fixos com vencimento restante neste mês
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM recurring_transactions WHERE user_id = ? AND active = 1 AND day_of_month > ?",
+            (user_id, today_day),
+        )
+        pending_commitments += cur.fetchone()[0]
+        # Parcelas futuras neste mês (ainda não venceram)
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at > ? AND occurred_at LIKE ?",
+            (user_id, today.strftime("%Y-%m-%d"), f"{current_month}%"),
+        )
+        pending_commitments += cur.fetchone()[0]
+    except Exception:
+        pass
+
+    # __insight: dia mais gastador + merchant mais frequente + compromissos
     insight_parts = []
     if day_totals:
         top_day = max(day_totals, key=day_totals.get)
@@ -982,6 +1001,10 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
             insight_parts.append(f"frequente={top_merchant} ({top_count}x)")
     if top_cat_name:
         insight_parts.append(f"cat_top={top_cat_name} ({top_pct_val:.0f}%)")
+    if pending_commitments > 0:
+        insight_parts.append(f"compromissos_pendentes=R${pending_commitments/100:,.2f}".replace(",", "."))
+        remaining_after = balance - pending_commitments
+        insight_parts.append(f"saldo_apos_compromissos=R${remaining_after/100:,.2f}".replace(",", "."))
     if insight_parts:
         lines.append(f"__insight:{' | '.join(insight_parts)}")
 
@@ -4124,6 +4147,10 @@ Use `__insight:` para gerar UMA frase curta de insight personalizado ao final:
 - Baseada nos dados reais do __insight (dia mais gastador, merchant frequente, categoria top)
 - Se saldo negativo: mencione com tom de alerta
 - Se saldo muito positivo (>50% da renda): parabenize
+- ⚠️ Se `compromissos_pendentes` presente no __insight: PRIORIZE ISSO no insight!
+  Se saldo_apos_compromissos for NEGATIVO → alerte: "Atenção: após os compromissos do mês, falta R$X"
+  Se saldo_apos_compromissos for apertado (<20% da renda) → "Saldo tá ok mas com os compromissos que faltam fica apertado"
+  NUNCA diga "vai sobrar bem" se compromissos_pendentes > saldo.
 - Pode incluir sugestão prática curta se fizer sentido
 - NUNCA invente dados. Máximo 2 frases.
 
