@@ -978,6 +978,47 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     if filter_type == "ALL":
         lines.append(f"{'✅' if balance >= 0 else '⚠️'} Saldo: *R${balance/100:,.2f}*".replace(",", "."))
 
+    # Calcula compromissos restantes do mês (fixos + parcelas futuras) — ANTECIPADO para mostrar no saldo
+    pending_commitments = 0
+    try:
+        today_day = today.day
+        # Gastos fixos com vencimento restante neste mês
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM recurring_transactions WHERE user_id = ? AND active = 1 AND day_of_month > ?",
+            (user_id, today_day),
+        )
+        pending_commitments += cur.fetchone()[0]
+        # Faturas de cartão pendentes
+        try:
+            cur.execute(
+                "SELECT name, amount_cents FROM bills WHERE user_id = ? AND due_date LIKE ? AND paid = 0 AND recurring_id LIKE 'card_%'",
+                (user_id, f"{current_month}%"),
+            )
+            for _bn, _ba in cur.fetchall():
+                pending_commitments += _ba
+        except Exception:
+            pass
+        # Contas avulsas pendentes
+        try:
+            cur.execute(
+                "SELECT COALESCE(SUM(amount_cents), 0) FROM bills WHERE user_id = ? AND due_date LIKE ? AND paid = 0 AND (recurring_id IS NULL OR recurring_id NOT LIKE 'card_%')",
+                (user_id, f"{current_month}%"),
+            )
+            pending_commitments += cur.fetchone()[0]
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # Mostra compromissos pendentes visualmente (não só no __insight)
+    if filter_type == "ALL" and pending_commitments > 0:
+        remaining_after = balance - pending_commitments
+        lines.append(f"📋 Compromissos pendentes: R${pending_commitments/100:,.2f}".replace(",", "."))
+        if remaining_after >= 0:
+            lines.append(f"💰 Saldo após compromissos: *R${remaining_after/100:,.2f}*".replace(",", "."))
+        else:
+            lines.append(f"⚠️ Saldo após compromissos: *R${remaining_after/100:,.2f}* (falta cobrir!)".replace(",", "."))
+
     # Nenhuma receita lançada
     if filter_type == "ALL" and income == 0:
         try:
@@ -999,26 +1040,7 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         top_cat_name, top_pct_val = top_cat, top_pct
         lines.append(f"__top_category:{top_cat}:{top_pct:.0f}%")
 
-    # Calcula compromissos restantes do mês (fixos + parcelas futuras)
-    pending_commitments = 0
-    try:
-        today_day = today.day
-        # Gastos fixos com vencimento restante neste mês
-        cur.execute(
-            "SELECT COALESCE(SUM(amount_cents), 0) FROM recurring_transactions WHERE user_id = ? AND active = 1 AND day_of_month > ?",
-            (user_id, today_day),
-        )
-        pending_commitments += cur.fetchone()[0]
-        # Parcelas futuras neste mês (ainda não venceram)
-        cur.execute(
-            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at > ? AND occurred_at LIKE ?",
-            (user_id, today.strftime("%Y-%m-%d"), f"{current_month}%"),
-        )
-        pending_commitments += cur.fetchone()[0]
-    except Exception:
-        pass
-
-    # __insight: dia mais gastador + merchant mais frequente + compromissos
+    # __insight: dia mais gastador + merchant mais frequente + compromissos (pending_commitments já calculado acima)
     insight_parts = []
     if day_totals:
         top_day = max(day_totals, key=day_totals.get)
@@ -1951,13 +1973,34 @@ def get_transactions(user_phone: str, date: str = "", month: str = "") -> str:
     if not rows:
         return f"Nenhuma transação em {label}."
 
-    lines = [f"📋 Transações de {label}:"]
-    for r in rows:
-        tipo = "💰" if r[0] == "INCOME" else "💸"
-        merchant_str = f" ({r[3]})" if r[3] else ""
-        hora = r[4][11:16] if len(r[4]) >= 16 else ""
-        hora_str = f" às {hora}" if hora else ""
-        lines.append(f"  {tipo} R${r[1]/100:.2f} — {r[2]}{merchant_str}{hora_str}")
+    # Separa entradas e saídas
+    income_rows = [r for r in rows if r[0] == "INCOME"]
+    expense_rows = [r for r in rows if r[0] == "EXPENSE"]
+
+    total_income = sum(r[1] for r in income_rows)
+    total_expense = sum(r[1] for r in expense_rows)
+    saldo = total_income - total_expense
+
+    lines = [f"📋 *Extrato de {label}:*"]
+
+    if income_rows:
+        lines.append("")
+        lines.append(f"💰 *Entradas — R${total_income/100:,.2f}*".replace(",", "."))
+        for r in income_rows:
+            merchant_str = f" ({r[3]})" if r[3] else ""
+            dt_lbl = f"{r[4][8:10]}/{r[4][5:7]}" if len(r[4]) >= 10 else ""
+            lines.append(f"  • {dt_lbl} R${r[1]/100:,.2f} — {r[2]}{merchant_str}".replace(",", "."))
+
+    if expense_rows:
+        lines.append("")
+        lines.append(f"💸 *Saídas — R${total_expense/100:,.2f}*".replace(",", "."))
+        for r in expense_rows:
+            merchant_str = f" ({r[3]})" if r[3] else ""
+            dt_lbl = f"{r[4][8:10]}/{r[4][5:7]}" if len(r[4]) >= 10 else ""
+            lines.append(f"  • {dt_lbl} R${r[1]/100:,.2f} — {r[2]}{merchant_str}".replace(",", "."))
+
+    lines.append("")
+    lines.append(f"{'✅' if saldo >= 0 else '⚠️'} *Saldo: R${saldo/100:,.2f}*".replace(",", "."))
 
     return "\n".join(lines)
 
@@ -2633,10 +2676,15 @@ def pay_bill(
     if matched_bill:
         b_id = matched_bill[0]
         b_name = matched_bill[1]
+        b_rec_id = matched_bill[5] if len(matched_bill) > 5 else ""
         cur.execute(
             "UPDATE bills SET paid = 1, paid_at = ?, transaction_id = ? WHERE id = ?",
             (today_str, tx_id, b_id),
         )
+        # Se é fatura de cartão, zera o opening balance
+        if b_rec_id and str(b_rec_id).startswith("card_"):
+            real_card_id = b_rec_id.replace("card_", "")
+            cur.execute("UPDATE credit_cards SET current_bill_opening_cents = 0, last_bill_paid_at = ? WHERE id = ?", (today_str, real_card_id))
         result_parts.append(f"✅ *{b_name}* — {amt_fmt} pago!")
     else:
         result_parts.append(f"✅ *{name}* — {amt_fmt} pago!")
@@ -2691,6 +2739,39 @@ def get_bills(user_phone: str, month: str = "") -> str:
                 "INSERT INTO bills (id, user_id, name, amount_cents, due_date, category, recurring_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (bill_id, user_id, r_name, r_amt, due, r_cat, r_id),
             )
+
+    # Auto-gera bills a partir de faturas de cartão de crédito
+    cur.execute(
+        "SELECT id, name, due_day, current_bill_opening_cents FROM credit_cards WHERE user_id = ? AND due_day > 0",
+        (user_id,),
+    )
+    cards = cur.fetchall()
+    for card_id, card_name, due_day, bill_cents in cards:
+        # Calcula valor da fatura: gastos no cartão este mês + opening balance
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+            (user_id, card_id, f"{month}%"),
+        )
+        card_spent = cur.fetchone()[0]
+        fatura_total = card_spent + (bill_cents or 0)
+        if fatura_total > 0:
+            card_bill_ref = f"card_{card_id}"
+            due = f"{month}-{due_day:02d}"
+            cur.execute(
+                "SELECT id, amount_cents FROM bills WHERE user_id = ? AND recurring_id = ? AND due_date LIKE ?",
+                (user_id, card_bill_ref, f"{month}%"),
+            )
+            existing = cur.fetchone()
+            if existing:
+                # Atualiza valor se mudou
+                if existing[1] != fatura_total:
+                    cur.execute("UPDATE bills SET amount_cents = ? WHERE id = ?", (fatura_total, existing[0]))
+            else:
+                bill_id = str(uuid.uuid4())
+                cur.execute(
+                    "INSERT INTO bills (id, user_id, name, amount_cents, due_date, category, recurring_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (bill_id, user_id, f"Fatura {card_name}", fatura_total, due, "Cartão", card_bill_ref),
+                )
 
     # Busca todas as bills do mês
     cur.execute(
@@ -4472,10 +4553,9 @@ Destaque variações com ↑ ↓. Alertas ⚠️ em evidência. Pare aí.
 
 ## FORMATO: SALDO RÁPIDO ("qual meu saldo?")
 
-```
-💰 *Saldo de março: R$4.415*
-Receitas: R$4.500  |  Gastos: R$85
-```
+A tool get_month_summary já retorna saldo E compromissos pendentes.
+Copie VERBATIM o que a tool retornar — incluindo linhas de compromissos e saldo após compromissos.
+NUNCA omita as linhas de compromissos pendentes se existirem na resposta da tool.
 
 ## FORMATO: DETALHES DE TRANSAÇÕES
 
