@@ -208,6 +208,13 @@ def _init_sqlite_tables():
             transaction_id TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS panel_tokens (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL
+        );
     """)
     conn.commit()
     conn.close()
@@ -372,6 +379,14 @@ def _init_postgres_tables():
             paid_at TEXT,
             transaction_id TEXT,
             created_at TEXT DEFAULT (now()::text)
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS panel_tokens (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            created_at TEXT DEFAULT (now()::text),
+            expires_at TEXT NOT NULL
         );
     """)
     conn.commit()
@@ -5870,6 +5885,722 @@ def get_manual():
     return _FileResponse(str(path), media_type="text/html")
 
 # ============================================================
+# PAINEL HTML INTELIGENTE
+# ============================================================
+import secrets as _secrets
+from fastapi.responses import HTMLResponse as _HTMLResponse, JSONResponse as _JSONResponse
+from fastapi import Request as _Request
+
+_PANEL_BASE_URL = os.getenv("RENDER_EXTERNAL_URL", "https://atlas-m3wb.onrender.com")
+
+
+def _generate_panel_token(user_id: str) -> str:
+    """Gera token temporario (30min) para acesso ao painel."""
+    token = _secrets.token_urlsafe(32)
+    expires = (_now_br() + timedelta(minutes=30)).isoformat()
+    conn = _get_conn()
+    cur = conn.cursor()
+    # Limpa tokens expirados deste usuario
+    cur.execute("DELETE FROM panel_tokens WHERE user_id = ?", (user_id,))
+    cur.execute(
+        "INSERT INTO panel_tokens (token, user_id, expires_at) VALUES (?, ?, ?)",
+        (token, user_id, expires),
+    )
+    conn.commit()
+    conn.close()
+    return token
+
+
+def _validate_panel_token(token: str) -> str | None:
+    """Valida token e retorna user_id ou None."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id, expires_at FROM panel_tokens WHERE token = ?", (token,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    user_id, expires_at = row
+    now = _now_br().isoformat()
+    if now > expires_at:
+        return None
+    return user_id
+
+
+def _get_panel_data(user_id: str, month: str) -> dict:
+    """Coleta todos os dados necessarios para o painel."""
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    # User info
+    cur.execute("SELECT name, monthly_income_cents FROM users WHERE id = ?", (user_id,))
+    user_row = cur.fetchone()
+    user_name = user_row[0] if user_row else "Usuario"
+    income_cents = (user_row[1] or 0) if user_row else 0
+
+    # Transactions
+    cur.execute(
+        """SELECT id, type, amount_cents, category, merchant, occurred_at, card_id, payment_method,
+                  installments, installment_number
+           FROM transactions WHERE user_id = ? AND occurred_at LIKE ?
+           ORDER BY occurred_at DESC""",
+        (user_id, f"{month}%"),
+    )
+    tx_rows = cur.fetchall()
+
+    transactions = []
+    expense_total = 0
+    income_total = 0
+    cat_totals = {}
+    daily_totals = {}
+    merchants_count = {}
+
+    for tx in tx_rows:
+        tx_id, tx_type, amt, cat, merchant, occurred, card_id, pay_method, inst, inst_num = tx
+        transactions.append({
+            "id": tx_id, "type": tx_type, "amount": amt, "category": cat or "Outros",
+            "merchant": merchant or "", "date": occurred[:10] if occurred else "",
+            "card_id": card_id, "payment_method": pay_method or "",
+            "installments": inst or 1, "installment_number": inst_num or 1,
+        })
+        if tx_type == "EXPENSE":
+            expense_total += amt
+            cat_totals[cat or "Outros"] = cat_totals.get(cat or "Outros", 0) + amt
+            day = occurred[:10] if occurred else ""
+            if day:
+                daily_totals[day] = daily_totals.get(day, 0) + amt
+            if merchant:
+                merchants_count[merchant] = merchants_count.get(merchant, 0) + 1
+        elif tx_type == "INCOME":
+            income_total += amt
+
+    # Previous month for comparison
+    m_y, m_m = int(month[:4]), int(month[5:7])
+    prev_m = m_m - 1 if m_m > 1 else 12
+    prev_y = m_y if m_m > 1 else m_y - 1
+    prev_month = f"{prev_y}-{prev_m:02d}"
+    cur.execute(
+        "SELECT category, SUM(amount_cents) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ? GROUP BY category",
+        (user_id, f"{prev_month}%"),
+    )
+    prev_cats = {r[0]: r[1] for r in cur.fetchall()}
+    cur.execute(
+        "SELECT SUM(amount_cents) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+        (user_id, f"{prev_month}%"),
+    )
+    prev_total = (cur.fetchone()[0] or 0)
+
+    # Cards
+    cur.execute(
+        "SELECT id, name, closing_day, due_day, limit_cents, current_bill_opening_cents, available_limit_cents FROM credit_cards WHERE user_id = ?",
+        (user_id,),
+    )
+    cards = []
+    for c in cur.fetchall():
+        c_id, c_name, c_close, c_due, c_limit, c_opening, c_avail = c
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents),0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+            (user_id, c_id, f"{month}%"),
+        )
+        c_spent = cur.fetchone()[0]
+        cards.append({
+            "name": c_name, "closing_day": c_close or 0, "due_day": c_due or 0,
+            "limit": c_limit or 0, "available": c_avail,
+            "bill": c_spent + (c_opening or 0),
+        })
+
+    # Score (simplified)
+    today = _now_br()
+    days_elapsed = today.day
+    effective_income = income_cents or income_total
+    if effective_income > 0:
+        savings_rate = max((effective_income - expense_total) / effective_income, 0)
+        s_score = min(100, savings_rate / 0.30 * 100)
+    else:
+        s_score = 50
+        savings_rate = 0
+    consistency = min(100, (len(set(t["date"] for t in transactions)) / max(days_elapsed, 1)) * 100)
+    score = round(s_score * 0.5 + consistency * 0.3 + 50 * 0.2)
+    grade = "A+" if score >= 90 else "A" if score >= 80 else "B+" if score >= 70 else "B" if score >= 60 else "C" if score >= 45 else "D" if score >= 30 else "F"
+
+    # Insights
+    insights = []
+    if merchants_count:
+        top_merchant = max(merchants_count, key=merchants_count.get)
+        insights.append(f"{top_merchant} foi seu lugar mais frequente ({merchants_count[top_merchant]}x)")
+    if daily_totals:
+        max_day = max(daily_totals, key=daily_totals.get)
+        insights.append(f"Dia mais caro: {max_day[8:10]}/{max_day[5:7]} (R${daily_totals[max_day]/100:.2f})")
+    for cat, total in sorted(cat_totals.items(), key=lambda x: -x[1])[:3]:
+        prev_val = prev_cats.get(cat, 0)
+        if prev_val > 0:
+            change = ((total - prev_val) / prev_val) * 100
+            arrow = "+" if change > 0 else ""
+            insights.append(f"{cat}: R${total/100:.2f} ({arrow}{change:.0f}% vs mes anterior)")
+    if expense_total > 0 and days_elapsed > 0:
+        projected = (expense_total / days_elapsed) * 30
+        insights.append(f"Projecao mensal: R${projected/100:.2f}")
+
+    conn.close()
+
+    # Month label
+    months_pt = ["", "Janeiro", "Fevereiro", "Marco", "Abril", "Maio", "Junho",
+                 "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+    month_label = f"{months_pt[m_m]}/{m_y}"
+
+    # Sort categories for chart
+    sorted_cats = sorted(cat_totals.items(), key=lambda x: -x[1])
+
+    # Daily chart data (fill all days)
+    import calendar as _cal
+    days_in_month = _cal.monthrange(m_y, m_m)[1]
+    daily_labels = [f"{d:02d}" for d in range(1, days_in_month + 1)]
+    daily_values = [daily_totals.get(f"{month}-{d:02d}", 0) / 100 for d in range(1, days_in_month + 1)]
+
+    return {
+        "user_name": user_name, "month": month, "month_label": month_label,
+        "income": income_total, "expenses": expense_total,
+        "balance": income_total - expense_total,
+        "income_budget": income_cents,
+        "transactions": transactions,
+        "categories": [{"name": c, "amount": a, "pct": a / expense_total * 100 if expense_total else 0} for c, a in sorted_cats],
+        "daily_labels": daily_labels, "daily_values": daily_values,
+        "cards": cards,
+        "score": score, "grade": grade, "savings_rate": savings_rate,
+        "insights": insights,
+        "prev_total": prev_total,
+    }
+
+
+def _render_panel_html(data: dict, token: str) -> str:
+    """Gera o HTML completo do painel."""
+    import json as _json
+
+    cat_emoji = {
+        "Alimentacao": "🍽", "Alimentação": "🍽", "Transporte": "🚗", "Saude": "💊", "Saúde": "💊",
+        "Moradia": "🏠", "Lazer": "🎮", "Assinaturas": "📱",
+        "Educacao": "📚", "Educação": "📚", "Vestuario": "👟", "Vestuário": "👟",
+        "Investimento": "📈", "Pets": "🐾", "Outros": "📦", "Cartão": "💳",
+    }
+
+    cat_colors = [
+        "#00e5a0", "#4fc3f7", "#ff7043", "#ab47bc", "#ffca28",
+        "#ef5350", "#26c6da", "#66bb6a", "#8d6e63", "#78909c", "#ec407a"
+    ]
+
+    def fmt(cents):
+        return f"R${cents/100:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    # Transaction rows HTML
+    tx_html = ""
+    for tx in data["transactions"][:50]:
+        emoji = cat_emoji.get(tx["category"], "💸")
+        date_lbl = f'{tx["date"][8:10]}/{tx["date"][5:7]}' if tx["date"] else ""
+        merchant_lbl = tx["merchant"] or tx["category"]
+        inst_lbl = f' <span class="inst">{tx["installment_number"]}/{tx["installments"]}</span>' if tx["installments"] > 1 else ""
+        type_class = "income" if tx["type"] == "INCOME" else "expense"
+        sign = "+" if tx["type"] == "INCOME" else "-"
+        tx_html += f'''<div class="tx-row" data-id="{tx['id']}">
+  <div class="tx-left">
+    <span class="tx-emoji">{emoji}</span>
+    <div class="tx-info">
+      <span class="tx-merchant">{merchant_lbl}{inst_lbl}</span>
+      <span class="tx-meta">{date_lbl} · {tx["category"]}</span>
+    </div>
+  </div>
+  <div class="tx-right">
+    <span class="tx-amount {type_class}">{sign}{fmt(tx['amount'])}</span>
+    <div class="tx-actions">
+      <button class="btn-edit" onclick="editTx('{tx['id']}',{tx['amount']},'{tx['category']}','{tx['merchant'].replace(chr(39),'')}')">✏️</button>
+      <button class="btn-del" onclick="deleteTx('{tx['id']}')">🗑️</button>
+    </div>
+  </div>
+</div>'''
+
+    # Cards HTML
+    cards_html = ""
+    for card in data["cards"]:
+        bill_fmt = fmt(card["bill"])
+        if card["limit"] > 0:
+            if card["available"] is not None:
+                avail = card["available"]
+                pct = ((card["limit"] - avail) / card["limit"]) * 100
+            else:
+                avail = card["limit"] - card["bill"]
+                pct = (card["bill"] / card["limit"]) * 100
+            limit_html = f'''<div class="card-bar-wrap">
+              <div class="card-bar" style="width:{min(pct,100):.0f}%"></div>
+            </div>
+            <div class="card-limits">
+              <span>Usado: {fmt(card['limit'] - avail)}</span>
+              <span>Disponivel: <b>{fmt(avail)}</b></span>
+            </div>'''
+        else:
+            limit_html = ""
+            pct = 0
+        cards_html += f'''<div class="card-item">
+  <div class="card-header">
+    <span class="card-name">💳 {card['name']}</span>
+    <span class="card-bill">{bill_fmt}</span>
+  </div>
+  {f'<div class="card-limit-total">Limite: {fmt(card["limit"])}</div>' if card["limit"] else ''}
+  {limit_html}
+  {f'<div class="card-cycle">Fecha dia {card["closing_day"]} · Vence dia {card["due_day"]}</div>' if card["closing_day"] else ''}
+</div>'''
+
+    # Insights HTML
+    insights_html = "".join(f'<div class="insight-item">💡 {i}</div>' for i in data["insights"])
+
+    # Category chart data
+    cat_labels = _json.dumps([c["name"] for c in data["categories"]])
+    cat_values = _json.dumps([c["amount"] / 100 for c in data["categories"]])
+    cat_colors_json = _json.dumps(cat_colors[:len(data["categories"])])
+    daily_labels_json = _json.dumps(data["daily_labels"])
+    daily_values_json = _json.dumps(data["daily_values"])
+
+    # Score color
+    sc = data["score"]
+    score_color = "#00e5a0" if sc >= 70 else "#ffca28" if sc >= 45 else "#ef5350"
+    score_dash = 283 - (283 * sc / 100)
+
+    balance = data["balance"]
+    balance_color = "#00e5a0" if balance >= 0 else "#ef5350"
+    balance_sign = "+" if balance >= 0 else ""
+
+    # Categories breakdown HTML
+    cats_breakdown_html = ""
+    for i, c in enumerate(data["categories"]):
+        color = cat_colors[i % len(cat_colors)]
+        emoji = cat_emoji.get(c["name"], "💸")
+        cats_breakdown_html += f'''<div class="cat-row">
+  <span class="cat-dot" style="background:{color}"></span>
+  <span class="cat-label">{emoji} {c['name']}</span>
+  <span class="cat-amount">{fmt(c['amount'])}</span>
+  <span class="cat-pct">{c['pct']:.0f}%</span>
+</div>'''
+
+    return f'''<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>ATLAS — Painel de {data['user_name']}</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+:root{{
+  --bg:#0a0a1a;--surface:rgba(255,255,255,0.04);--surface2:rgba(255,255,255,0.08);
+  --border:rgba(255,255,255,0.08);--text:#f0f0f0;--text2:rgba(255,255,255,0.55);
+  --green:#00e5a0;--red:#ef5350;--blue:#4fc3f7;--yellow:#ffca28;--purple:#ab47bc;
+  --radius:16px;--radius-sm:10px;
+}}
+body{{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  background:var(--bg);color:var(--text);min-height:100vh;
+  padding:0 0 80px;overflow-x:hidden;
+}}
+.header{{
+  background:linear-gradient(135deg,#0d1b2a 0%,#1b2838 50%,#0a2a1a 100%);
+  padding:28px 20px 24px;text-align:center;
+  border-bottom:1px solid var(--border);
+}}
+.header h1{{font-size:14px;color:var(--text2);font-weight:500;letter-spacing:2px;text-transform:uppercase}}
+.header .month{{font-size:26px;font-weight:700;margin-top:4px}}
+.header .name{{font-size:13px;color:var(--text2);margin-top:2px}}
+
+.score-section{{display:flex;justify-content:center;padding:24px 20px 8px}}
+.score-circle{{position:relative;width:120px;height:120px}}
+.score-circle svg{{transform:rotate(-90deg)}}
+.score-circle .bg{{fill:none;stroke:var(--surface2);stroke-width:8}}
+.score-circle .fg{{fill:none;stroke:{score_color};stroke-width:8;stroke-linecap:round;
+  stroke-dasharray:283;stroke-dashoffset:{score_dash};transition:stroke-dashoffset 1.5s ease}}
+.score-value{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center}}
+.score-value .num{{font-size:32px;font-weight:800;color:{score_color}}}
+.score-value .grade{{font-size:14px;color:var(--text2);display:block;margin-top:-2px}}
+
+.summary{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;padding:16px 16px 0}}
+.summary-card{{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);
+  padding:14px 10px;text-align:center;
+}}
+.summary-card .label{{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px}}
+.summary-card .value{{font-size:18px;font-weight:700;margin-top:4px}}
+.summary-card .value.green{{color:var(--green)}}
+.summary-card .value.red{{color:var(--red)}}
+.summary-card .value.balance{{color:{balance_color}}}
+
+.section{{padding:20px 16px 0}}
+.section-title{{font-size:13px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;font-weight:600}}
+
+.chart-container{{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:16px;margin-bottom:8px;
+}}
+.chart-wrap{{position:relative;height:220px}}
+
+.cat-row{{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)}}
+.cat-row:last-child{{border-bottom:none}}
+.cat-dot{{width:10px;height:10px;border-radius:50%;flex-shrink:0}}
+.cat-label{{flex:1;font-size:14px}}
+.cat-amount{{font-size:14px;font-weight:600}}
+.cat-pct{{font-size:12px;color:var(--text2);width:36px;text-align:right}}
+
+.insight-item{{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);
+  padding:12px 14px;margin-bottom:8px;font-size:14px;line-height:1.4;
+}}
+
+.tx-row{{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:12px 0;border-bottom:1px solid var(--border);
+}}
+.tx-row:last-child{{border-bottom:none}}
+.tx-left{{display:flex;align-items:center;gap:10px;flex:1;min-width:0}}
+.tx-emoji{{font-size:20px;flex-shrink:0}}
+.tx-info{{display:flex;flex-direction:column;min-width:0}}
+.tx-merchant{{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+.tx-meta{{font-size:11px;color:var(--text2)}}
+.inst{{background:var(--surface2);border-radius:4px;padding:1px 5px;font-size:10px;margin-left:4px}}
+.tx-right{{display:flex;align-items:center;gap:8px;flex-shrink:0}}
+.tx-amount{{font-size:15px;font-weight:600}}
+.tx-amount.income{{color:var(--green)}}
+.tx-amount.expense{{color:var(--red)}}
+.tx-actions{{display:flex;gap:2px}}
+.tx-actions button{{
+  background:none;border:none;font-size:14px;cursor:pointer;padding:4px;
+  border-radius:6px;transition:background 0.2s;
+}}
+.tx-actions button:hover{{background:var(--surface2)}}
+
+.card-item{{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:16px;margin-bottom:10px;
+}}
+.card-header{{display:flex;justify-content:space-between;align-items:center}}
+.card-name{{font-size:16px;font-weight:600}}
+.card-bill{{font-size:16px;font-weight:700;color:var(--yellow)}}
+.card-limit-total{{font-size:12px;color:var(--text2);margin-top:6px}}
+.card-bar-wrap{{height:6px;background:var(--surface2);border-radius:3px;margin-top:8px;overflow:hidden}}
+.card-bar{{height:100%;background:linear-gradient(90deg,var(--green),var(--yellow),var(--red));border-radius:3px;transition:width 1s ease}}
+.card-limits{{display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-top:4px}}
+.card-cycle{{font-size:12px;color:var(--text2);margin-top:6px}}
+
+/* Modal */
+.modal-overlay{{
+  display:none;position:fixed;top:0;left:0;width:100%;height:100%;
+  background:rgba(0,0,0,0.7);z-index:100;justify-content:center;align-items:flex-end;
+}}
+.modal-overlay.active{{display:flex}}
+.modal{{
+  background:#1a1a2e;border-radius:20px 20px 0 0;padding:24px 20px 32px;width:100%;max-width:500px;
+  border:1px solid var(--border);
+}}
+.modal h3{{font-size:18px;margin-bottom:16px}}
+.modal label{{font-size:12px;color:var(--text2);display:block;margin-bottom:4px;margin-top:12px}}
+.modal input,.modal select{{
+  width:100%;padding:12px;border-radius:var(--radius-sm);border:1px solid var(--border);
+  background:var(--surface2);color:var(--text);font-size:16px;
+}}
+.modal-btns{{display:flex;gap:10px;margin-top:20px}}
+.modal-btns button{{
+  flex:1;padding:14px;border-radius:var(--radius-sm);border:none;font-size:15px;
+  font-weight:600;cursor:pointer;
+}}
+.btn-save{{background:var(--green);color:#000}}
+.btn-cancel{{background:var(--surface2);color:var(--text)}}
+
+.toast{{
+  position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+  background:#1a1a2e;border:1px solid var(--green);color:var(--green);
+  padding:12px 24px;border-radius:var(--radius-sm);font-size:14px;font-weight:500;
+  z-index:200;display:none;box-shadow:0 4px 20px rgba(0,0,0,0.5);
+}}
+.toast.show{{display:block;animation:slideUp 0.3s ease}}
+@keyframes slideUp{{from{{transform:translateX(-50%) translateY(20px);opacity:0}}to{{transform:translateX(-50%) translateY(0);opacity:1}}}}
+
+.footer{{text-align:center;padding:24px;color:var(--text2);font-size:12px}}
+.footer a{{color:var(--green);text-decoration:none}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>ATLAS</h1>
+  <div class="month">{data['month_label']}</div>
+  <div class="name">Painel de {data['user_name']}</div>
+</div>
+
+<div class="score-section">
+  <div class="score-circle">
+    <svg width="120" height="120" viewBox="0 0 100 100">
+      <circle class="bg" cx="50" cy="50" r="45"/>
+      <circle class="fg" cx="50" cy="50" r="45"/>
+    </svg>
+    <div class="score-value">
+      <span class="num">{data['score']}</span>
+      <span class="grade">{data['grade']}</span>
+    </div>
+  </div>
+</div>
+
+<div class="summary">
+  <div class="summary-card">
+    <div class="label">Receitas</div>
+    <div class="value green">{fmt(data['income'])}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Gastos</div>
+    <div class="value red">{fmt(data['expenses'])}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Saldo</div>
+    <div class="value balance">{balance_sign}{fmt(abs(balance))}</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Gastos por categoria</div>
+  <div class="chart-container">
+    <div class="chart-wrap"><canvas id="pieChart"></canvas></div>
+  </div>
+  <div style="padding:0 4px">{cats_breakdown_html}</div>
+</div>
+
+<div class="section">
+  <div class="section-title">Gastos diarios</div>
+  <div class="chart-container">
+    <div class="chart-wrap"><canvas id="lineChart"></canvas></div>
+  </div>
+</div>
+
+{'<div class="section"><div class="section-title">Insights</div>' + insights_html + '</div>' if data['insights'] else ''}
+
+<div class="section">
+  <div class="section-title">Transacoes ({len(data['transactions'])})</div>
+  {tx_html}
+</div>
+
+{'<div class="section"><div class="section-title">Cartoes</div>' + cards_html + '</div>' if data['cards'] else ''}
+
+<div class="footer">
+  ATLAS — Seu assistente financeiro<br>
+  <a href="{_PANEL_BASE_URL}/manual">Ver manual</a> · Link valido por 30 min
+</div>
+
+<!-- Edit Modal -->
+<div class="modal-overlay" id="editModal">
+  <div class="modal">
+    <h3>Editar transacao</h3>
+    <input type="hidden" id="editId">
+    <label>Valor (R$)</label>
+    <input type="number" id="editAmount" step="0.01" inputmode="decimal">
+    <label>Categoria</label>
+    <select id="editCategory">
+      <option>Alimentacao</option><option>Transporte</option><option>Moradia</option>
+      <option>Saude</option><option>Lazer</option><option>Educacao</option>
+      <option>Assinaturas</option><option>Vestuario</option><option>Investimento</option>
+      <option>Pets</option><option>Outros</option>
+    </select>
+    <label>Descricao</label>
+    <input type="text" id="editMerchant">
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeModal()">Cancelar</button>
+      <button class="btn-save" onclick="saveTx()">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const TOKEN = "{token}";
+const API = window.location.origin;
+
+function showToast(msg) {{
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show';
+  setTimeout(() => t.className = 'toast', 2500);
+}}
+
+async function deleteTx(id) {{
+  if (!confirm('Apagar esta transacao?')) return;
+  try {{
+    const r = await fetch(API + '/v1/api/transaction/' + id + '?t=' + TOKEN, {{method:'DELETE'}});
+    if (r.ok) {{
+      document.querySelector('[data-id="'+id+'"]')?.remove();
+      showToast('Transacao apagada');
+    }} else {{ showToast('Erro ao apagar'); }}
+  }} catch(e) {{ showToast('Erro de conexao'); }}
+}}
+
+function editTx(id, amount, category, merchant) {{
+  document.getElementById('editId').value = id;
+  document.getElementById('editAmount').value = (amount / 100).toFixed(2);
+  document.getElementById('editCategory').value = category;
+  document.getElementById('editMerchant').value = merchant;
+  document.getElementById('editModal').classList.add('active');
+}}
+
+function closeModal() {{
+  document.getElementById('editModal').classList.remove('active');
+}}
+
+async function saveTx() {{
+  const id = document.getElementById('editId').value;
+  const amount = parseFloat(document.getElementById('editAmount').value);
+  const category = document.getElementById('editCategory').value;
+  const merchant = document.getElementById('editMerchant').value;
+  try {{
+    const r = await fetch(API + '/v1/api/transaction/' + id + '?t=' + TOKEN, {{
+      method: 'PUT',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{amount_cents: Math.round(amount * 100), category, merchant}})
+    }});
+    if (r.ok) {{
+      showToast('Transacao atualizada');
+      closeModal();
+      setTimeout(() => location.reload(), 800);
+    }} else {{ showToast('Erro ao salvar'); }}
+  }} catch(e) {{ showToast('Erro de conexao'); }}
+}}
+
+// Charts
+document.addEventListener('DOMContentLoaded', () => {{
+  // Pie
+  new Chart(document.getElementById('pieChart'), {{
+    type: 'doughnut',
+    data: {{
+      labels: {cat_labels},
+      datasets: [{{ data: {cat_values}, backgroundColor: {cat_colors_json}, borderWidth: 0 }}]
+    }},
+    options: {{
+      responsive: true, maintainAspectRatio: false,
+      plugins: {{
+        legend: {{ display: true, position: 'bottom', labels: {{ color: '#aaa', padding: 12, font: {{ size: 11 }} }} }}
+      }},
+      cutout: '65%'
+    }}
+  }});
+  // Line
+  new Chart(document.getElementById('lineChart'), {{
+    type: 'line',
+    data: {{
+      labels: {daily_labels_json},
+      datasets: [{{
+        label: 'Gastos',
+        data: {daily_values_json},
+        borderColor: '#4fc3f7', backgroundColor: 'rgba(79,195,247,0.1)',
+        fill: true, tension: 0.3, pointRadius: 2, pointHoverRadius: 6, borderWidth: 2
+      }}]
+    }},
+    options: {{
+      responsive: true, maintainAspectRatio: false,
+      scales: {{
+        x: {{ ticks: {{ color: '#666', maxTicksLimit: 10 }}, grid: {{ color: 'rgba(255,255,255,0.03)' }} }},
+        y: {{ ticks: {{ color: '#666', callback: v => 'R$' + v }}, grid: {{ color: 'rgba(255,255,255,0.05)' }} }}
+      }},
+      plugins: {{ legend: {{ display: false }} }}
+    }}
+  }});
+}});
+</script>
+</body>
+</html>'''
+
+
+@app.get("/v1/painel")
+def panel_page(t: str = "", phone: str = "", month: str = ""):
+    """Painel HTML inteligente — acesso via token temporario."""
+    user_id = None
+    if t:
+        user_id = _validate_panel_token(t)
+    if not user_id and phone:
+        # Fallback: gera token pelo phone (para debug)
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users WHERE phone = ?", (phone,))
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            user_id = row[0]
+            t = _generate_panel_token(user_id)
+    if not user_id:
+        return _HTMLResponse(
+            "<html><body style='background:#0a0a1a;color:#fff;text-align:center;padding:60px;font-family:sans-serif'>"
+            "<h2>Link expirado</h2><p>Peca um novo link no WhatsApp:<br><b>\"me mostra o painel\"</b></p></body></html>",
+            status_code=200,
+        )
+    if not month:
+        month = _now_br().strftime("%Y-%m")
+    data = _get_panel_data(user_id, month)
+    html = _render_panel_html(data, t)
+    return _HTMLResponse(html)
+
+
+@app.delete("/v1/api/transaction/{tx_id}")
+def delete_transaction_api(tx_id: str, t: str = ""):
+    """Apaga uma transacao via API do painel."""
+    user_id = _validate_panel_token(t)
+    if not user_id:
+        return _JSONResponse({"error": "Token invalido ou expirado"}, status_code=401)
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM transactions WHERE id = ? AND user_id = ?", (tx_id, user_id))
+    affected = cur.rowcount
+    conn.commit()
+    conn.close()
+    if affected:
+        return _JSONResponse({"ok": True})
+    return _JSONResponse({"error": "Transacao nao encontrada"}, status_code=404)
+
+
+@app.put("/v1/api/transaction/{tx_id}")
+async def edit_transaction_api(tx_id: str, request: _Request, t: str = ""):
+    """Edita uma transacao via API do painel."""
+    user_id = _validate_panel_token(t)
+    if not user_id:
+        return _JSONResponse({"error": "Token invalido ou expirado"}, status_code=401)
+    body = await request.json()
+    updates = []
+    params = []
+    if "amount_cents" in body:
+        updates.append("amount_cents = ?")
+        params.append(int(body["amount_cents"]))
+    if "category" in body:
+        updates.append("category = ?")
+        params.append(body["category"])
+    if "merchant" in body:
+        updates.append("merchant = ?")
+        params.append(body["merchant"])
+    if not updates:
+        return _JSONResponse({"error": "Nada para atualizar"}, status_code=400)
+    params.extend([tx_id, user_id])
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE transactions SET {', '.join(updates)} WHERE id = ? AND user_id = ?", params)
+    affected = cur.rowcount
+    conn.commit()
+    conn.close()
+    if affected:
+        return _JSONResponse({"ok": True})
+    return _JSONResponse({"error": "Transacao nao encontrada"}, status_code=404)
+
+
+def get_panel_url(user_phone: str) -> str:
+    """Gera URL do painel para um usuario."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return ""
+    token = _generate_panel_token(row[0])
+    return f"{_PANEL_BASE_URL}/v1/painel?t={token}"
+
+
+# ============================================================
 # HEALTH CHECK
 # ============================================================
 
@@ -6028,9 +6759,20 @@ def _pre_route(message: str) -> dict | None:
         except Exception:
             pass
 
+    # --- PAINEL HTML ---
+    if _re_router.match(r'(painel|dashboard|meu painel|me mostr[ea] o painel|abr[ea] o painel|quero ver o painel|ver painel)[\?\!\.]*$', msg):
+        panel_url = get_panel_url(user_phone)
+        if panel_url:
+            return {"response": f"📊 Seu painel esta pronto!\n\n👉 {panel_url}\n\n_Link valido por 30 minutos. La voce pode ver graficos, editar e apagar transacoes._"}
+        return {"response": "Nenhum dado encontrado. Comece registrando um gasto!"}
+
     # --- RESUMO MENSAL ---
     if _re_router.match(r'(como t[aá] meu m[eê]s|resumo (?:do |mensal|deste |desse )?m[eê]s|meus gastos(?: do m[eê]s)?|como (?:foi|esta|está|tá|ta|anda|andou)(?: meu| o)? m[eê]s|me d[aá] (?:o )?resumo|resumo geral|vis[aã]o geral|saldo do m[eê]s|saldo mensal|quanto (?:eu )?(?:j[aá] )?gastei (?:esse|este|no) m[eê]s|total do m[eê]s|balan[çc]o do m[eê]s|extrato do m[eê]s|extrato mensal|como (?:est[aá]|tá|ta|anda) (?:minhas? )?finan[çc]as)[\?\!\.]*$', msg):
-        return {"response": _call(get_month_summary, user_phone, current_month, "ALL")}
+        summary = _call(get_month_summary, user_phone, current_month, "ALL")
+        panel_url = get_panel_url(user_phone)
+        if panel_url:
+            summary += f"\n\n📊 Ver painel com graficos: {panel_url}"
+        return {"response": summary}
 
     # Resumo de dois meses: "resumo de março e abril", "gastos de fevereiro e março"
     m_2m = _re_router.match(r'(?:como (?:foi|tá|ta|está)|resumo d[eo]|me mostr[ea].*(?:gastos?|resumo) d[eo]|gastos d[eo]|extrato d[eo]|saldo d[eo])\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro) e (janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)', msg)
@@ -6228,6 +6970,9 @@ _HELP_TEXT = """📋 *ATLAS — Manual Rápido*
 ✏️ *Corrigir / Apagar:*
 • _"corrige"_ ou _"apaga"_ — última transação
 • _"apaga todos do iFood deste mês"_
+
+📊 *Painel visual:*
+• _"painel"_ — abre dashboard com gráficos e edição
 
 👉 Manual completo: https://atlas-m3wb.onrender.com/manual"""
 
