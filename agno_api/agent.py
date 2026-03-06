@@ -2314,6 +2314,34 @@ def register_card(
 
 
 @tool
+def update_card_limit(user_phone: str, card_name: str, limit: float) -> str:
+    """
+    Atualiza o limite total de um cartão de crédito.
+    Use quando: "limite do Nubank é 5000", "atualiza limite do Inter pra 8000", "meu limite do Caixa é 10000".
+    card_name: nome do cartão
+    limit: limite total em reais
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "Usuário não encontrado."
+
+    card = _find_card(cur, user_id, card_name)
+    if not card:
+        conn.close()
+        return f"Cartão '{card_name}' não encontrado."
+
+    limit_cents = round(limit * 100)
+    cur.execute("UPDATE credit_cards SET limit_cents = ? WHERE id = ?", (limit_cents, card[0]))
+    conn.commit()
+    conn.close()
+
+    return f"Limite do *{card[1]}* atualizado para *R${limit:,.2f}*.".replace(",", ".")
+
+
+@tool
 def get_cards(user_phone: str) -> str:
     """
     Lista todos os cartões do usuário com fatura atual e limite disponível.
@@ -3154,6 +3182,9 @@ def get_card_statement(user_phone: str, card_name: str, month: str = "") -> str:
         disponivel = limit_cents - fatura
         pct_usado = fatura / limit_cents * 100
         lines.append(f"💰 Limite: R${limit_cents/100:,.2f} | Disponível: *R${disponivel/100:,.2f}* ({pct_usado:.0f}% usado)".replace(",", "."))
+    else:
+        lines.append("")
+        lines.append(f'_Dica: informe o limite do seu cartão para ver o disponível. Ex: "limite do {name} é 5000"_')
 
     return "\n".join(lines)
 
@@ -5122,6 +5153,8 @@ LISTA DETALHADA (só quando pedir "transações" ou "lista" ou "extrato" explici
 "a fatura do ML em abril é 887" / "está errado, a fatura é 887" → set_future_bill imediatamente, sem pedir confirmação
 "paguei o Nubank" → close_bill(user_phone, card_name="Nubank")
 "Nubank fecha 25 vence 10" → register_card(user_phone, name="Nubank", closing_day=25, due_day=10)
+"limite do Nubank é 5000" / "atualiza limite do Inter pra 8000" → update_card_limit(user_phone, card_name="Nubank", limit=5000)
+"extrato do Nubank" / "como tá meu cartão da Caixa" / "gastos no Nubank" → get_card_statement(user_phone, card_name="Nubank")
 "próxima fatura do Inter" → get_next_bill(user_phone, card_name="Inter")
 Cartão criado automaticamente em save_transaction com card_name — nunca peça cadastro antecipado.
 
@@ -5451,7 +5484,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=10,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit],
     add_datetime_to_context=True,
     markdown=True,
 )
