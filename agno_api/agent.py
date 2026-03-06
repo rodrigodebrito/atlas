@@ -3051,6 +3051,113 @@ def get_next_bill(user_phone: str, card_name: str) -> str:
     return "\n".join(lines)
 
 
+@tool(description="Mostra extrato detalhado de um cartão de crédito: gastos agrupados por categoria, fechamento, vencimento, limite e fatura estimada. Use quando: 'extrato do Nubank', 'como tá meu cartão da Caixa', 'gastos no cartão X', 'fatura do Nubank detalhada'.")
+def get_card_statement(user_phone: str, card_name: str, month: str = "") -> str:
+    """Extrato detalhado de um cartão com gastos por categoria, limite e fatura."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "Usuário não encontrado."
+
+    card = _find_card(cur, user_id, card_name)
+    if not card:
+        conn.close()
+        # Lista cartões disponíveis
+        cur2 = _get_conn().cursor()
+        cur2.execute("SELECT name FROM credit_cards WHERE user_id = ?", (user_id,))
+        names = [r[0] for r in cur2.fetchall()]
+        cur2.connection.close()
+        if names:
+            return f"Cartão '{card_name}' não encontrado. Seus cartões: {', '.join(names)}"
+        return f"Cartão '{card_name}' não encontrado. Nenhum cartão cadastrado."
+
+    card_id, name, closing_day, due_day, limit_cents, opening_cents, last_paid = card
+
+    today = _now_br()
+    if not month:
+        month = today.strftime("%Y-%m")
+
+    # Busca transações do cartão no mês
+    cur.execute(
+        """SELECT category, merchant, amount_cents, occurred_at, installments, installment_number
+           FROM transactions
+           WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?
+           ORDER BY occurred_at DESC""",
+        (user_id, card_id, f"{month}%"),
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    # Month label
+    months_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+                 "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+    try:
+        m_num = int(month.split("-")[1])
+        month_label = f"{months_pt[m_num]}/{month[:4]}"
+    except Exception:
+        month_label = month
+
+    lines = [f"💳 *{name} — {month_label}*"]
+    lines.append("")
+
+    if not rows:
+        lines.append("Nenhum gasto neste cartão no período.")
+    else:
+        # Agrupa por categoria
+        from collections import defaultdict
+        cat_txs: dict = defaultdict(list)
+        cat_totals: dict = defaultdict(int)
+        for cat, merchant, amount, occurred, inst_total, inst_num in rows:
+            label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
+            dt_lbl = f"{occurred[8:10]}/{occurred[5:7]}" if occurred and len(occurred) >= 10 else ""
+            if inst_total and inst_total > 1:
+                label += f" {inst_num}/{inst_total}"
+            cat_txs[cat].append((occurred, amount, dt_lbl, label))
+            cat_totals[cat] += amount
+
+        cat_emoji = {
+            "Alimentação": "🍽️", "Transporte": "🚗", "Saúde": "💊",
+            "Moradia": "🏠", "Lazer": "🎮", "Assinaturas": "📱",
+            "Educação": "📚", "Vestuário": "👟", "Investimento": "📈",
+            "Outros": "📦",
+        }
+
+        total_spent = sum(cat_totals.values())
+
+        for cat, total in sorted(cat_totals.items(), key=lambda x: -x[1]):
+            pct = total / total_spent * 100 if total_spent else 0
+            emoji = cat_emoji.get(cat, "💸")
+            lines.append(f"{emoji} *{cat}* — R${total/100:,.2f} ({pct:.0f}%)".replace(",", "."))
+            for _occ, amt, dt, lbl in sorted(cat_txs[cat], key=lambda x: (x[0], -x[1])):
+                lines.append(f"  • {dt} {lbl}: R${amt/100:,.2f}".replace(",", "."))
+            lines.append("")
+
+        lines.append(f"💸 *Total no cartão: R${total_spent/100:,.2f}*".replace(",", "."))
+
+    # Info do cartão
+    lines.append("")
+    if closing_day > 0 and due_day > 0:
+        lines.append(f"📅 Fecha dia *{closing_day}* | Vence dia *{due_day}*")
+
+    # Fatura estimada (gastos + saldo anterior)
+    total_card = sum(r[2] for r in rows)
+    fatura = total_card + (opening_cents or 0)
+    if opening_cents and opening_cents > 0:
+        lines.append(f"📊 Fatura estimada: *R${fatura/100:,.2f}* (R${total_card/100:,.2f} gastos + R${opening_cents/100:,.2f} saldo anterior)".replace(",", "."))
+    elif total_card > 0:
+        lines.append(f"📊 Fatura estimada: *R${fatura/100:,.2f}*".replace(",", "."))
+
+    # Limite
+    if limit_cents and limit_cents > 0:
+        disponivel = limit_cents - fatura
+        pct_usado = fatura / limit_cents * 100
+        lines.append(f"💰 Limite: R${limit_cents/100:,.2f} | Disponível: *R${disponivel/100:,.2f}* ({pct_usado:.0f}% usado)".replace(",", "."))
+
+    return "\n".join(lines)
+
+
 @tool
 def get_month_comparison(user_phone: str) -> str:
     """
@@ -4983,6 +5090,10 @@ POR ESTABELECIMENTO — qualquer menção a nome próprio de loja/app/serviço:
 POR CATEGORIA: "onde gastei em X?" / "detalhes de Alimentação"
   → get_category_breakdown(user_phone, category="<categoria>")
 
+EXTRATO DE CARTÃO: "extrato do Nubank" / "como tá meu cartão da Caixa" / "gastos no Nubank" / "fatura detalhada do X"
+  → get_card_statement(user_phone, card_name="<nome>")
+  → Com mês: get_card_statement(user_phone, card_name="<nome>", month="YYYY-MM")
+
 LISTA DETALHADA (só quando pedir "transações" ou "lista" ou "extrato" explicitamente):
   "todas as transações de março" / "transações do dia 10" / "lista de gastos de fev" / "extrato de março"
   → get_transactions(user_phone, month="YYYY-MM") ou get_transactions(user_phone, date="YYYY-MM-DD")
@@ -5340,7 +5451,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=10,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement],
     add_datetime_to_context=True,
     markdown=True,
 )
@@ -5611,6 +5722,17 @@ def _pre_route(message: str) -> dict | None:
     # --- CARTÕES ---
     if _re_router.match(r'(meus cart[õo]es|(?:minhas )?faturas?|ver (?:meus )?cart[õo]es|quais (?:s[aã]o )?(?:os )?(?:meus )?cart[õo]es|lista(?:r)? cart[õo]es)[\?\!\.]*$', msg):
         return {"response": _call(get_cards, user_phone)}
+
+    # --- EXTRATO DE CARTÃO ESPECÍFICO ---
+    m_card = _re_router.match(r'(?:extrato|gastos?|como (?:t[aá]|est[aá])|fatura|me mostr[ea]|mostr[ea])(?: d[eo]| (?:no|do) (?:meu )?| (?:meu )?)?(?:cart[aã]o )?(?:d[aeo] )?(\w[\w\s]*?)[\?\!\.]*$', msg)
+    if m_card:
+        card_q = m_card.group(1).strip()
+        # Evita match genérico (mês, semana, hoje, etc)
+        skip_words = {"mês", "mes", "março", "marco", "fevereiro", "janeiro", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro", "hoje", "semana", "dia", "meu mes", "meu mês"}
+        if card_q.lower() not in skip_words and len(card_q) >= 2:
+            result = _call(get_card_statement, user_phone, card_q)
+            if "não encontrado" not in result.lower():
+                return {"response": result}
 
     # --- METAS ---
     if _re_router.match(r'((?:minhas |ver |listar )?metas|objetivos|(?:minhas |ver )?metas financeiras)[\?\!\.]*$', msg):
