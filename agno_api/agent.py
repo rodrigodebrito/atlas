@@ -1699,6 +1699,7 @@ def delete_transactions(
             conn2 = _get_conn()
             cur2 = conn2.cursor()
             _ensure_pending_actions_table(cur2)
+            conn2.commit()
             # Remove ações pendentes antigas deste usuário
             cur2.execute("DELETE FROM pending_actions WHERE user_phone = ?", (user_phone,))
             cur2.execute(
@@ -1707,8 +1708,12 @@ def delete_transactions(
             )
             conn2.commit()
             conn2.close()
-        except Exception:
-            pass
+            import logging as _log_pa
+            _log_pa.getLogger("atlas").warning(f"[PENDING_ACTION] SAVED for {user_phone}: {action_data[:100]}")
+        except Exception as e:
+            import logging as _log_pa
+            _log_pa.getLogger("atlas").error(f"[PENDING_ACTION] SAVE FAILED: {e}")
+            import traceback; traceback.print_exc()
         conn.close()
         lines = [f"⚠️ *{len(rows)} transação(ões) encontradas* ({total_fmt} total):"]
         for _, amt, merch, cat, occ in rows[:15]:
@@ -5375,17 +5380,21 @@ def _pre_route(message: str) -> dict | None:
 
     # --- CONFIRMAÇÃO / CANCELAMENTO DE AÇÃO PENDENTE ---
     if _re_router.match(r'(sim|s|yes|confirma|confirmar|pode apagar|apaga|beleza|bora|ok|t[aá]|isso)[\?\!\.]*$', msg):
+        import json as _json_pr
+        import logging as _log_pr
+        _logger = _log_pr.getLogger("atlas")
         try:
-            import json as _json_pr
             conn_pa = _get_conn()
             cur_pa = conn_pa.cursor()
             _ensure_pending_actions_table(cur_pa)
             conn_pa.commit()
+            _logger.warning(f"[PENDING_ACTION] Checking for phone={user_phone}")
             cur_pa.execute(
                 "SELECT id, action_type, action_data FROM pending_actions WHERE user_phone = ? ORDER BY created_at DESC LIMIT 1",
                 (user_phone,),
             )
             pa_row = cur_pa.fetchone()
+            _logger.warning(f"[PENDING_ACTION] Found: {pa_row}")
             if pa_row:
                 pa_id, action_type, action_data_str = pa_row
                 # Limpa a ação pendente
@@ -5408,8 +5417,9 @@ def _pre_route(message: str) -> dict | None:
                     return {"response": result}
             else:
                 conn_pa.close()
-        except Exception:
-            pass
+        except Exception as e:
+            _logger.error(f"[PENDING_ACTION] CHECK FAILED: {e}")
+            import traceback; traceback.print_exc()
 
     if _re_router.match(r'(n[aã]o|nao|n|cancela|cancelar|deixa|esquece|desiste)[\?\!\.]*$', msg):
         try:
@@ -6345,6 +6355,29 @@ def debug_unrouted(limit: int = 50):
         "total": total,
         "unique_patterns": len(rows),
         "messages": [{"message": r[0], "count": r[1]} for r in rows],
+    }
+
+
+@app.get("/v1/debug/pending-actions")
+def debug_pending_actions(phone: str = ""):
+    """Debug: lista pending_actions no banco."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    try:
+        _ensure_pending_actions_table(cur)
+        conn.commit()
+        if phone:
+            cur.execute("SELECT id, user_phone, action_type, action_data, created_at FROM pending_actions WHERE user_phone = ?", (phone,))
+        else:
+            cur.execute("SELECT id, user_phone, action_type, action_data, created_at FROM pending_actions ORDER BY created_at DESC LIMIT 20")
+        rows = cur.fetchall()
+    except Exception as e:
+        conn.close()
+        return {"error": str(e), "rows": []}
+    conn.close()
+    return {
+        "count": len(rows),
+        "rows": [{"id": r[0], "phone": r[1], "type": r[2], "data": r[3], "created_at": r[4]} for r in rows],
     }
 
 
