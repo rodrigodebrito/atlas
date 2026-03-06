@@ -413,8 +413,9 @@ class StatementParseResult(BaseModel):
 
 class _PGCursor:
     """Cursor wrapper que converte placeholders ? → %s para PostgreSQL."""
-    def __init__(self, cur):
+    def __init__(self, cur, conn=None):
         self._cur = cur
+        self._conn = conn
 
     def execute(self, sql, params=()):
         self._cur.execute(sql.replace("?", "%s"), params)
@@ -429,6 +430,10 @@ class _PGCursor:
     def rowcount(self):
         return self._cur.rowcount
 
+    @property
+    def connection(self):
+        return self._conn
+
 
 class _PGConn:
     """Connection wrapper que retorna cursors adaptados para PostgreSQL."""
@@ -436,7 +441,7 @@ class _PGConn:
         self._conn = conn
 
     def cursor(self):
-        return _PGCursor(self._conn.cursor())
+        return _PGCursor(self._conn.cursor(), self)
 
     def commit(self):
         self._conn.commit()
