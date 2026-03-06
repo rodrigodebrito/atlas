@@ -5884,44 +5884,43 @@ _HELP_TEXT = """📋 *ATLAS — Manual Rápido*
 • _"mercado 120"_
 • _"uber 18 ontem"_
 • _"tênis 300 em 3x no Nubank"_
-• _"notebook 3000 em 6x no Inter"_
 
 💰 *Receitas:*
 • _"recebi 4500 de salário"_
 • _"entrou 1200 de freela"_
 
-📊 *Resumos e análises:*
-• _"como tá meu mês?"_
+📊 *Resumos:*
+• _"como tá meu mês?"_ — saldo + compromissos
 • _"como foi minha semana?"_
 • _"gastos de hoje"_
-• _"gastos por categoria"_
-• _"meu score financeiro"_
+• _"extrato de março"_ — entradas e saídas separadas
+• _"resumo de março e abril"_ — dois meses
 
-🧠 *Inteligência financeira:*
+💳 *Cartões:*
+• _"meus cartões"_ — lista todos
+• _"extrato do Nubank"_ — gastos por categoria + limite
+• _"limite do Nubank é 5000"_ — atualiza limite
+• _"minhas parcelas"_
+
+📌 *Contas a pagar:*
+• _"aluguel 1500 todo dia 5"_ — gasto fixo
+• _"boleto de 600 no dia 15"_ — conta avulsa
+• _"paguei o aluguel"_ — marca como pago
+• _"meus compromissos"_ — pago/pendente
+• _"compromissos dos próximos 3 meses"_
+
+🧠 *Inteligência:*
 • _"posso comprar um tênis de 200?"_
 • _"vai sobrar até o fim do mês?"_
 • _"quanto posso gastar por dia?"_
-
-💳 *Cartões de crédito:*
-• _"meus cartões"_
-• _"fatura do Nubank 2300"_
-• _"minhas parcelas"_
-
-📌 *Gastos fixos e contas:*
-• _"aluguel 1500 todo dia 5"_
-• _"Netflix 44,90 todo mês"_
-• _"boleto de 600 no dia 15"_
-• _"paguei o aluguel"_
-• _"minhas contas"_ (mostra pago/pendente)
+• _"meu score financeiro"_
 
 🎯 *Metas:*
 • _"quero guardar 5000 pra viagem"_
-• _"guardei 500 na meta viagem"_
-• _"minhas metas"_
+• _"guardei 500 na meta"_
 
 ✏️ *Corrigir / Apagar:*
-• _"corrige" ou "apaga" (última transação)_
-• _"muda o Talentos de ontem pra Lazer"_
+• _"corrige"_ ou _"apaga"_ — última transação
 • _"apaga todos do iFood deste mês"_
 
 👉 Manual completo: https://atlas-m3wb.onrender.com/manual"""
@@ -7041,37 +7040,45 @@ h1{font-size:1.8em;text-align:center;margin:20px 0 8px;color:#fff}
 </div>
 
 <div class="section">
-<h2>📊 Resumos</h2>
-<div class="example"><code>"como tá meu mês?"</code> — resumo do mês atual</div>
+<h2>📊 Resumos e extrato</h2>
+<div class="example"><code>"como tá meu mês?"</code> — resumo com saldo + compromissos pendentes</div>
 <div class="example"><code>"como foi minha semana?"</code> — resumo semanal</div>
 <div class="example"><code>"gastos de hoje"</code> — o que gastou hoje</div>
-<div class="example"><code>"gastos por categoria"</code> — breakdown por categoria</div>
-<div class="example"><code>"como foi janeiro?"</code> — resumo de mês passado</div>
+<div class="example"><code>"extrato de março"</code> — entradas e saídas separadas com totais</div>
+<div class="example"><code>"quanto gastei no iFood?"</code> — filtra por estabelecimento</div>
+<div class="example"><code>"resumo de março e abril"</code> — dois meses lado a lado</div>
+<div class="example"><code>"como foi janeiro?"</code> — mês passado</div>
 </div>
 
 <div class="section">
 <h2>🧠 Inteligência financeira</h2>
 <p>O ATLAS analisa seus dados e responde com inteligência:</p>
-<div class="example"><code>"posso comprar um tênis de 200?"</code> — analisa renda, gastos, parcelas e responde YES/CAUTION/DEFER/NO</div>
-<div class="example"><code>"vai sobrar até o fim do mês?"</code> — 3 cenários: ritmo atual, cortando supérfluo, e meta 20%</div>
-<div class="example"><code>"meu score financeiro"</code> — nota de A+ a F com 4 componentes</div>
-<div class="example"><code>"quanto posso gastar por dia?"</code> — orçamento diário baseado no ciclo de salário</div>
+<div class="example"><code>"posso comprar um tênis de 200?"</code> — analisa renda, gastos e parcelas</div>
+<div class="example"><code>"vai sobrar até o fim do mês?"</code> — 3 cenários de projeção</div>
+<div class="example"><code>"meu score financeiro"</code> — nota de A+ a F</div>
+<div class="example"><code>"quanto posso gastar por dia?"</code> — orçamento diário no ciclo de salário</div>
 </div>
 
 <div class="section">
 <h2>💳 Cartões de crédito</h2>
 <div class="example"><code>"meus cartões"</code> — lista cartões e faturas</div>
-<div class="example"><code>"fatura do Nubank 2300"</code> — registra valor da fatura</div>
+<div class="example"><code>"extrato do Nubank"</code> — gastos por categoria + limite + fatura</div>
+<div class="example"><code>"limite do Nubank é 5000"</code> — atualiza limite do cartão</div>
+<div class="example"><code>"Nubank fecha 25 vence 10"</code> — configura ciclo do cartão</div>
 <div class="example"><code>"minhas parcelas"</code> — lista parcelamentos ativos</div>
-<div class="example"><code>"fecha dia 25 vence dia 10"</code> — configura ciclo do cartão</div>
+<div class="example"><code>"próxima fatura do Inter"</code> — estimativa da próxima fatura</div>
 </div>
 
 <div class="section">
-<h2>📌 Gastos fixos e compromissos</h2>
-<div class="example"><code>"aluguel 1500 todo dia 5"</code> — registra gasto fixo</div>
-<div class="example"><code>"Netflix 44,90 todo mês"</code></div>
-<div class="example"><code>"meus compromissos"</code> — lista contas a pagar</div>
-<div class="example"><code>"meus gastos fixos"</code> — lista recorrentes</div>
+<h2>📌 Contas a pagar</h2>
+<div class="example"><code>"aluguel 1500 todo dia 5"</code> — gasto fixo mensal</div>
+<div class="example"><code>"Netflix 44,90 todo mês"</code> — assinatura recorrente</div>
+<div class="example"><code>"boleto de 600 no dia 15"</code> — conta avulsa</div>
+<div class="example"><code>"paguei o aluguel"</code> — marca como pago</div>
+<div class="example"><code>"pagamento fatura Nubank 2300"</code> — paga fatura do cartão</div>
+<div class="example"><code>"meus compromissos"</code> — lista tudo: pago e pendente</div>
+<div class="example"><code>"compromissos de abril"</code> — mês específico</div>
+<div class="example"><code>"compromissos dos próximos 3 meses"</code> — visão futura</div>
 <div class="tip">💡 O ATLAS envia lembretes automáticos antes dos vencimentos!</div>
 </div>
 
@@ -7085,21 +7092,22 @@ h1{font-size:1.8em;text-align:center;margin:20px 0 8px;color:#fff}
 <div class="section">
 <h2>✏️ Corrigir e apagar</h2>
 <div class="example"><code>"corrige"</code> ou <code>"apaga"</code> — última transação</div>
-<div class="example"><code>"muda o Talentos de ontem pra Lazer"</code> — corrige categoria/valor/merchant</div>
-<div class="example"><code>"apaga todos do iFood deste mês"</code> — deleção em massa (pede confirmação)</div>
-<div class="tip">💡 Na deleção em massa, o ATLAS lista tudo antes de apagar e pede confirmação.</div>
+<div class="example"><code>"muda o Talentos de ontem pra Lazer"</code> — corrige categoria</div>
+<div class="example"><code>"apaga todos do iFood deste mês"</code> — deleção em massa</div>
+<div class="tip">💡 Na deleção em massa, o ATLAS lista tudo e pede confirmação antes de apagar.</div>
 </div>
 
 <div class="section">
 <h2>⚙️ Configurações</h2>
 <div class="example"><code>"meu salário cai dia 5"</code> — configura ciclo salarial</div>
 <div class="example"><code>"recebi 4500 de salário"</code> — salva renda automaticamente</div>
-<div class="example"><code>"lembrete 5 dias antes"</code> — configura antecedência dos lembretes</div>
+<div class="example"><code>"lembrete 5 dias antes"</code> — antecedência dos lembretes</div>
+<div class="example"><code>"limite do Inter é 8000"</code> — atualiza limite do cartão</div>
 </div>
 
 <div class="section">
 <h2>🏷️ Categorias automáticas</h2>
-<p>O ATLAS categoriza seus gastos automaticamente:</p>
+<p>O ATLAS categoriza e aprende com o uso:</p>
 <div class="categories">
 <span class="cat">Alimentação</span>
 <span class="cat">Transporte</span>
@@ -7113,7 +7121,7 @@ h1{font-size:1.8em;text-align:center;margin:20px 0 8px;color:#fff}
 <span class="cat">Pets</span>
 <span class="cat">Outros</span>
 </div>
-<div class="tip">💡 O ATLAS aprende: se você sempre coloca iFood em "Alimentação", ele memoriza e usa automaticamente.</div>
+<div class="tip">💡 O ATLAS aprende: se você coloca iFood em "Alimentação", ele memoriza pra próxima vez.</div>
 </div>
 
 <p class="footer">ATLAS — Assistente financeiro inteligente<br>Feito com ❤️ para simplificar suas finanças</p>
