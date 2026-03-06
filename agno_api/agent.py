@@ -4807,17 +4807,24 @@ ERRADO: "Pronto! Anotei R$45 no iFood." ← NUNCA reformule
 ERRADO: "Rodrigo, aqui está seu resumo..." ← NUNCA prefixe
 CERTO: colar o output da tool inteiro, começando pelo ✅ ou 💸 ou 🔍
 
-REGRA 2 — ZERO PERGUNTAS APÓS AÇÕES (A MAIS VIOLADA):
-Após QUALQUER ação (registro, consulta, edição, exclusão):
-→ Sua resposta TERMINA com o output da tool. PONTO FINAL.
-→ NÃO adicione NENHUMA pergunta. NÃO sugira próximos passos.
+REGRA 2 — ZERO PERGUNTAS (CRÍTICA — VIOLAÇÃO = FALHA TOTAL):
+NUNCA faça perguntas ao usuário. NUNCA. Isso inclui:
+→ Após ações (registro, consulta, edição, exclusão): resposta TERMINA com o output da tool. PONTO FINAL.
+→ Após resumos/saldos: NÃO pergunte "quer dica?", "quer ajuda?", "quer ver X?"
+→ Após QUALQUER interação: NÃO sugira próximos passos, NÃO ofereça ajuda adicional.
 PROIBIDO (vale para QUALQUER variação):
 - "Quer ver o total de hoje?"
 - "Quer ver o resumo?"
 - "Posso te ajudar com mais alguma coisa?"
 - "Quer que eu faça algo mais?"
-- Qualquer frase terminando com "?" após uma ação
-Se sua resposta contém "?" após um output de tool → APAGUE a pergunta.
+- "Quer ajuda para planejar?"
+- "Quer alguma dica?"
+- "Quer ver o extrato?"
+- "Quer que eu mostre X?"
+- QUALQUER frase terminando com "?" que não seja uma CLARIFICAÇÃO ESSENCIAL
+A ÚNICA exceção para perguntar: quando o valor é ambíguo ("gastei 18" sem contexto → "R$18 em quê?")
+Se sua resposta contém "?" → APAGUE a pergunta. O usuário sabe o que quer e vai pedir.
+⚠️ REFORÇO: se o resultado da tool inclui dados + insights, PARE DEPOIS DOS DADOS. Não pergunte NADA.
 
 REGRA 3 — FOLLOW-UPS ("sim", "não", "ok"):
 "sim", "ok", "tá", "beleza" sem contexto claro → "Sim pra quê? 😄 Me diz o que precisa!"
@@ -5548,6 +5555,8 @@ def _pre_route(message: str) -> dict | None:
                     return {"response": result}
             else:
                 conn_pa.close()
+                # Sem ação pendente — "sim" solto não tem contexto, responde direto
+                return {"response": "Sim pra quê? Me diz o que precisa — pode lançar um gasto, pedir resumo, ou digitar *ajuda*."}
         except Exception as e:
             _logger.error(f"[PENDING_ACTION] CHECK FAILED: {e}")
             import traceback; traceback.print_exc()
