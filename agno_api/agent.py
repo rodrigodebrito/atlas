@@ -3351,26 +3351,68 @@ def get_card_statement(user_phone: str, card_name: str, month: str = "") -> str:
 
         lines.append(f"💸 *Total no cartão: R${total_spent/100:,.2f}*".replace(",", "."))
 
-    # Info do cartão
+    # ── Info do cartão (tudo em um bloco só) ──
     lines.append("")
 
-    # Fatura estimada — só gastos APÓS último pagamento + saldo anterior
+    # Determina ciclo de fatura
+    from datetime import date as _date
+    today_date = today.date() if hasattr(today, 'date') else today
+    fatura_fechada = closing_day > 0 and today.day > closing_day
+
+    # Fatura atual (fechada) = gastos do ciclo anterior ao fechamento
+    # Fatura aberta (próxima) = gastos após o fechamento
+    if closing_day > 0 and due_day > 0:
+        # Período da fatura FECHADA: do fechamento anterior até o fechamento atual
+        close_date_str = f"{today.year}-{today.month:02d}-{closing_day:02d}"
+        if fatura_fechada:
+            # Já fechou este mês — fatura fechada = gastos até dia closing_day deste mês
+            # Fatura aberta = gastos após closing_day (vão pra próxima fatura)
+            closed_rows = [r for r in rows if r[3][:10] <= close_date_str]
+            open_rows = [r for r in rows if r[3][:10] > close_date_str]
+        else:
+            # Ainda não fechou — tudo é fatura aberta (que vai fechar este mês)
+            closed_rows = []
+            open_rows = rows
+    else:
+        closed_rows = []
+        open_rows = rows
+
+    # Filtra por last_paid se aplicável
     if last_paid:
-        fatura_rows = [r for r in rows if r[3] >= last_paid[:10]]
-        fatura_spent = sum(r[2] for r in fatura_rows)
+        closed_rows = [r for r in closed_rows if r[3] >= last_paid[:10]]
+        open_rows = [r for r in open_rows if r[3] >= last_paid[:10]]
+
+    closed_spent = sum(r[2] for r in closed_rows)
+    open_spent = sum(r[2] for r in open_rows)
+
+    # Fatura fechada (a pagar) = gastos do ciclo fechado + saldo anterior
+    fatura_fechada_total = closed_spent + (opening_cents or 0)
+    # Fatura aberta (próxima) = gastos após fechamento
+    fatura_aberta_total = open_spent
+
+    if fatura_fechada and closing_day > 0:
+        # Mostra fatura fechada + fatura aberta separadas
+        if fatura_fechada_total > 0:
+            if opening_cents and opening_cents > 0:
+                lines.append(f"📊 Fatura fechada: *R${fatura_fechada_total/100:,.2f}* (R${closed_spent/100:,.2f} gastos + R${opening_cents/100:,.2f} anterior)".replace(",", "."))
+            else:
+                lines.append(f"📊 Fatura fechada: *R${fatura_fechada_total/100:,.2f}*".replace(",", "."))
+        else:
+            lines.append("📊 Fatura fechada: *R$0,00* ✨")
+        if fatura_aberta_total > 0:
+            lines.append(f"📂 Próxima fatura: *R${fatura_aberta_total/100:,.2f}* (aberta)")
     else:
-        fatura_spent = sum(r[2] for r in rows)
-    fatura = fatura_spent + (opening_cents or 0)
-    if opening_cents and opening_cents > 0:
-        lines.append(f"📊 Fatura atual: *R${fatura/100:,.2f}* (R${fatura_spent/100:,.2f} gastos + R${opening_cents/100:,.2f} saldo anterior)".replace(",", "."))
-    elif fatura_spent > 0:
-        lines.append(f"📊 Fatura atual: *R${fatura/100:,.2f}*".replace(",", "."))
-    else:
-        lines.append("📊 Fatura atual: *R$0,00* ✨")
+        # Fatura ainda aberta (não fechou)
+        fatura_total = open_spent + (opening_cents or 0)
+        if opening_cents and opening_cents > 0:
+            lines.append(f"📊 Fatura atual: *R${fatura_total/100:,.2f}* (R${open_spent/100:,.2f} gastos + R${opening_cents/100:,.2f} anterior)".replace(",", "."))
+        elif open_spent > 0:
+            lines.append(f"📊 Fatura atual: *R${fatura_total/100:,.2f}*".replace(",", "."))
+        else:
+            lines.append("📊 Fatura atual: *R$0,00* ✨")
 
     # Limite e disponível
     if available_cents is not None and available_cents >= 0:
-        # Disponível rastreado pelo usuário (mais preciso — inclui parcelas externas)
         usado = (limit_cents or 0) - available_cents
         if limit_cents and limit_cents > 0:
             pct_usado = usado / limit_cents * 100
@@ -3378,51 +3420,42 @@ def get_card_statement(user_phone: str, card_name: str, month: str = "") -> str:
         else:
             lines.append(f"💰 Disponível: *R${available_cents/100:,.2f}*".replace(",", "."))
     elif limit_cents and limit_cents > 0:
-        # Fallback: calcula disponível = limite - fatura atual
-        disponivel = limit_cents - fatura
-        pct_usado = fatura / limit_cents * 100
+        fatura_for_limit = fatura_fechada_total + fatura_aberta_total if fatura_fechada else (open_spent + (opening_cents or 0))
+        disponivel = limit_cents - fatura_for_limit
+        pct_usado = fatura_for_limit / limit_cents * 100
         lines.append(f"💰 Limite: R${limit_cents/100:,.2f} | Disponível: *R${disponivel/100:,.2f}* ({pct_usado:.0f}% usado)".replace(",", "."))
     else:
-        lines.append("")
-        lines.append(f'_Dica: informe o limite e o disponível do seu cartão._')
-        lines.append(f'_Ex: "limite do {name} é 5000" ou "disponível no {name} é 2000"_')
+        lines.append(f'_Dica: "limite do {name} é 5000" ou "disponível no {name} é 2000"_')
 
-    # Fechamento, vencimento e melhor dia de compra
+    # Fechamento, vencimento, melhor dia, data de pagamento
     if closing_day > 0 and due_day > 0:
-        lines.append("")
         lines.append(f"📅 Fecha dia *{closing_day}* | Vence dia *{due_day}*")
-
-        # Melhor dia de compra = dia seguinte ao fechamento (máximo tempo até pagar)
         melhor_dia = closing_day + 1 if closing_day < 28 else 1
         lines.append(f"🛒 Melhor dia de compra: *{melhor_dia}* (dia após fechamento)")
 
-        # Data de pagamento da fatura atual
-        if today.day <= closing_day:
-            # Fatura fecha este mês, paga no due_day deste mês ou próximo
-            if due_day > closing_day:
-                pay_m, pay_y = today.month, today.year
-            else:
-                pay_m = today.month + 1 if today.month < 12 else 1
-                pay_y = today.year if today.month < 12 else today.year + 1
+        # Data de pagamento: a fatura que FECHOU paga no due_day do MÊS SEGUINTE ao fechamento
+        # Ex: fecha dia 2/03 → vence dia 7/04 (mês seguinte)
+        # Ex: fecha dia 25/03 → vence dia 10/04 (mês seguinte)
+        if fatura_fechada:
+            # Fatura já fechou este mês — pagamento é due_day do próximo mês
+            pay_m = today.month + 1 if today.month < 12 else 1
+            pay_y = today.year if today.month < 12 else today.year + 1
         else:
-            # Fatura já fechou, paga no due_day deste mês ou próximo
-            if due_day > closing_day:
-                pay_m, pay_y = today.month, today.year
-            else:
-                pay_m = today.month + 1 if today.month < 12 else 1
-                pay_y = today.year if today.month < 12 else today.year + 1
+            # Fatura ainda não fechou — quando fechar, pagamento = due_day do mês seguinte
+            # Mas se due_day > closing_day, vence no mesmo mês do fechamento
+            pay_m = today.month
+            pay_y = today.year
+
         pay_day = min(due_day, calendar.monthrange(pay_y, pay_m)[1])
-        from datetime import date as _date
         pay_date = _date(pay_y, pay_m, pay_day)
-        days_to_pay = (pay_date - today.date() if hasattr(today, 'date') else pay_date - today).days
+        days_to_pay = (pay_date - today_date).days
         if days_to_pay < 0:
-            # Já passou o vencimento deste ciclo, próximo
             pay_m2 = pay_m + 1 if pay_m < 12 else 1
             pay_y2 = pay_y if pay_m < 12 else pay_y + 1
             pay_day2 = min(due_day, calendar.monthrange(pay_y2, pay_m2)[1])
             pay_date = _date(pay_y2, pay_m2, pay_day2)
-            days_to_pay = (pay_date - (today.date() if hasattr(today, 'date') else today)).days
-        lines.append(f"💵 Pagamento: *{pay_date.strftime('%d/%m')}* (em {days_to_pay} dias)")
+            days_to_pay = (pay_date - today_date).days
+        lines.append(f"💵 Pagamento: *{pay_date.strftime('%d/%m')}* (em {days_to_pay} dia{'s' if days_to_pay != 1 else ''})")
 
     return "\n".join(lines)
 
