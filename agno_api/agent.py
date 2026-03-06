@@ -5932,6 +5932,24 @@ _HELP_TEXT = """📋 *ATLAS — Manual Rápido*
 
 from fastapi import Form as _Form
 
+def _strip_trailing_questions(text: str) -> str:
+    """Remove perguntas finais que o LLM insiste em adicionar após ações."""
+    import re as _re_sq
+    if not text:
+        return text
+    lines = text.strip().split("\n")
+    # Remove linhas finais que são perguntas (terminam com ?)
+    # mas preserva perguntas legítimas de clarificação (únicas no texto, curtas)
+    while lines:
+        last = lines[-1].strip()
+        # Linha final é uma pergunta não-essencial?
+        if (last.endswith("?") and len(lines) > 1 and
+            not _re_sq.match(r'^R\$[\d,.]+\s*\?', last)):  # não remove "R$X?" (valor)
+            lines.pop()
+        else:
+            break
+    return "\n".join(lines).strip()
+
 @app.post("/v1/chat")
 async def chat_endpoint(
     user_phone: str = _Form(""),
@@ -5981,6 +5999,7 @@ async def chat_endpoint(
         session_id=session_id,
     )
     content = response.content if hasattr(response, 'content') else str(response)
+    content = _strip_trailing_questions(content)
     return {"content": content, "routed": False, "session_id": session_id}
 
 
