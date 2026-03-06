@@ -1568,8 +1568,12 @@ def delete_transactions(
         return "ERRO: informe pelo menos um filtro (merchant, date, month, week, category)."
 
     if merchant:
-        conditions.append("LOWER(merchant) LIKE LOWER(?)")
-        params.append(f"%{merchant}%")
+        # "sem descrição" / "sem descricao" = merchant vazio
+        if merchant.lower().strip() in ("sem descrição", "sem descricao", "sem descriçao", "sem descricão", "vazio", "empty"):
+            conditions.append("(merchant IS NULL OR TRIM(merchant) = '')")
+        else:
+            conditions.append("LOWER(merchant) LIKE LOWER(?)")
+            params.append(f"%{merchant}%")
 
     if date:
         conditions.append("occurred_at LIKE ?")
@@ -4569,6 +4573,7 @@ APAGAR MÚLTIPLAS transações (FLUXO DE 2 ETAPAS — OBRIGATÓRIO):
   "apaga tudo do dia 02/03" → delete_transactions(user_phone, date="2026-03-02")
   "apaga tudo desta semana" → delete_transactions(user_phone, week=True)
   "apaga todos os gastos de alimentação" → delete_transactions(user_phone, category="Alimentação", transaction_type="expense")
+  "apaga os sem descrição" / "apaga todos sem descrição" → delete_transactions(user_phone, merchant="sem descrição")
 
   ⚠️ NUNCA passe confirm=True na primeira chamada. SEMPRE liste primeiro e peça confirmação.
   Quando o usuário responder "sim" após a listagem → chame de novo com confirm=True e OS MESMOS filtros.
