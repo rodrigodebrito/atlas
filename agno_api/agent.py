@@ -2172,6 +2172,61 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
     return "\n".join(lines)
 
 
+@tool(description="Mostra TODAS as categorias do mês com totais e percentuais. Use quando o usuário pedir 'categorias', 'gastos por categoria', 'breakdown'. month: YYYY-MM (padrão = mês atual).")
+def get_all_categories_breakdown(user_phone: str, month: str = "") -> str:
+    """Mostra todas as categorias do mês com totais e %."""
+    if not month:
+        month = _now_br().strftime("%Y-%m")
+
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return "Nenhuma transação encontrada."
+    user_id = row[0]
+
+    cur.execute(
+        """SELECT category, SUM(amount_cents) as total, COUNT(*) as cnt
+           FROM transactions
+           WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?
+           GROUP BY category
+           ORDER BY total DESC""",
+        (user_id, f"{month}%"),
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        return f"Nenhum gasto registrado em {month}."
+
+    grand_total = sum(r[1] for r in rows)
+    months_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+                 "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+    try:
+        y, m_num = map(int, month.split("-"))
+        month_label = f"{months_pt[m_num]}/{y}"
+    except Exception:
+        month_label = month
+
+    lines = [f"📊 *Categorias — {month_label}*", f"💸 Total: R${grand_total/100:,.2f}".replace(",", "."), ""]
+
+    for cat, total, cnt in rows:
+        pct = total / grand_total * 100
+        bar_filled = round(pct / 5)
+        bar = "█" * bar_filled + "░" * (20 - bar_filled)
+        lines.append(f"*{cat or 'Sem categoria'}* — R${total/100:,.2f} ({pct:.0f}%)".replace(",", "."))
+        lines.append(f"{bar}  {cnt} transação(ões)")
+
+    lines.append("")
+    lines.append("_Para detalhar uma categoria: \"quanto gastei em Alimentação?\"_")
+    lines.append("_Para mudar categoria: \"iFood é Lazer\"_")
+
+    return "\n".join(lines)
+
+
 @tool(description="Filtra transações por nome de estabelecimento, loja, restaurante, app ou serviço. Use SEMPRE que o usuário mencionar um nome específico. Exemplos: 'quanto gastei no Deville?' → merchant_query='Deville'. 'gastos no iFood esse mês' → merchant_query='iFood', month='2026-03'. 'me mostra o Talentos' → merchant_query='Talentos'. 'histórico do Uber' → merchant_query='Uber'. 'Netflix esse mês' → merchant_query='Netflix'. merchant_query = nome do estabelecimento (busca parcial, case-insensitive).")
 def get_transactions_by_merchant(
     user_phone: str,
@@ -6898,9 +6953,23 @@ def _pre_route(message: str) -> dict | None:
     if _re_router.match(r'((?:minhas |ver )?parcelas|parcelamentos?|compras? parceladas?)[\?\!\.]*$', msg):
         return {"response": _call(get_installments_summary, user_phone)}
 
-    # --- CATEGORIAS (breakdown) ---
+    # --- MUDAR CATEGORIA de merchant ---
+    # "iFood é Lazer", "mudar iFood pra Lazer", "trocar iFood para Lazer", "iFood agora é Lazer"
+    _cat_change = _re_router.match(
+        r'(?:mudar?|trocar?|alterar?|colocar?|botar?|por|mover?)\s+(.+?)\s+(?:pra|para|como|em)\s+(.+?)$'
+        r'|(.+?)\s+(?:é|eh|agora é|agora eh|virou|passa a ser|muda pra|muda para)\s+(.+?)$',
+        msg
+    )
+    if _cat_change:
+        _merchant = (_cat_change.group(1) or _cat_change.group(3) or "").strip()
+        _new_cat = (_cat_change.group(2) or _cat_change.group(4) or "").strip()
+        # Valida se _new_cat parece categoria (não é frase longa)
+        if _merchant and _new_cat and len(_new_cat.split()) <= 3 and len(_merchant.split()) <= 4:
+            return {"response": _call(update_merchant_category, user_phone, _merchant, _new_cat)}
+
+    # --- CATEGORIAS (breakdown geral) ---
     if _re_router.match(r'((?:ver )?categorias|gastos? por categoria|breakdown|quanto (?:gastei )?(?:em |por )cada categoria)[\?\!\.]*$', msg):
-        return {"response": _call(get_category_breakdown, user_phone, current_month)}
+        return {"response": _call(get_all_categories_breakdown, user_phone, current_month)}
 
     # --- AJUDA ---
     if _re_router.match(r'(ajuda|help|menu|o que voc[eê] faz|comandos|como (?:te )?(?:uso|usar)|(?:o que|oque) (?:vc|voc[eê]) (?:faz|sabe fazer)|funcionalidades|recursos)[\?\!\.]*$', msg):
