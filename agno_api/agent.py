@@ -5726,14 +5726,30 @@ def _pre_route(message: str) -> dict | None:
     if _re_router.match(r'(como t[aá] meu m[eê]s|resumo (?:do |mensal|deste |desse )?m[eê]s|meus gastos(?: do m[eê]s)?|como (?:foi|esta|está|tá|ta|anda|andou)(?: meu| o)? m[eê]s|me d[aá] (?:o )?resumo|resumo geral|vis[aã]o geral|saldo do m[eê]s|saldo mensal|quanto (?:eu )?(?:j[aá] )?gastei (?:esse|este|no) m[eê]s|total do m[eê]s|balan[çc]o do m[eê]s|extrato do m[eê]s|extrato mensal|como (?:est[aá]|tá|ta|anda) (?:minhas? )?finan[çc]as)[\?\!\.]*$', msg):
         return {"response": _call(get_month_summary, user_phone, current_month, "ALL")}
 
+    # Resumo de dois meses: "resumo de março e abril", "gastos de fevereiro e março"
+    m_2m = _re_router.match(r'(?:como (?:foi|tá|ta|está)|resumo d[eo]|me mostr[ea].*(?:gastos?|resumo) d[eo]|gastos d[eo]|extrato d[eo]|saldo d[eo])\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro) e (janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)', msg)
+    if m_2m:
+        mo1 = _resolve_month(m_2m.group(1))
+        mo2 = _resolve_month(m_2m.group(2))
+        if mo1 and mo2:
+            r1 = _call(get_month_summary, user_phone, mo1, "ALL")
+            r2 = _call(get_month_summary, user_phone, mo2, "ALL")
+            return {"response": f"{r1}\n\n───────────────\n\n{r2}"}
+
+    # Resumo dos próximos N meses: "resumo dos próximos 3 meses"
+    m_nm = _re_router.match(r'(?:resumo|gastos?|saldo|extrato|como (?:vão|v[aã]o) (?:ficar )?(?:os |meus )?)(?: d?os)?pr[oó]ximos (\d) m[eê]s(?:es)?', msg)
+    if m_nm:
+        n = min(int(m_nm.group(1)), 6)
+        months = _next_months(n)
+        parts = [_call(get_month_summary, user_phone, mo, "ALL") for mo in months]
+        return {"response": "\n\n───────────────\n\n".join(parts)}
+
     # Resumo de mês específico
-    m = _re_router.match(r'(?:como (?:foi|tá|ta|está)|resumo d[eo]|me mostr[ea].*(?:gastos?|resumo) d[eo]|gastos d[eo]|extrato d[eo])\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)', msg)
+    m = _re_router.match(r'(?:como (?:foi|tá|ta|está)|resumo d[eo]|me mostr[ea].*(?:gastos?|resumo) d[eo]|gastos d[eo]|extrato d[eo]|saldo d[eo])\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)', msg)
     if m:
-        month_names = {"janeiro":"01","fevereiro":"02","março":"03","marco":"03","abril":"04","maio":"05","junho":"06","julho":"07","agosto":"08","setembro":"09","outubro":"10","novembro":"11","dezembro":"12"}
-        mo = month_names.get(m.group(1).lower().replace("ç","c"), "")
+        mo = _resolve_month(m.group(1))
         if mo:
-            year = today.year if int(mo) <= today.month else today.year - 1
-            return {"response": _call(get_month_summary, user_phone, f"{year}-{mo}", "ALL")}
+            return {"response": _call(get_month_summary, user_phone, mo, "ALL")}
 
     # --- RESUMO SEMANAL ---
     if _re_router.match(r'(como (?:foi|tá|ta|está|anda) (?:minha )?semana|resumo (?:da |desta |dessa |semanal)?semana|minha semana|gastos? (?:da |desta |dessa )?semana|extrato (?:da |desta )?semana|quanto gastei (?:essa|esta|na) semana)[\?\!\.]*$', msg):
@@ -5744,6 +5760,57 @@ def _pre_route(message: str) -> dict | None:
         return {"response": _call(get_today_total, user_phone, "EXPENSE", 1)}
 
     # --- COMPROMISSOS / CONTAS A PAGAR ---
+    # Helper: resolve nome de mês → YYYY-MM
+    _month_names_map = {"janeiro":"01","fevereiro":"02","março":"03","marco":"03","abril":"04","maio":"05","junho":"06","julho":"07","agosto":"08","setembro":"09","outubro":"10","novembro":"11","dezembro":"12"}
+
+    def _resolve_month(name):
+        mo = _month_names_map.get(name.lower().replace("ç","c"), "")
+        if mo:
+            y = today.year if int(mo) >= today.month else today.year + 1
+            return f"{y}-{mo}"
+        return None
+
+    def _next_months(n):
+        """Retorna lista de YYYY-MM para os próximos n meses (incluindo atual)."""
+        months = []
+        y, m = today.year, today.month
+        for _ in range(n):
+            months.append(f"{y}-{m:02d}")
+            m += 1
+            if m > 12:
+                m = 1
+                y += 1
+        return months
+
+    # Compromissos de mês específico: "compromissos de abril"
+    m_comp_mes = _re_router.match(r'(?:compromissos|contas)(?: (?:a pagar )?)?(?:d[eo]|em|pra) (janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)[\?\!\.]*$', msg)
+    if m_comp_mes:
+        mo = _resolve_month(m_comp_mes.group(1))
+        if mo:
+            return {"response": _call(get_bills, user_phone, mo)}
+
+    # Compromissos de dois meses: "compromissos de março e abril"
+    m_comp_2 = _re_router.match(r'(?:compromissos|contas)(?: (?:a pagar )?)?(?:d[eo]|em|pra) (janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro) e (janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)[\?\!\.]*$', msg)
+    if m_comp_2:
+        mo1 = _resolve_month(m_comp_2.group(1))
+        mo2 = _resolve_month(m_comp_2.group(2))
+        if mo1 and mo2:
+            r1 = _call(get_bills, user_phone, mo1)
+            r2 = _call(get_bills, user_phone, mo2)
+            return {"response": f"{r1}\n\n───────────────\n\n{r2}"}
+
+    # Compromissos dos próximos N meses: "compromissos dos próximos 2 meses", "contas próximos 3 meses"
+    m_comp_n = _re_router.match(r'(?:compromissos|contas)(?: a pagar)? (?:d?os )?pr[oó]ximos (\d) m[eê]s(?:es)?[\?\!\.]*$', msg)
+    if m_comp_n:
+        n = int(m_comp_n.group(1))
+        n = min(n, 6)  # máximo 6 meses
+        months = _next_months(n)
+        parts = []
+        for mo in months:
+            parts.append(_call(get_bills, user_phone, mo))
+        return {"response": "\n\n───────────────\n\n".join(parts)}
+
+    # Compromissos genéricos (mês atual)
     if _re_router.match(r'(meus compromissos|compromissos(?: (?:do|deste|desse|este|esse) m[eê]s)?|quais (?:s[aã]o )?(?:os )?(?:meus )?compromissos|contas? (?:a |pra )pagar|o que (?:eu )?(?:tenho|vou ter) (?:pra|para) pagar|(?:minhas |ver )?contas(?: do m[eê]s)?|o que falta pagar)[\?\!\.]*$', msg):
         return {"response": _call(get_bills, user_phone)}
     # --- GASTOS FIXOS ---
