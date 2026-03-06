@@ -425,6 +425,10 @@ class _PGCursor:
     def fetchall(self):
         return self._cur.fetchall()
 
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
 
 class _PGConn:
     """Connection wrapper que retorna cursors adaptados para PostgreSQL."""
