@@ -748,15 +748,26 @@ def save_transaction(
     if card_name:
         card_suffix = f" ({card_display_name})"
         today_day = _now_br().day
-        if card_closing_day > 0:
-            # Detecta se cai na fatura atual ou próxima
+        if card_closing_day > 0 and card_due_day > 0:
             if today_day > card_closing_day:
-                next_bill_warning = f"\n⚠️ Atenção: fatura do {card_display_name} já fechou (dia {card_closing_day}) — cai na *próxima fatura*."
-            # Aviso de vencimento próximo (dentro de 5 dias)
-            elif card_due_day > 0:
-                days_to_due = card_due_day - today_day
-                if 0 <= days_to_due <= 5:
-                    next_bill_warning = f"\n🔔 Lembrete: fatura do {card_display_name} vence em {days_to_due} dia(s) (dia {card_due_day})."
+                # Fatura já fechou — compra entra na PRÓXIMA fatura
+                # Calcula mês de pagamento: fecha mês que vem → vence mês+2
+                _t = _now_br()
+                _next_close_m = _t.month + 1 if _t.month < 12 else 1
+                _next_close_y = _t.year if _t.month < 12 else _t.year + 1
+                _pay_m = _next_close_m + 1 if _next_close_m < 12 else 1
+                _pay_y = _next_close_y if _next_close_m < 12 else _next_close_y + 1
+                months_pt = ["", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+                next_bill_warning = f"\n📂 Entra na *próxima fatura* (fecha {card_closing_day}/{months_pt[_next_close_m]}) — paga só em *{card_due_day:02d}/{months_pt[_pay_m]}*"
+            else:
+                # Fatura aberta — compra entra na fatura atual
+                # Calcula pagamento: fecha este mês → vence mês que vem
+                _t = _now_br()
+                _pay_m = _t.month + 1 if _t.month < 12 else 1
+                _pay_y = _t.year if _t.month < 12 else _t.year + 1
+                months_pt = ["", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+                days_to_close = card_closing_day - today_day
+                next_bill_warning = f"\n📋 Fatura fecha em *{days_to_close} dia(s)* (dia {card_closing_day}) — paga em *{card_due_day:02d}/{months_pt[_pay_m]}*"
         elif card_is_new:
             ask_closing = (
                 f"\n\nPara rastrear sua fatura certinho, me diz:\n"
