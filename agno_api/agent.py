@@ -1027,14 +1027,20 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         # 2) Faturas de cartão de crédito
         try:
             cur.execute(
-                "SELECT id, name, due_day, current_bill_opening_cents FROM credit_cards WHERE user_id = ? AND due_day > 0",
+                "SELECT id, name, due_day, current_bill_opening_cents, last_bill_paid_at FROM credit_cards WHERE user_id = ? AND due_day > 0",
                 (user_id,),
             )
-            for card_id, card_name, due_day, opening_cents in cur.fetchall():
-                cur.execute(
-                    "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
-                    (user_id, card_id, f"{current_month}%"),
-                )
+            for card_id, card_name, due_day, opening_cents, last_paid in cur.fetchall():
+                if last_paid:
+                    cur.execute(
+                        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at >= ?",
+                        (user_id, card_id, last_paid),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+                        (user_id, card_id, f"{current_month}%"),
+                    )
                 card_spent = cur.fetchone()[0]
                 fatura_total = card_spent + (opening_cents or 0)
                 if fatura_total > 0:
@@ -2440,13 +2446,27 @@ def close_bill(user_phone: str, card_name: str) -> str:
         conn.close()
         return f"Cartão '{card_name}' não encontrado. Verifique o nome com get_cards."
 
+    today = _now_br()
+    today_str = today.strftime("%Y-%m-%d")
+    card_id = card[0]
+    current_month = today.strftime("%Y-%m")
+
+    # Zera opening_cents e registra data de pagamento
     cur.execute(
         "UPDATE credit_cards SET current_bill_opening_cents=0, last_bill_paid_at=? WHERE id=?",
-        (_now_br().isoformat(), card[0])
+        (today_str, card_id)
     )
+
+    # Marca a bill de fatura como paga na tabela bills
+    card_bill_ref = f"card_{card_id}"
+    cur.execute(
+        "UPDATE bills SET paid = 1, paid_at = ? WHERE user_id = ? AND recurring_id = ? AND due_date LIKE ? AND paid = 0",
+        (today_str, user_id, card_bill_ref, f"{current_month}%"),
+    )
+
     conn.commit()
     conn.close()
-    return f"Fatura do {card[1]} zerada! Novo ciclo iniciado."
+    return f"✅ Fatura do *{card[1]}* paga! Ciclo zerado."
 
 
 @tool
@@ -2744,6 +2764,54 @@ def pay_bill(
                 )
                 matched_bill = (bill_id, r_name, r_amt, due, r_cat, r_id)
 
+    # Se mencionou "fatura" e não achou bill, busca direto no cartão
+    is_fatura = any(w in name_lower for w in ("fatura", "cartão", "cartao", "card"))
+    if is_fatura and (not matched_bill or best_score < 3):
+        cur.execute(
+            "SELECT id, name, due_day, current_bill_opening_cents, last_bill_paid_at FROM credit_cards WHERE user_id = ? AND due_day > 0",
+            (user_id,),
+        )
+        for c_row in cur.fetchall():
+            c_id, c_name, c_due_day, c_opening, c_last_paid = c_row
+            c_score = 0
+            c_name_lower = c_name.lower()
+            for word in name_lower.split():
+                if len(word) >= 3 and word in c_name_lower:
+                    c_score += 3
+            if c_score > best_score:
+                best_score = c_score
+                # Calcula fatura real
+                card_bill_ref = f"card_{c_id}"
+                if c_last_paid:
+                    cur.execute(
+                        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at >= ?",
+                        (user_id, c_id, c_last_paid),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+                        (user_id, c_id, f"{current_month}%"),
+                    )
+                card_spent = cur.fetchone()[0]
+                fatura_total = card_spent + (c_opening or 0)
+                # Cria ou atualiza bill
+                due = f"{current_month}-{c_due_day:02d}"
+                bill_id = str(uuid.uuid4())
+                cur.execute(
+                    "SELECT id FROM bills WHERE user_id = ? AND recurring_id = ? AND due_date LIKE ? AND paid = 0",
+                    (user_id, card_bill_ref, f"{current_month}%"),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    bill_id = existing[0]
+                    cur.execute("UPDATE bills SET amount_cents = ? WHERE id = ?", (fatura_total, bill_id))
+                else:
+                    cur.execute(
+                        "INSERT INTO bills (id, user_id, name, amount_cents, due_date, category, recurring_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (bill_id, user_id, f"Fatura {c_name}", fatura_total, due, "Cartão", card_bill_ref),
+                    )
+                matched_bill = (bill_id, f"Fatura {c_name}", fatura_total, due, "Cartão", card_bill_ref)
+
     # Define valor e categoria
     if matched_bill:
         b_id, b_name, b_amt, b_due, b_cat, b_rec_id = matched_bill
@@ -2837,28 +2905,48 @@ def get_bills(user_phone: str, month: str = "") -> str:
 
     # Auto-gera bills a partir de faturas de cartão de crédito
     cur.execute(
-        "SELECT id, name, due_day, current_bill_opening_cents FROM credit_cards WHERE user_id = ? AND due_day > 0",
+        "SELECT id, name, due_day, current_bill_opening_cents, last_bill_paid_at FROM credit_cards WHERE user_id = ? AND due_day > 0",
         (user_id,),
     )
     cards = cur.fetchall()
-    for card_id, card_name, due_day, bill_cents in cards:
-        # Calcula valor da fatura: gastos no cartão este mês + opening balance
+    for card_row in cards:
+        card_id, card_name, due_day = card_row[0], card_row[1], card_row[2]
+        bill_cents = card_row[3] or 0
+        last_paid = card_row[4] if len(card_row) > 4 else None
+
+        card_bill_ref = f"card_{card_id}"
+        due = f"{month}-{due_day:02d}"
+
+        # Verifica se a fatura já foi paga este mês
         cur.execute(
-            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
-            (user_id, card_id, f"{month}%"),
+            "SELECT id, paid FROM bills WHERE user_id = ? AND recurring_id = ? AND due_date LIKE ? AND paid = 1",
+            (user_id, card_bill_ref, f"{month}%"),
         )
+        already_paid = cur.fetchone()
+        if already_paid:
+            # Fatura já paga — não recalcular, preservar
+            continue
+
+        # Calcula valor da fatura: gastos no cartão desde último pagamento + opening balance
+        if last_paid:
+            cur.execute(
+                "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at >= ?",
+                (user_id, card_id, last_paid),
+            )
+        else:
+            cur.execute(
+                "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+                (user_id, card_id, f"{month}%"),
+            )
         card_spent = cur.fetchone()[0]
-        fatura_total = card_spent + (bill_cents or 0)
+        fatura_total = card_spent + bill_cents
         if fatura_total > 0:
-            card_bill_ref = f"card_{card_id}"
-            due = f"{month}-{due_day:02d}"
             cur.execute(
                 "SELECT id, amount_cents FROM bills WHERE user_id = ? AND recurring_id = ? AND due_date LIKE ?",
                 (user_id, card_bill_ref, f"{month}%"),
             )
             existing = cur.fetchone()
             if existing:
-                # Atualiza valor se mudou
                 if existing[1] != fatura_total:
                     cur.execute("UPDATE bills SET amount_cents = ? WHERE id = ?", (fatura_total, existing[0]))
             else:
@@ -3187,13 +3275,20 @@ def get_card_statement(user_phone: str, card_name: str, month: str = "") -> str:
     if closing_day > 0 and due_day > 0:
         lines.append(f"📅 Fecha dia *{closing_day}* | Vence dia *{due_day}*")
 
-    # Fatura estimada (gastos + saldo anterior)
-    total_card = sum(r[2] for r in rows)
-    fatura = total_card + (opening_cents or 0)
+    # Fatura estimada — só gastos APÓS último pagamento + saldo anterior
+    if last_paid:
+        # Filtra apenas gastos após pagamento da última fatura
+        fatura_rows = [r for r in rows if r[3] >= last_paid[:10]]
+        fatura_spent = sum(r[2] for r in fatura_rows)
+    else:
+        fatura_spent = sum(r[2] for r in rows)
+    fatura = fatura_spent + (opening_cents or 0)
     if opening_cents and opening_cents > 0:
-        lines.append(f"📊 Fatura estimada: *R${fatura/100:,.2f}* (R${total_card/100:,.2f} gastos + R${opening_cents/100:,.2f} saldo anterior)".replace(",", "."))
-    elif total_card > 0:
-        lines.append(f"📊 Fatura estimada: *R${fatura/100:,.2f}*".replace(",", "."))
+        lines.append(f"📊 Fatura atual: *R${fatura/100:,.2f}* (R${fatura_spent/100:,.2f} gastos + R${opening_cents/100:,.2f} saldo anterior)".replace(",", "."))
+    elif fatura_spent > 0:
+        lines.append(f"📊 Fatura atual: *R${fatura/100:,.2f}*".replace(",", "."))
+    elif fatura == 0:
+        lines.append("📊 Fatura atual: *R$0,00* ✨")
 
     # Limite
     if limit_cents and limit_cents > 0:
