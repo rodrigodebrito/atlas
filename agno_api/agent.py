@@ -103,6 +103,7 @@ def _init_sqlite_tables():
             closing_day INTEGER NOT NULL,
             due_day INTEGER NOT NULL,
             limit_cents INTEGER DEFAULT 0,
+            available_limit_cents INTEGER DEFAULT NULL,
             current_bill_opening_cents INTEGER DEFAULT 0,
             last_bill_paid_at TEXT DEFAULT NULL,
             created_at TEXT DEFAULT (datetime('now'))
@@ -150,6 +151,7 @@ def _init_sqlite_tables():
         "ALTER TABLE transactions ADD COLUMN card_id TEXT DEFAULT NULL",
         "ALTER TABLE transactions ADD COLUMN installment_group_id TEXT DEFAULT NULL",
         "ALTER TABLE transactions ADD COLUMN import_source TEXT DEFAULT NULL",
+        "ALTER TABLE credit_cards ADD COLUMN available_limit_cents INTEGER DEFAULT NULL",
     ]:
         try:
             conn.execute(migration)
@@ -266,6 +268,7 @@ def _init_postgres_tables():
             closing_day INTEGER NOT NULL,
             due_day INTEGER NOT NULL,
             limit_cents INTEGER DEFAULT 0,
+            available_limit_cents INTEGER DEFAULT NULL,
             current_bill_opening_cents INTEGER DEFAULT 0,
             last_bill_paid_at TEXT DEFAULT NULL,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -314,6 +317,7 @@ def _init_postgres_tables():
         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS card_id TEXT DEFAULT NULL",
         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS installment_group_id TEXT DEFAULT NULL",
         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS import_source TEXT DEFAULT NULL",
+        "ALTER TABLE credit_cards ADD COLUMN IF NOT EXISTS available_limit_cents INTEGER DEFAULT NULL",
     ]:
         try:
             cur.execute(migration)
@@ -685,6 +689,18 @@ def save_transaction(
             (tx_id, user_id, transaction_type, amount_cents, total_amount_cents,
              installments, 1, category, merchant, payment_method, notes, now, card_id),
         )
+    # --- Reduz limite disponível do cartão se aplicável ---
+    if card_id and transaction_type == "EXPENSE":
+        total_charged = total_amount_cents if installments > 1 else amount_cents
+        try:
+            cur.execute("SELECT available_limit_cents FROM credit_cards WHERE id = ?", (card_id,))
+            avail_row = cur.fetchone()
+            if avail_row and avail_row[0] is not None:
+                new_avail = max(0, avail_row[0] - total_charged)
+                cur.execute("UPDATE credit_cards SET available_limit_cents = ? WHERE id = ?", (new_avail, card_id))
+        except Exception:
+            pass
+
     # --- Auto-aprendizado: salva merchant→categoria + merchant→cartão ---
     if merchant and category and transaction_type == "EXPENSE":
         merchant_key = merchant.upper().strip()
@@ -2256,8 +2272,9 @@ def _get_user_id(cur, user_phone: str):
 
 
 def _find_card(cur, user_id: str, card_name: str):
-    """Busca cartão por nome (case-insensitive, parcial)."""
-    cur.execute("SELECT id, name, closing_day, due_day, limit_cents, current_bill_opening_cents, last_bill_paid_at FROM credit_cards WHERE user_id = ?", (user_id,))
+    """Busca cartão por nome (case-insensitive, parcial).
+    Returns: (id, name, closing_day, due_day, limit_cents, opening_cents, last_bill_paid_at, available_limit_cents)"""
+    cur.execute("SELECT id, name, closing_day, due_day, limit_cents, current_bill_opening_cents, last_bill_paid_at, available_limit_cents FROM credit_cards WHERE user_id = ?", (user_id,))
     cards = cur.fetchall()
     name_lower = card_name.lower()
     for card in cards:
@@ -2340,12 +2357,19 @@ def register_card(
 
 
 @tool
-def update_card_limit(user_phone: str, card_name: str, limit: float) -> str:
+def update_card_limit(user_phone: str, card_name: str, limit: float, is_available: bool = False) -> str:
     """
-    Atualiza o limite total de um cartão de crédito.
-    Use quando: "limite do Nubank é 5000", "atualiza limite do Inter pra 8000", "meu limite do Caixa é 10000".
+    Atualiza limite do cartão de crédito.
+
+    IMPORTANTE — distinguir:
+    - "limite do Nubank é 5000" → limit=5000, is_available=False (limite TOTAL)
+    - "disponível no Nubank é 2000" → limit=2000, is_available=True (limite DISPONÍVEL)
+    - "tenho 3000 disponível no Inter" → limit=3000, is_available=True
+    - "limite de 6100 mas disponível 2023" → chamar 2x: limit=6100 + limit=2023 is_available=True
+
     card_name: nome do cartão
-    limit: limite total em reais
+    limit: valor em reais
+    is_available: True = seta limite disponível, False = seta limite total
     """
     conn = _get_conn()
     cur = conn.cursor()
@@ -2359,12 +2383,19 @@ def update_card_limit(user_phone: str, card_name: str, limit: float) -> str:
         conn.close()
         return f"Cartão '{card_name}' não encontrado."
 
-    limit_cents = round(limit * 100)
-    cur.execute("UPDATE credit_cards SET limit_cents = ? WHERE id = ?", (limit_cents, card[0]))
-    conn.commit()
-    conn.close()
+    value_cents = round(limit * 100)
+    card_id, card_name_db = card[0], card[1]
 
-    return f"Limite do *{card[1]}* atualizado para *R${limit:,.2f}*.".replace(",", ".")
+    if is_available:
+        cur.execute("UPDATE credit_cards SET available_limit_cents = ? WHERE id = ?", (value_cents, card_id))
+        conn.commit()
+        conn.close()
+        return f"Disponível do *{card_name_db}* atualizado para *R${limit:,.2f}*.".replace(",", ".")
+    else:
+        cur.execute("UPDATE credit_cards SET limit_cents = ? WHERE id = ?", (value_cents, card_id))
+        conn.commit()
+        conn.close()
+        return f"Limite do *{card_name_db}* atualizado para *R${limit:,.2f}*.".replace(",", ".")
 
 
 @tool
@@ -2381,7 +2412,7 @@ def get_cards(user_phone: str) -> str:
         return "Nenhum cartão cadastrado."
 
     cur.execute(
-        "SELECT id, name, closing_day, due_day, limit_cents, current_bill_opening_cents, last_bill_paid_at FROM credit_cards WHERE user_id = ?",
+        "SELECT id, name, closing_day, due_day, limit_cents, current_bill_opening_cents, last_bill_paid_at, available_limit_cents FROM credit_cards WHERE user_id = ?",
         (user_id,)
     )
     cards = cur.fetchall()
@@ -2392,7 +2423,10 @@ def get_cards(user_phone: str) -> str:
 
     today = _now_br()
     lines = [f"💳 Seus cartões ({today.strftime('%d/%m/%Y')}):"]
-    for card_id, name, closing_day, due_day, limit_cents, opening_cents, last_paid in cards:
+    for card_row in cards:
+        card_id, name, closing_day, due_day, limit_cents, opening_cents, last_paid = card_row[:7]
+        available_cents = card_row[7] if len(card_row) > 7 else None
+
         # Calcula período da fatura atual
         period_start = _bill_period_start(closing_day)
         if last_paid and last_paid > period_start:
@@ -2407,20 +2441,32 @@ def get_cards(user_phone: str) -> str:
 
         new_purchases = row[0] or 0
         bill_total = (opening_cents or 0) + new_purchases
-        available = (limit_cents or 0) - bill_total
 
         # Dias para fechar/vencer
-        if today.day < closing_day:
-            days_to_close = closing_day - today.day
+        if closing_day and closing_day > 0:
+            if today.day < closing_day:
+                days_to_close = closing_day - today.day
+            else:
+                days_to_close = (30 - today.day) + closing_day
+            close_str = f" (fecha em {days_to_close} dias — dia {closing_day})"
         else:
-            # Próximo mês
-            days_to_close = (30 - today.day) + closing_day
+            close_str = ""
 
-        limit_str = f" | Limite: R${limit_cents/100:.0f}" if limit_cents else ""
-        avail_str = f" | Disponível: R${available/100:.0f}" if limit_cents else ""
+        # Limite e disponível
+        if available_cents is not None:
+            limit_str = f" | Limite: R${limit_cents/100:.0f}" if limit_cents else ""
+            avail_str = f" | Disponível: R${available_cents/100:.0f}"
+        elif limit_cents and limit_cents > 0:
+            available = limit_cents - bill_total
+            limit_str = f" | Limite: R${limit_cents/100:.0f}"
+            avail_str = f" | Disponível: R${available/100:.0f}"
+        else:
+            limit_str = ""
+            avail_str = ""
+
         lines.append(
             f"\n💳 {name}\n"
-            f"   Fatura: R${bill_total/100:.2f} (fecha em {days_to_close} dias — dia {closing_day}){limit_str}{avail_str}\n"
+            f"   Fatura: R${bill_total/100:.2f}{close_str}{limit_str}{avail_str}\n"
             f"   Vencimento: dia {due_day}"
         )
 
@@ -2449,13 +2495,38 @@ def close_bill(user_phone: str, card_name: str) -> str:
     today = _now_br()
     today_str = today.strftime("%Y-%m-%d")
     card_id = card[0]
+    opening_cents = card[5] or 0
+    available_cents = card[7] if len(card) > 7 else None
     current_month = today.strftime("%Y-%m")
+
+    # Calcula valor da fatura que está sendo paga (para restaurar disponível)
+    last_paid = card[6]
+    if last_paid:
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at >= ?",
+            (user_id, card_id, last_paid),
+        )
+    else:
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+            (user_id, card_id, f"{current_month}%"),
+        )
+    fatura_spent = cur.fetchone()[0]
+    fatura_total = fatura_spent + opening_cents
 
     # Zera opening_cents e registra data de pagamento
     cur.execute(
         "UPDATE credit_cards SET current_bill_opening_cents=0, last_bill_paid_at=? WHERE id=?",
         (today_str, card_id)
     )
+
+    # Restaura limite disponível se rastreado
+    if available_cents is not None:
+        new_avail = available_cents + fatura_total
+        limit_cents = card[4] or 0
+        if limit_cents > 0:
+            new_avail = min(new_avail, limit_cents)
+        cur.execute("UPDATE credit_cards SET available_limit_cents = ? WHERE id = ?", (new_avail, card_id))
 
     # Marca a bill de fatura como paga na tabela bills
     card_bill_ref = f"card_{card_id}"
@@ -2466,7 +2537,7 @@ def close_bill(user_phone: str, card_name: str) -> str:
 
     conn.commit()
     conn.close()
-    return f"✅ Fatura do *{card[1]}* paga! Ciclo zerado."
+    return f"✅ Fatura do *{card[1]}* paga (R${fatura_total/100:,.2f})! Ciclo zerado.".replace(",", ".")
 
 
 @tool
@@ -2844,10 +2915,19 @@ def pay_bill(
             "UPDATE bills SET paid = 1, paid_at = ?, transaction_id = ? WHERE id = ?",
             (today_str, tx_id, b_id),
         )
-        # Se é fatura de cartão, zera o opening balance
+        # Se é fatura de cartão, zera o opening balance e restaura disponível
         if b_rec_id and str(b_rec_id).startswith("card_"):
             real_card_id = b_rec_id.replace("card_", "")
-            cur.execute("UPDATE credit_cards SET current_bill_opening_cents = 0, last_bill_paid_at = ? WHERE id = ?", (today_str, real_card_id))
+            # Restaura limite disponível
+            cur.execute("SELECT available_limit_cents, limit_cents FROM credit_cards WHERE id = ?", (real_card_id,))
+            card_limits = cur.fetchone()
+            if card_limits and card_limits[0] is not None:
+                new_avail = card_limits[0] + amount_cents
+                if card_limits[1] and card_limits[1] > 0:
+                    new_avail = min(new_avail, card_limits[1])
+                cur.execute("UPDATE credit_cards SET current_bill_opening_cents = 0, last_bill_paid_at = ?, available_limit_cents = ? WHERE id = ?", (today_str, new_avail, real_card_id))
+            else:
+                cur.execute("UPDATE credit_cards SET current_bill_opening_cents = 0, last_bill_paid_at = ? WHERE id = ?", (today_str, real_card_id))
         result_parts.append(f"✅ *{b_name}* — {amt_fmt} pago!")
     else:
         result_parts.append(f"✅ *{name}* — {amt_fmt} pago!")
@@ -3086,7 +3166,7 @@ def get_next_bill(user_phone: str, card_name: str) -> str:
         conn.close()
         return f"Cartão '{card_name}' não encontrado. Use get_cards para ver seus cartões."
 
-    card_id, name, closing_day, due_day, limit_cents, opening_cents, last_paid = card
+    card_id, name, closing_day, due_day, limit_cents, opening_cents, last_paid = card[:7]
 
     today = _now_br()
 
@@ -3207,7 +3287,8 @@ def get_card_statement(user_phone: str, card_name: str, month: str = "") -> str:
             return f"Cartão '{card_name}' não encontrado. Seus cartões: {', '.join(names)}"
         return f"Cartão '{card_name}' não encontrado. Nenhum cartão cadastrado."
 
-    card_id, name, closing_day, due_day, limit_cents, opening_cents, last_paid = card
+    card_id, name, closing_day, due_day, limit_cents, opening_cents, last_paid = card[:7]
+    available_cents = card[7] if len(card) > 7 else None
 
     today = _now_br()
     if not month:
@@ -3272,12 +3353,9 @@ def get_card_statement(user_phone: str, card_name: str, month: str = "") -> str:
 
     # Info do cartão
     lines.append("")
-    if closing_day > 0 and due_day > 0:
-        lines.append(f"📅 Fecha dia *{closing_day}* | Vence dia *{due_day}*")
 
     # Fatura estimada — só gastos APÓS último pagamento + saldo anterior
     if last_paid:
-        # Filtra apenas gastos após pagamento da última fatura
         fatura_rows = [r for r in rows if r[3] >= last_paid[:10]]
         fatura_spent = sum(r[2] for r in fatura_rows)
     else:
@@ -3287,17 +3365,64 @@ def get_card_statement(user_phone: str, card_name: str, month: str = "") -> str:
         lines.append(f"📊 Fatura atual: *R${fatura/100:,.2f}* (R${fatura_spent/100:,.2f} gastos + R${opening_cents/100:,.2f} saldo anterior)".replace(",", "."))
     elif fatura_spent > 0:
         lines.append(f"📊 Fatura atual: *R${fatura/100:,.2f}*".replace(",", "."))
-    elif fatura == 0:
+    else:
         lines.append("📊 Fatura atual: *R$0,00* ✨")
 
-    # Limite
-    if limit_cents and limit_cents > 0:
+    # Limite e disponível
+    if available_cents is not None and available_cents >= 0:
+        # Disponível rastreado pelo usuário (mais preciso — inclui parcelas externas)
+        usado = (limit_cents or 0) - available_cents
+        if limit_cents and limit_cents > 0:
+            pct_usado = usado / limit_cents * 100
+            lines.append(f"💰 Limite: R${limit_cents/100:,.2f} | Usado: R${usado/100:,.2f} | Disponível: *R${available_cents/100:,.2f}* ({pct_usado:.0f}% usado)".replace(",", "."))
+        else:
+            lines.append(f"💰 Disponível: *R${available_cents/100:,.2f}*".replace(",", "."))
+    elif limit_cents and limit_cents > 0:
+        # Fallback: calcula disponível = limite - fatura atual
         disponivel = limit_cents - fatura
         pct_usado = fatura / limit_cents * 100
         lines.append(f"💰 Limite: R${limit_cents/100:,.2f} | Disponível: *R${disponivel/100:,.2f}* ({pct_usado:.0f}% usado)".replace(",", "."))
     else:
         lines.append("")
-        lines.append(f'_Dica: informe o limite do seu cartão para ver o disponível. Ex: "limite do {name} é 5000"_')
+        lines.append(f'_Dica: informe o limite e o disponível do seu cartão._')
+        lines.append(f'_Ex: "limite do {name} é 5000" ou "disponível no {name} é 2000"_')
+
+    # Fechamento, vencimento e melhor dia de compra
+    if closing_day > 0 and due_day > 0:
+        lines.append("")
+        lines.append(f"📅 Fecha dia *{closing_day}* | Vence dia *{due_day}*")
+
+        # Melhor dia de compra = dia seguinte ao fechamento (máximo tempo até pagar)
+        melhor_dia = closing_day + 1 if closing_day < 28 else 1
+        lines.append(f"🛒 Melhor dia de compra: *{melhor_dia}* (dia após fechamento)")
+
+        # Data de pagamento da fatura atual
+        if today.day <= closing_day:
+            # Fatura fecha este mês, paga no due_day deste mês ou próximo
+            if due_day > closing_day:
+                pay_m, pay_y = today.month, today.year
+            else:
+                pay_m = today.month + 1 if today.month < 12 else 1
+                pay_y = today.year if today.month < 12 else today.year + 1
+        else:
+            # Fatura já fechou, paga no due_day deste mês ou próximo
+            if due_day > closing_day:
+                pay_m, pay_y = today.month, today.year
+            else:
+                pay_m = today.month + 1 if today.month < 12 else 1
+                pay_y = today.year if today.month < 12 else today.year + 1
+        pay_day = min(due_day, calendar.monthrange(pay_y, pay_m)[1])
+        from datetime import date as _date
+        pay_date = _date(pay_y, pay_m, pay_day)
+        days_to_pay = (pay_date - today.date() if hasattr(today, 'date') else pay_date - today).days
+        if days_to_pay < 0:
+            # Já passou o vencimento deste ciclo, próximo
+            pay_m2 = pay_m + 1 if pay_m < 12 else 1
+            pay_y2 = pay_y if pay_m < 12 else pay_y + 1
+            pay_day2 = min(due_day, calendar.monthrange(pay_y2, pay_m2)[1])
+            pay_date = _date(pay_y2, pay_m2, pay_day2)
+            days_to_pay = (pay_date - (today.date() if hasattr(today, 'date') else today)).days
+        lines.append(f"💵 Pagamento: *{pay_date.strftime('%d/%m')}* (em {days_to_pay} dias)")
 
     return "\n".join(lines)
 
@@ -5266,7 +5391,9 @@ LISTA DETALHADA (só quando pedir "transações" ou "lista" ou "extrato" explici
 "a fatura do ML em abril é 887" / "está errado, a fatura é 887" → set_future_bill imediatamente, sem pedir confirmação
 "paguei o Nubank" → close_bill(user_phone, card_name="Nubank")
 "Nubank fecha 25 vence 10" → register_card(user_phone, name="Nubank", closing_day=25, due_day=10)
-"limite do Nubank é 5000" / "atualiza limite do Inter pra 8000" → update_card_limit(user_phone, card_name="Nubank", limit=5000)
+"limite do Nubank é 5000" → update_card_limit(user_phone, card_name="Nubank", limit=5000)
+"disponível no Nubank é 2000" / "tenho 2000 disponível no Nubank" → update_card_limit(user_phone, card_name="Nubank", limit=2000, is_available=True)
+"limite de 6100 mas disponível 2023" → chamar 2x: update_card_limit(limit=6100) + update_card_limit(limit=2023, is_available=True)
 "extrato do Nubank" / "como tá meu cartão da Caixa" / "gastos no Nubank" → get_card_statement(user_phone, card_name="Nubank")
 "próxima fatura do Inter" → get_next_bill(user_phone, card_name="Inter")
 Cartão criado automaticamente em save_transaction com card_name — nunca peça cadastro antecipado.
