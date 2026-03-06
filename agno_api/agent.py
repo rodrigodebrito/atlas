@@ -770,9 +770,10 @@ def save_transaction(
                 next_bill_warning = f"\n📋 Fatura fecha em *{days_to_close} dia(s)* (dia {card_closing_day}) — paga em *{card_due_day:02d}/{months_pt[_pay_m]}*"
         elif card_is_new:
             ask_closing = (
-                f"\n\nPara rastrear sua fatura certinho, me diz:\n"
-                f"📅 Qual o fechamento e vencimento do {card_display_name}?\n"
-                f"Ex: _\"fecha 25 vence 10\"_ — prometo que não pergunto mais 😄"
+                f"\n\n📋 *Configurar {card_display_name}:*\n"
+                f"📅 Fechamento e vencimento: _\"fecha 25 vence 10\"_\n"
+                f"💰 Limite e disponível: _\"limite 6100 disponível 2000\"_\n"
+                f"_Pode mandar tudo junto ou aos poucos_"
             )
 
     # Calcula label de data (usa a data da 1ª parcela = base_dt)
