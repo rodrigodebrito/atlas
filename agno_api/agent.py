@@ -457,6 +457,21 @@ def _get_conn():
     return _PGConn(psycopg2.connect(DATABASE_URL))
 
 
+from contextlib import contextmanager
+
+@contextmanager
+def _db():
+    """Context manager que garante conn.close() mesmo em exceções."""
+    conn = _get_conn()
+    try:
+        yield conn, conn.cursor()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _ensure_pending_actions_table(cur):
     """Cria tabela pending_actions se não existir (safe para chamar múltiplas vezes)."""
     if DB_TYPE == "postgres":
@@ -3096,12 +3111,10 @@ def get_card_statement(user_phone: str, card_name: str, month: str = "") -> str:
 
     card = _find_card(cur, user_id, card_name)
     if not card:
+        # Lista cartões disponíveis (reusa mesma conn)
+        cur.execute("SELECT name FROM credit_cards WHERE user_id = ?", (user_id,))
+        names = [r[0] for r in cur.fetchall()]
         conn.close()
-        # Lista cartões disponíveis
-        cur2 = _get_conn().cursor()
-        cur2.execute("SELECT name FROM credit_cards WHERE user_id = ?", (user_id,))
-        names = [r[0] for r in cur2.fetchall()]
-        cur2.connection.close()
         if names:
             return f"Cartão '{card_name}' não encontrado. Seus cartões: {', '.join(names)}"
         return f"Cartão '{card_name}' não encontrado. Nenhum cartão cadastrado."
@@ -5933,18 +5946,32 @@ _HELP_TEXT = """📋 *ATLAS — Manual Rápido*
 from fastapi import Form as _Form
 
 def _strip_trailing_questions(text: str) -> str:
-    """Remove perguntas finais que o LLM insiste em adicionar após ações."""
+    """Remove perguntas/sugestões finais que o LLM insiste em adicionar após ações."""
     import re as _re_sq
     if not text:
         return text
     lines = text.strip().split("\n")
-    # Remove linhas finais que são perguntas (terminam com ?)
-    # mas preserva perguntas legítimas de clarificação (únicas no texto, curtas)
+    # Remove linhas finais que são perguntas ou sugestões não-essenciais
     while lines:
         last = lines[-1].strip()
-        # Linha final é uma pergunta não-essencial?
-        if (last.endswith("?") and len(lines) > 1 and
-            not _re_sq.match(r'^R\$[\d,.]+\s*\?', last)):  # não remove "R$X?" (valor)
+        if not last:
+            lines.pop()
+            continue
+        # Pergunta direta no final (termina com ?)
+        is_question = last.endswith("?") and len(lines) > 1
+        # Sugestão proativa (mesmo sem ?)
+        is_suggestion = bool(_re_sq.match(
+            r'^(quer|gostaria|posso|deseja|precisa|need|want|se precisar|caso queira|'
+            r'alguma d[uú]vida|fique [àa] vontade|estou [àa] disposi[çc][aã]o|'
+            r'me avise|qualquer coisa|pode me perguntar|'
+            r'quer que eu|posso te ajudar|precisa de algo)',
+            last.lower()
+        ))
+        # Preserva clarificações legítimas (única linha, valor ambíguo)
+        is_legit = (len(lines) == 1 or
+                    _re_sq.match(r'^R\$[\d,.]+\s+em\s+qu[eê]\??$', last, _re_sq.IGNORECASE) or
+                    _re_sq.match(r'^[\d,.]+\s+em\s+qu[eê]\??$', last, _re_sq.IGNORECASE))
+        if (is_question or is_suggestion) and not is_legit:
             lines.pop()
         else:
             break
