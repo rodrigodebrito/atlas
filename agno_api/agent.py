@@ -402,7 +402,7 @@ if DB_TYPE == "postgres":
 # ============================================================
 
 def get_model():
-    return OpenAIChat(id="gpt-4.1", api_key=os.getenv("OPENAI_API_KEY"))
+    return OpenAIChat(id="gpt-4.1", api_key=os.getenv("OPENAI_API_KEY"), temperature=0.4, max_tokens=1500)
 
 def get_fast_model():
     return OpenAIChat(id="gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY"))
@@ -589,32 +589,7 @@ def save_transaction(
     card_name: str = "",
     occurred_at: str = "",
 ) -> str:
-    """
-    Salva uma transação financeira no banco de dados.
-    transaction_type: EXPENSE ou INCOME
-    amount: valor da PARCELA em reais (se à vista = valor total). PRESERVE centavos.
-            Ex: "gastei 45" → amount=45, "R$1.200" → amount=1200, "42,54" → amount=42.54, "R$8,90" → amount=8.9
-    installments: número de parcelas (1 = à vista)
-    total_amount: valor TOTAL da compra em reais (preencher se parcelado)
-    card_name: nome do cartão de crédito se usado (ex: "Nubank"). Deixar vazio para débito/PIX/dinheiro.
-    occurred_at: data da transação no formato YYYY-MM-DD. Deixar vazio para hoje.
-                 "ontem" → calcule ontem, "anteontem" → 2 dias atrás, "segunda" → última segunda, etc.
-
-    Categorias EXPENSE: Alimentação | Transporte | Moradia | Saúde | Lazer |
-                        Educação | Assinaturas | Vestuário | Investimento | Pets | Outros
-    Pets: remédio veterinário, consulta vet, ração, petshop, banho/tosa — qualquer gasto com animal
-    Categorias INCOME:  Salário | Freelance | Aluguel Recebido |
-                        Investimentos | Benefício | Venda | Outros
-
-    Exemplos:
-    - "gastei 45 no iFood" → amount=45, installments=1
-    - "gastei ontem 30 no restaurante" → amount=30, occurred_at="2026-03-02" (data de ontem)
-    - "paguei 120 no mercado" → amount=120, installments=1
-    - "paguei 42,54 no mercado" → amount=42.54  ← NUNCA arredonde centavos
-    - "gastei R$8,90 no café" → amount=8.9      ← NUNCA arredonde centavos
-    - "tênis 1200 em 12x no Nubank" → amount=100, installments=12, total_amount=1200, card_name="Nubank"
-    - "notebook 3000 em 6x no Inter" → amount=500, installments=6, total_amount=3000, card_name="Inter"
-    """
+    """Salva transação. amount=valor da PARCELA (centavos preservados). installments=1 à vista. total_amount=total se parcelado. card_name=cartão se crédito. occurred_at=YYYY-MM-DD ou vazio=hoje. Categorias e exemplos no system prompt."""
     # converter reais → centavos
     amount_cents = round(amount * 100)
     total_amount_cents = round(total_amount * 100)
@@ -1432,32 +1407,9 @@ def get_last_transaction(user_phone: str) -> str:
     )
 
 
-@tool(description="""Corrige uma transação do usuário. Pode ser a última OU qualquer outra.
-
-IDENTIFICAÇÃO — como encontrar a transação:
-  Sem find_* → corrige a ÚLTIMA transação (mais recente).
-  find_merchant="Herbalife" → busca pela mais recente com esse merchant.
-  find_date="2026-03-02" → busca pela mais recente nessa data.
-  find_merchant + find_date → busca por merchant + data (mais preciso).
-  find_amount=42.0 → busca por valor (útil quando há ambiguidade).
-  Pode combinar qualquer find_* para refinar a busca.
-
-CORREÇÃO — o que mudar:
-  occurred_at="2026-03-15" → muda a data.
-  amount=150 → muda o valor.
-  merchant="Magazine Luiza" → muda o local.
-  category="Alimentação" → muda a categoria.
-  type_="income" ou "expense" → muda o tipo.
-  installments=10 → muda parcelamento.
-  payment_method="CREDIT" → muda forma de pagamento.
-
-Exemplos:
-  "corrige a Herbalife de 02/03 para 36 reais" → find_merchant="Herbalife", find_date="2026-03-02", amount=36
-  "muda o Restaurante Talentos do dia 04 para Lazer" → find_merchant="Talentos", find_date="2026-03-04", category="Lazer"
-  "esse é dia 15" (logo após lançamento) → occurred_at="2026-03-15" (sem find_*, pega a última)
-
-⚠️ Se o usuário quer mudar a categoria de um ESTABELECIMENTO inteiro (ex: "Talentos é Lazer"),
-use update_merchant_category em vez desta — ela atualiza TODAS as transações do merchant.""")
+@tool(description="""Corrige uma transação. Sem find_*=última. find_merchant/find_date/find_amount para buscar outra.
+Campos: amount, category, merchant, occurred_at (YYYY-MM-DD), type_ (income/expense), installments, payment_method.
+⚠️ Merchant inteiro pertence a categoria → use update_merchant_category.""")
 def update_last_transaction(
     user_phone: str,
     installments: int = 0,
@@ -1663,22 +1615,7 @@ def update_merchant_category(user_phone: str, merchant_query: str, category: str
         return f"ERRO: {str(e)}"
 
 
-@tool(description="""Apaga UMA transação específica. Pode ser a última OU qualquer outra.
-
-IDENTIFICAÇÃO — como encontrar a transação:
-  Sem find_* → apaga a ÚLTIMA transação (mais recente).
-  find_merchant="Herbalife" → busca pela mais recente com esse merchant.
-  find_date="2026-03-02" → busca pela mais recente nessa data.
-  find_merchant + find_date → busca por merchant + data (mais preciso).
-  find_amount=42.0 → busca por valor.
-
-Exemplos:
-  "apaga" / "cancela" / "foi erro" → sem find_* (apaga a última)
-  "apaga a Herbalife do dia 02" → find_merchant="Herbalife", find_date="2026-03-02"
-  "apaga o Restaurante Talentos do dia 04/03" → find_merchant="Talentos", find_date="2026-03-04"
-  "apaga o de 65 reais do dia 02" → find_amount=65, find_date="2026-03-02"
-
-⚠️ Para apagar MÚLTIPLAS transações (todas de um merchant/período), use delete_transactions.""")
+@tool(description="Apaga UMA transação. Sem find_*=última. find_merchant/find_date/find_amount para buscar outra. Múltiplas→use delete_transactions.")
 def delete_last_transaction(
     user_phone: str,
     find_merchant: str = "",
@@ -1741,15 +1678,7 @@ def delete_last_transaction(
         return f"✅ Apagado! R${amount_cents/100:.2f} {category}{merchant_info} removido."
 
 
-@tool(description="""Apaga transações por filtro (merchant, data, período).
-Use quando o usuário pedir para apagar MÚLTIPLAS transações:
-  "apaga todos da Herbalife" → merchant="Herbalife"
-  "apaga todos da Herbalife deste mês" → merchant="Herbalife", month="2026-03"
-  "apaga tudo do dia 02/03" → date="2026-03-02"
-  "apaga todos os gastos do dia 5" → date="2026-03-05"
-  "apaga todas as transações desta semana" → week=True
-⚠️ Sempre passe pelo menos UM filtro (merchant, date, month ou week).
-⚠️ Para apagar apenas a ÚLTIMA transação, use delete_last_transaction.""")
+@tool(description="Apaga MÚLTIPLAS transações por filtro. Fluxo 2 etapas: 1ª confirm=False (lista), 2ª confirm=True (apaga). Filtros: merchant, date (YYYY-MM-DD), month (YYYY-MM), week=True, category. Uma transação só→use delete_last_transaction.")
 def delete_transactions(
     user_phone: str,
     merchant: str = "",
@@ -2051,7 +1980,7 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     return "\n".join(lines)
 
 
-@tool(description="Lista TODAS as transações de um período (dia ou mês). Use SOMENTE quando o usuário pede transações genéricas sem mencionar loja, app ou estabelecimento específico. Exemplos corretos: 'me mostra as transações de hoje', 'extrato de março', 'o que gastei essa semana', 'minhas compras de fevereiro'. NUNCA use quando o usuário mencionar um nome específico (Deville, iFood, Uber, Netflix, etc.) — nesses casos use get_transactions_by_merchant.")
+@tool(description="Lista transações de um período. month=YYYY-MM ou date=YYYY-MM-DD. Nome de loja→use get_transactions_by_merchant. Mês inteiro sem detalhe→use get_month_summary.")
 def get_transactions(user_phone: str, date: str = "", month: str = "") -> str:
     """Lista transações por data ou mês. date=YYYY-MM-DD, month=YYYY-MM."""
     conn = _get_conn()
@@ -2227,7 +2156,7 @@ def get_all_categories_breakdown(user_phone: str, month: str = "") -> str:
     return "\n".join(lines)
 
 
-@tool(description="Filtra transações por nome de estabelecimento, loja, restaurante, app ou serviço. Use SEMPRE que o usuário mencionar um nome específico. Exemplos: 'quanto gastei no Deville?' → merchant_query='Deville'. 'gastos no iFood esse mês' → merchant_query='iFood', month='2026-03'. 'me mostra o Talentos' → merchant_query='Talentos'. 'histórico do Uber' → merchant_query='Uber'. 'Netflix esse mês' → merchant_query='Netflix'. merchant_query = nome do estabelecimento (busca parcial, case-insensitive).")
+@tool(description="Filtra transações por nome de loja/app/serviço. Use quando o usuário mencionar um nome próprio. merchant_query=busca parcial, case-insensitive. month=YYYY-MM opcional.")
 def get_transactions_by_merchant(
     user_phone: str,
     merchant_query: str,
@@ -5453,208 +5382,47 @@ Detecte automaticamente:
 Pergunte APENAS se: "cartão" ou "crédito" + valor ≥ R$200 + sem informar parcelas.
 
 ╔══════════════════════════════════════════════════════════════╗
-║  INTENT → TOOL                                              ║
+║  ROTEAMENTO — REGRAS CRÍTICAS                               ║
 ╚══════════════════════════════════════════════════════════════╝
 
-── REGISTRAR ──────────────────────────────────────────────────
+As tools têm descrições detalhadas. Consulte-as. Aqui só as REGRAS que evitam erros:
 
-Gasto à vista: save_transaction(user_phone, transaction_type="EXPENSE", amount=<R$>, installments=1, category, merchant, payment_method, occurred_at)
-Gasto parcelado: save_transaction(..., amount=<parcela>, installments=<n>, total_amount=<total>)
-  Ex "tênis 1200 em 12x" → amount=100, installments=12, total_amount=1200
-Receita: save_transaction(..., transaction_type="INCOME", amount=<R$>, category)
-Gasto no cartão: adicione card_name="Nubank" — cartão criado automaticamente, não peça cadastro.
+REGISTRAR:
+- 1 gasto = 1 chamada save_transaction. 3 gastos = 3 chamadas.
+- Parcelado: amount=parcela, installments=N, total_amount=total.
+- Cartão: card_name="Nubank" — criado automaticamente.
+- DATA: "ontem"→hoje-1 | "dia X"→YYYY-MM-X | sem data→omitir occurred_at
 
-MÚLTIPLOS GASTOS: 1 gasto = 1 chamada save_transaction. 3 gastos = 3 chamadas.
-DATA: "ontem"→hoje-1 | "anteontem"→hoje-2 | "dia X"→YYYY-MM-X | sem data→omitir occurred_at
-  Múltiplos gastos com data: mesma occurred_at em TODAS as chamadas.
+CONSULTAS — escolha a tool CERTA:
+- MÊS inteiro → get_month_summary (NUNCA get_transactions)
+- SEMANA → get_week_summary
+- HOJE/N DIAS → get_today_total com days=N
+- NOME de loja/app → get_transactions_by_merchant (NUNCA get_today_total)
+- CATEGORIA específica → get_category_breakdown
+- EXTRATO CARTÃO → get_card_statement
+- LISTA DETALHADA (só se pedir "transações"/"lista") → get_transactions
 
-── CONSULTAR PERÍODO ──────────────────────────────────────────
+PAGAMENTOS — SEMPRE pay_bill (NUNCA save_transaction):
+"paguei", "pagamento", "transferi", "quitei" → pay_bill
 
-filter_type: "gastos"/"o que gastei" → EXPENSE | "receitas"/"entradas" → INCOME | resto → ALL
+DIFERENCIE:
+- Gasto fixo MENSAL → register_recurring
+- Conta AVULSA / boleto → register_bill
+- Já pagou → pay_bill
 
-MÊS: "como tá meu mês?" / "resumo do mês" / "me mostra o mês" / "mês de fevereiro" / "como foi março" / "me mostra fevereiro" → get_month_summary(user_phone, month="YYYY-MM", filter_type="ALL")
-  ⚠️ REGRA: qualquer pedido sobre um MÊS inteiro (sem pedir "transações" ou "lista" explicitamente) → get_month_summary. NUNCA get_transactions para "me mostra o mês".
-SEMANA: "como foi minha semana?" → get_week_summary(user_phone, filter_type="ALL")
-HOJE/N DIAS: "gastos de hoje" → get_today_total(filter_type="EXPENSE", days=1)
-  "movimentações de hoje" → get_today_total(filter_type="ALL", days=1)
-  "últimos 3 dias" → get_today_total(filter_type="EXPENSE", days=3)
-  "ontem" → get_today_total(filter_type="EXPENSE", days=2)
-  ⚠️ Qualquer "hoje"/"ontem"/"últimos N dias" → get_today_total com days=N, NUNCA get_transactions.
+APAGAR:
+- "apaga" sozinho → delete_last_transaction
+- "apaga o X do dia Y" → delete_last_transaction com find_*
+- "apaga todos" + filtro → delete_transactions (2 ETAPAS: listar → confirmar com confirm=True)
 
-── FILTROS ────────────────────────────────────────────────────
+CORRIGIR:
+- "errei"/"na verdade"/"era dia X" → update_last_transaction (NUNCA nova transação)
+- Merchant pertence a categoria → update_merchant_category (atualiza tudo + memoriza)
 
-POR ESTABELECIMENTO — qualquer menção a nome próprio de loja/app/serviço:
-  "quanto gastei no X?" / "me mostra os gastos no X" / "gastos no X" / "gastos com X"
-  "o que comprei na X?" / "mostra o X" / "X esse mês" / "X essa semana"
-  "histórico do X" / "transações no X" / "compras no X" / "quantas vezes no X?"
-  REGRA: nome próprio (Deville, iFood, Uber, Herbalife, Talentos, Nubank, Amazon...) →
-    SEMPRE get_transactions_by_merchant — NUNCA get_today_total, NUNCA get_transactions
-  → get_transactions_by_merchant(user_phone, merchant_query="<nome>")
-  → Com mês: get_transactions_by_merchant(user_phone, merchant_query="<nome>", month="YYYY-MM")
-
-POR CATEGORIA: "onde gastei em X?" / "detalhes de Alimentação"
-  → get_category_breakdown(user_phone, category="<categoria>")
-
-EXTRATO DE CARTÃO: "extrato do Nubank" / "como tá meu cartão da Caixa" / "gastos no Nubank" / "fatura detalhada do X"
-  → get_card_statement(user_phone, card_name="<nome>")
-  → Com mês: get_card_statement(user_phone, card_name="<nome>", month="YYYY-MM")
-
-LISTA DETALHADA (só quando pedir "transações" ou "lista" ou "extrato" explicitamente):
-  "todas as transações de março" / "transações do dia 10" / "lista de gastos de fev" / "extrato de março"
-  → get_transactions(user_phone, month="YYYY-MM") ou get_transactions(user_phone, date="YYYY-MM-DD")
-  ⚠️ NÃO use get_transactions para "me mostra o mês" / "como foi março" → use get_month_summary
-
-── ANÁLISES ───────────────────────────────────────────────────
-
-"posso comprar X?" / "tenho dinheiro pra Y?" → can_i_buy(user_phone, amount=<R$>, description="<item>")
-"comparado ao mês passado" / "como evoluí?" → get_month_comparison(user_phone)
-"vai sobrar?" / "vai faltar?" → will_i_have_leftover(user_phone)
-"como estou no ciclo?" / "quanto tenho por dia?" → get_salary_cycle(user_phone)
-"qual meu score?" / "saúde financeira" → get_financial_score(user_phone)
-
-── METAS ──────────────────────────────────────────────────────
-
-"quero guardar X pra Y" → create_goal(user_phone, name="<nome>", target_amount=<R$>)
-"quero reserva de emergência" → create_goal(..., is_emergency_fund=True)
-"ver minhas metas" → get_goals(user_phone)
-"guardei X pra meta Y" → add_to_goal(user_phone, goal_name="<nome parcial>", amount=<R$>)
-
-── CARTÕES ────────────────────────────────────────────────────
-
-"fatura do Nubank" / "meus cartões" → get_cards(user_phone)
-"minha fatura do Nubank está em 1.300" → set_card_bill(user_phone, card_name="Nubank", amount=1300)
-"em abril tenho 400 no Nubank" → set_future_bill(user_phone, card_name="Nubank", bill_month="2026-04", amount=400)
-"a fatura do ML em abril é 887" / "está errado, a fatura é 887" → set_future_bill imediatamente, sem pedir confirmação
-"paguei o Nubank" → close_bill(user_phone, card_name="Nubank")
-"Nubank fecha 25 vence 10" → register_card(user_phone, name="Nubank", closing_day=25, due_day=10)
-"limite do Nubank é 5000" → update_card_limit(user_phone, card_name="Nubank", limit=5000)
-"disponível no Nubank é 2000" / "tenho 2000 disponível no Nubank" → update_card_limit(user_phone, card_name="Nubank", limit=2000, is_available=True)
-"limite de 6100 mas disponível 2023" → chamar 2x: update_card_limit(limit=6100) + update_card_limit(limit=2023, is_available=True)
-"extrato do Nubank" / "como tá meu cartão da Caixa" / "gastos no Nubank" → get_card_statement(user_phone, card_name="Nubank")
-"próxima fatura do Inter" → get_next_bill(user_phone, card_name="Inter")
-Cartão criado automaticamente em save_transaction com card_name — nunca peça cadastro antecipado.
-
-── GASTOS FIXOS (mensais recorrentes) ─────────────────────────
-
-"aluguel 1500 todo dia 5" → register_recurring(user_phone, name="Aluguel", amount=1500, category="Moradia", day_of_month=5)
-"quais meus gastos fixos?" → get_recurring(user_phone)
-"cancelei a Netflix" → deactivate_recurring(user_phone, name="Netflix")
-"minhas parcelas" → get_installments_summary(user_phone)
-
-── CONTAS A PAGAR / BOLETOS / COMPROMISSOS ────────────────────
-
-⚠️ DIFERENCIE:
-- Gasto fixo MENSAL (todo mês) → register_recurring
-- Conta AVULSA / boleto / fatura específica → register_bill
-- PAGAMENTO (já pagou algo) → pay_bill
-
-"tenho um boleto de 600 no dia 15" → register_bill(user_phone, name="Boleto", amount=600, due_date="2026-03-15")
-"fatura do Mercado Pago 2337 vence dia 10" → register_bill(user_phone, name="Fatura Mercado Pago", amount=2337, due_date="2026-03-10")
-"IPTU 1200 vence dia 20" → register_bill(user_phone, name="IPTU", amount=1200, due_date="2026-03-20", category="Moradia")
-
-"paguei o boleto de 600" → pay_bill(user_phone, name="boleto", amount=600)
-"pagamento fatura Mercado Pago 2337" → pay_bill(user_phone, name="Fatura Mercado Pago", amount=2337)
-"paguei o aluguel" → pay_bill(user_phone, name="aluguel")
-"paguei a Netflix" → pay_bill(user_phone, name="Netflix")
-"transferi 1500 pro aluguel" → pay_bill(user_phone, name="aluguel", amount=1500, payment_method="TRANSFER")
-
-⚠️ VERBOS DE PAGAMENTO → SEMPRE use pay_bill (NUNCA save_transaction):
-"paguei", "pagamento", "pago", "transferi", "quitei", "depositei", "retira", "retirei"
-Esses verbos indicam que o usuário PAGOU uma conta, não fez uma compra.
-
-"minhas contas" / "o que falta pagar" / "contas do mês" → get_bills(user_phone)
-"compromissos futuros" / "o que tenho pra pagar" → get_bills(user_phone)
-"compromissos de abril" → get_bills(user_phone, month="2026-04")
-
-── SALÁRIO / CICLO ────────────────────────────────────────────
-
-"meu salário cai dia X" → set_salary_day(user_phone, salary_day=X)
-"quero lembrete 2 dias antes" → set_reminder_days(user_phone, days_before=2)
-
-── CORREÇÕES ──────────────────────────────────────────────────
-
-APAGAR UMA transação:
-  "apaga" / "cancela" / "foi erro" → delete_last_transaction(user_phone)
-  "apaga a Herbalife do dia 02" → delete_last_transaction(user_phone, find_merchant="Herbalife", find_date="2026-03-02")
-  "apaga o de 65 reais do dia 02" → delete_last_transaction(user_phone, find_amount=65, find_date="2026-03-02")
-  "apaga o Restaurante Talentos do dia 04/03" → delete_last_transaction(user_phone, find_merchant="Talentos", find_date="2026-03-04")
-
-APAGAR MÚLTIPLAS transações (FLUXO DE 2 ETAPAS — OBRIGATÓRIO):
-  1ª etapa: delete_transactions(user_phone, merchant="Herbalife") → SEM confirm → LISTA e pede confirmação
-  2ª etapa: quando o usuário confirmar ("sim", "confirma") → delete_transactions(..., confirm=True) → APAGA
-
-  Exemplos:
-  "apaga todos da Herbalife" → delete_transactions(user_phone, merchant="Herbalife") [confirm=False]
-    → usuário diz "sim" → delete_transactions(user_phone, merchant="Herbalife", confirm=True)
-  "apaga todos da Herbalife deste mês" → delete_transactions(user_phone, merchant="Herbalife", month="2026-03")
-  "apaga tudo de hoje" → delete_transactions(user_phone, date="2026-03-05") ← use a data de hoje
-  "apaga todos os gastos de hoje" → delete_transactions(user_phone, date="2026-03-05")
-  "apaga tudo do dia 02/03" → delete_transactions(user_phone, date="2026-03-02")
-  "apaga tudo desta semana" → delete_transactions(user_phone, week=True)
-  "apaga todos os gastos de alimentação" → delete_transactions(user_phone, category="Alimentação", transaction_type="expense")
-  "apaga os sem descrição" / "apaga todos sem descrição" → delete_transactions(user_phone, merchant="sem descrição")
-
-  ⚠️ NUNCA passe confirm=True na primeira chamada. SEMPRE liste primeiro e peça confirmação.
-  Quando o usuário responder "sim" após a listagem → chame de novo com confirm=True e OS MESMOS filtros.
-
-⚠️ REGRA DE APAGAR:
-  "apaga" sozinho / "apaga a última" → delete_last_transaction (sem find_*)
-  "apaga o/a [X] do dia [Y]" → delete_last_transaction com find_merchant/find_date/find_amount
-  "apaga todos/todas" + filtro → delete_transactions (2 etapas: listar → confirmar)
-
-CORRIGIR UMA transação:
-  "corrige" / "errei" / "na verdade" → update_last_transaction (sem find_* = última)
-  "corrige a Herbalife de 02/03 para 36" → update_last_transaction(find_merchant="Herbalife", find_date="2026-03-02", amount=36)
-  "muda o Talentos do dia 04 para Lazer" → update_last_transaction(find_merchant="Talentos", find_date="2026-03-04", category="Lazer")
-  "esse é dia 15" (logo após lançamento) → update_last_transaction(occurred_at="2026-03-15")
-  "foi 150 não 200" → update_last_transaction(amount=150)
-  "o local era Magazine Luiza" → update_last_transaction(merchant="Magazine Luiza")
-  "era receita" → update_last_transaction(type_="income")
-  installments → recalcula parcela automaticamente (não passe amount junto)
-
-⚠️ REGRA CRÍTICA DE CORREÇÃO:
-  Quando o usuário diz "esse é dia X", "era dia X", "muda pra dia X" → CORREÇÃO, não novo lançamento.
-  SEMPRE use update_last_transaction. NUNCA crie nova transação quando é correção.
-  Se corrigir data E outro campo junto, passe AMBOS na mesma chamada.
-
-RECATEGORIZAR MERCHANT (atualiza TODAS as transações + salva regra para futuras faturas):
-  "HELIO RODRIGUES NAZAR é alimentação" / "muda Talentos pra Lazer" / "X é categoria Y"
-  → update_merchant_category(user_phone, merchant_query="HELIO RODRIGUES NAZAR", category="Alimentação")
-  ⚠️ REGRA: quando o usuário disser que um ESTABELECIMENTO pertence a uma CATEGORIA,
-  use update_merchant_category (atualiza tudo + memoriza), NÃO update_last_transaction.
-
-── AJUDA ──────────────────────────────────────────────────────
-
-"ajuda" / "menu" / "o que você faz?" / "comandos" → responda com menu EXATO abaixo, sem chamar tool:
-
-"📋 *O que o ATLAS faz:*
-
-1️⃣ *Lançar gastos*
-• _"gastei 45 no iFood"_
-• _"tênis 300 em 3x no Nubank"_
-• _"mercado 120 — débito"_
-
-2️⃣ *Receitas*
-• _"recebi 4500 de salário"_
-• _"entrou 1200 de freela"_
-
-3️⃣ *Análises*
-• _"como tá meu mês?"_
-• _"posso comprar um tênis de 200?"_
-• _"vai sobrar até o fim do mês?"_
-
-4️⃣ *Cartões de crédito*
-• _"fatura do Nubank"_
-• _"próxima fatura do Inter"_
-• _"paguei o cartão"_
-
-5️⃣ *Gastos fixos e metas*
-• _"aluguel 1500 todo dia 5"_
-• _"quero guardar 5k pra viagem"_
-
-💡 *Score financeiro:* _"qual meu score?"_
-
-Fale natural — não precisa de comando exato 😊"
+CARTÕES:
+- "limite 6100 disponível 2023" → 2 chamadas: update_card_limit(limit=6100) + update_card_limit(limit=2023, is_available=True)
+- "paguei o Nubank" → close_bill
+- Fatura futura → set_future_bill
 
 ╔══════════════════════════════════════════════════════════════╗
 ║  FORMATOS DE RESPOSTA                                       ║
@@ -5790,17 +5558,7 @@ Antes de enviar qualquer resposta de consulta (filtro, resumo, análise):
    SIM → Errado. Copie os emojis exatamente como vieram da tool.
 """
 
-@tool(description="""Consulta a fatura que o usuário enviou (imagem/PDF) e ainda não importou.
-Use SEMPRE que o usuário mencionar 'fatura', 'esta fatura', 'da fatura', 'no pdf', 'na imagem que mandei' para perguntas sobre transações, categorias ou valores.
-Exemplos de quando usar:
-- 'quais as transações de alimentação desta fatura'
-- 'quanto gastei em transporte na fatura'
-- 'quais são as transações?'
-- 'o que tinha na fatura?'
-- 'me mostra os gastos da fatura'
-- 'qual o total da fatura?'
-Parâmetro category: filtra por categoria específica (ex: 'Alimentação', 'Transporte'). Deixe '' para retornar todas.
-NÃO use get_transactions, get_category_breakdown ou get_month_summary para perguntas sobre 'esta fatura' ou 'a fatura que enviei'.""")
+@tool(description="Consulta fatura pendente (imagem/PDF enviada). Use quando: 'desta fatura', 'no pdf', 'na imagem'. category='' para todas ou 'Alimentação' para filtrar.")
 def get_pending_statement(user_phone: str, category: str = "") -> str:
     """Retorna as transações da fatura pendente, com filtro opcional por categoria."""
     import json as _json_ps
@@ -5859,7 +5617,7 @@ atlas_agent = Agent(
     model=get_model(),
     db=db,
     add_history_to_context=True,
-    num_history_runs=10,
+    num_history_runs=5,
     tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit],
     add_datetime_to_context=True,
     markdown=True,
