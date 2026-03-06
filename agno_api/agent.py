@@ -978,46 +978,93 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     if filter_type == "ALL":
         lines.append(f"{'✅' if balance >= 0 else '⚠️'} Saldo: *R${balance/100:,.2f}*".replace(",", "."))
 
-    # Calcula compromissos restantes do mês (fixos + parcelas futuras) — ANTECIPADO para mostrar no saldo
+    # Calcula compromissos restantes do mês — direto da fonte, sem depender da tabela bills
     pending_commitments = 0
+    commitment_details = []
     try:
         today_day = today.day
-        # Gastos fixos com vencimento restante neste mês
+        # 1) Gastos fixos com vencimento restante neste mês (não pagos ainda)
         cur.execute(
-            "SELECT COALESCE(SUM(amount_cents), 0) FROM recurring_transactions WHERE user_id = ? AND active = 1 AND day_of_month > ?",
+            "SELECT name, amount_cents, day_of_month FROM recurring_transactions WHERE user_id = ? AND active = 1 AND day_of_month > ?",
             (user_id, today_day),
         )
-        pending_commitments += cur.fetchone()[0]
-        # Faturas de cartão pendentes
+        for r_name, r_amt, r_day in cur.fetchall():
+            # Verifica se já foi pago (existe bill marcada como paid)
+            paid = False
+            try:
+                cur.execute(
+                    "SELECT paid FROM bills WHERE user_id = ? AND recurring_id = (SELECT id FROM recurring_transactions WHERE user_id = ? AND name = ? LIMIT 1) AND due_date LIKE ? AND paid = 1",
+                    (user_id, user_id, r_name, f"{current_month}%"),
+                )
+                if cur.fetchone():
+                    paid = True
+            except Exception:
+                pass
+            if not paid:
+                pending_commitments += r_amt
+                commitment_details.append(f"  ⬜ {r_day:02d}/{current_month[5:7]} — {r_name}: R${r_amt/100:,.2f}".replace(",", "."))
+
+        # 2) Faturas de cartão de crédito
         try:
             cur.execute(
-                "SELECT name, amount_cents FROM bills WHERE user_id = ? AND due_date LIKE ? AND paid = 0 AND recurring_id LIKE 'card_%'",
-                (user_id, f"{current_month}%"),
+                "SELECT id, name, due_day, current_bill_opening_cents FROM credit_cards WHERE user_id = ? AND due_day > 0",
+                (user_id,),
             )
-            for _bn, _ba in cur.fetchall():
-                pending_commitments += _ba
+            for card_id, card_name, due_day, opening_cents in cur.fetchall():
+                cur.execute(
+                    "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+                    (user_id, card_id, f"{current_month}%"),
+                )
+                card_spent = cur.fetchone()[0]
+                fatura_total = card_spent + (opening_cents or 0)
+                if fatura_total > 0:
+                    # Verifica se já foi paga
+                    paid = False
+                    try:
+                        cur.execute(
+                            "SELECT paid FROM bills WHERE user_id = ? AND recurring_id = ? AND due_date LIKE ? AND paid = 1",
+                            (user_id, f"card_{card_id}", f"{current_month}%"),
+                        )
+                        if cur.fetchone():
+                            paid = True
+                    except Exception:
+                        pass
+                    if not paid:
+                        pending_commitments += fatura_total
+                        commitment_details.append(f"  💳 {due_day:02d}/{current_month[5:7]} — Fatura {card_name}: R${fatura_total/100:,.2f}".replace(",", "."))
         except Exception:
             pass
-        # Contas avulsas pendentes
+
+        # 3) Contas avulsas pendentes (boletos etc)
         try:
             cur.execute(
-                "SELECT COALESCE(SUM(amount_cents), 0) FROM bills WHERE user_id = ? AND due_date LIKE ? AND paid = 0 AND (recurring_id IS NULL OR recurring_id NOT LIKE 'card_%')",
+                "SELECT name, amount_cents, due_date FROM bills WHERE user_id = ? AND due_date LIKE ? AND paid = 0 AND (recurring_id IS NULL OR recurring_id NOT LIKE 'card_%')",
                 (user_id, f"{current_month}%"),
             )
-            pending_commitments += cur.fetchone()[0]
+            for b_name, b_amt, b_due in cur.fetchall():
+                # Exclui se já contou como recurring acima
+                already = any(b_name.lower() in d.lower() for d in commitment_details)
+                if not already:
+                    pending_commitments += b_amt
+                    d_lbl = f"{b_due[8:10]}/{b_due[5:7]}"
+                    commitment_details.append(f"  ⬜ {d_lbl} — {b_name}: R${b_amt/100:,.2f}".replace(",", "."))
         except Exception:
             pass
     except Exception:
         pass
 
-    # Mostra compromissos pendentes visualmente (não só no __insight)
+    # Mostra compromissos pendentes visualmente
     if filter_type == "ALL" and pending_commitments > 0:
         remaining_after = balance - pending_commitments
-        lines.append(f"📋 Compromissos pendentes: R${pending_commitments/100:,.2f}".replace(",", "."))
+        lines.append("")
+        lines.append(f"📋 *Compromissos pendentes: R${pending_commitments/100:,.2f}*".replace(",", "."))
+        for detail in commitment_details:
+            lines.append(detail)
+        lines.append("")
         if remaining_after >= 0:
             lines.append(f"💰 Saldo após compromissos: *R${remaining_after/100:,.2f}*".replace(",", "."))
         else:
-            lines.append(f"⚠️ Saldo após compromissos: *R${remaining_after/100:,.2f}* (falta cobrir!)".replace(",", "."))
+            lines.append(f"⚠️ Saldo após compromissos: *R${remaining_after/100:,.2f}* _(falta cobrir!)_".replace(",", "."))
 
     # Nenhuma receita lançada
     if filter_type == "ALL" and income == 0:
