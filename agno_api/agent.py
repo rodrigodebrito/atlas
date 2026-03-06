@@ -2540,10 +2540,11 @@ def close_bill(user_phone: str, card_name: str) -> str:
         cur.execute("UPDATE credit_cards SET available_limit_cents = ? WHERE id = ?", (new_avail, card_id))
 
     # Marca a bill de fatura como paga na tabela bills
+    # Busca em qualquer mês (a bill pode estar no mês atual ou próximo)
     card_bill_ref = f"card_{card_id}"
     cur.execute(
-        "UPDATE bills SET paid = 1, paid_at = ? WHERE user_id = ? AND recurring_id = ? AND due_date LIKE ? AND paid = 0",
-        (today_str, user_id, card_bill_ref, f"{current_month}%"),
+        "UPDATE bills SET paid = 1, paid_at = ? WHERE user_id = ? AND recurring_id = ? AND paid = 0",
+        (today_str, user_id, card_bill_ref),
     )
 
     conn.commit()
@@ -2876,12 +2877,16 @@ def pay_bill(
                     )
                 card_spent = cur.fetchone()[0]
                 fatura_total = card_spent + (c_opening or 0)
-                # Cria ou atualiza bill
-                due = f"{current_month}-{c_due_day:02d}"
+                # Cria ou atualiza bill — vencimento no mês seguinte
+                _t = _now_br()
+                _due_m = _t.month + 1 if _t.month < 12 else 1
+                _due_y = _t.year if _t.month < 12 else _t.year + 1
+                due = f"{_due_y}-{_due_m:02d}-{c_due_day:02d}"
+                due_month_str = f"{_due_y}-{_due_m:02d}"
                 bill_id = str(uuid.uuid4())
                 cur.execute(
-                    "SELECT id FROM bills WHERE user_id = ? AND recurring_id = ? AND due_date LIKE ? AND paid = 0",
-                    (user_id, card_bill_ref, f"{current_month}%"),
+                    "SELECT id FROM bills WHERE user_id = ? AND recurring_id = ? AND paid = 0",
+                    (user_id, card_bill_ref),
                 )
                 existing = cur.fetchone()
                 if existing:
@@ -2994,35 +2999,51 @@ def get_bills(user_phone: str, month: str = "") -> str:
                 (bill_id, user_id, r_name, r_amt, due, r_cat, r_id),
             )
 
+    # Limpa bills de cartão não pagas para regenerar com due_date correto
+    cur.execute(
+        "DELETE FROM bills WHERE user_id = ? AND recurring_id LIKE 'card_%' AND paid = 0",
+        (user_id,),
+    )
+
     # Auto-gera bills a partir de faturas de cartão de crédito
     cur.execute(
-        "SELECT id, name, due_day, current_bill_opening_cents, last_bill_paid_at FROM credit_cards WHERE user_id = ? AND due_day > 0",
+        "SELECT id, name, closing_day, due_day, current_bill_opening_cents, last_bill_paid_at FROM credit_cards WHERE user_id = ? AND due_day > 0",
         (user_id,),
     )
     cards = cur.fetchall()
     for card_row in cards:
-        card_id, card_name, due_day = card_row[0], card_row[1], card_row[2]
-        bill_cents = card_row[3] or 0
-        last_paid = card_row[4] if len(card_row) > 4 else None
+        card_id, card_name, closing_day_card = card_row[0], card_row[1], card_row[2]
+        due_day = card_row[3]
+        bill_cents = card_row[4] or 0
+        last_paid = card_row[5] if len(card_row) > 5 else None
 
         card_bill_ref = f"card_{card_id}"
-        due = f"{month}-{due_day:02d}"
 
-        # Verifica se a fatura já foi paga este mês
+        # Calcula mês correto de vencimento da fatura
+        # A fatura fecha no closing_day do mês e vence no due_day do MÊS SEGUINTE
+        # Ex: fecha 2/mar → vence 7/abr, fecha 25/mar → vence 10/abr
+        m_year, m_month = int(month[:4]), int(month[5:7])
+        due_m = m_month + 1 if m_month < 12 else 1
+        due_y = m_year if m_month < 12 else m_year + 1
+        due = f"{due_y}-{due_m:02d}-{due_day:02d}"
+
+        # Mês de vencimento para buscar bills existentes
+        due_month_str = f"{due_y}-{due_m:02d}"
+
+        # Verifica se a fatura já foi paga
         cur.execute(
             "SELECT id, paid FROM bills WHERE user_id = ? AND recurring_id = ? AND due_date LIKE ? AND paid = 1",
-            (user_id, card_bill_ref, f"{month}%"),
+            (user_id, card_bill_ref, f"{due_month_str}%"),
         )
         already_paid = cur.fetchone()
         if already_paid:
-            # Fatura já paga — não recalcular, preservar
             continue
 
-        # Calcula valor da fatura: gastos no cartão desde último pagamento + opening balance
+        # Calcula valor da fatura: gastos no cartão do mês de FECHAMENTO + opening balance
         if last_paid:
             cur.execute(
-                "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at >= ?",
-                (user_id, card_id, last_paid),
+                "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at >= ? AND occurred_at LIKE ?",
+                (user_id, card_id, last_paid, f"{month}%"),
             )
         else:
             cur.execute(
@@ -3034,7 +3055,7 @@ def get_bills(user_phone: str, month: str = "") -> str:
         if fatura_total > 0:
             cur.execute(
                 "SELECT id, amount_cents FROM bills WHERE user_id = ? AND recurring_id = ? AND due_date LIKE ?",
-                (user_id, card_bill_ref, f"{month}%"),
+                (user_id, card_bill_ref, f"{due_month_str}%"),
             )
             existing = cur.fetchone()
             if existing:
@@ -6223,21 +6244,26 @@ def _strip_trailing_questions(text: str) -> str:
         if not last:
             lines.pop()
             continue
-        # Pergunta direta no final (termina com ?)
-        is_question = last.endswith("?") and len(lines) > 1
-        # Sugestão proativa (mesmo sem ?)
-        is_suggestion = bool(_re_sq.match(
+        # Sugestão proativa (padrões que NUNCA devem aparecer)
+        is_proactive = bool(_re_sq.match(
             r'^(quer|gostaria|posso|deseja|precisa|need|want|se precisar|caso queira|'
             r'alguma d[uú]vida|fique [àa] vontade|estou [àa] disposi[çc][aã]o|'
             r'me avise|qualquer coisa|pode me perguntar|'
-            r'quer que eu|posso te ajudar|precisa de algo)',
+            r'quer que eu|posso te ajudar|precisa de algo|'
+            r'se quiser|caso precise|posso ajudar|'
+            r'quer organizar|quer ver|quer conferir|'
+            r'como posso|em que posso|o que mais)',
             last.lower()
         ))
-        # Preserva clarificações legítimas (única linha, valor ambíguo)
-        is_legit = (len(lines) == 1 or
-                    _re_sq.match(r'^R\$[\d,.]+\s+em\s+qu[eê]\??$', last, _re_sq.IGNORECASE) or
-                    _re_sq.match(r'^[\d,.]+\s+em\s+qu[eê]\??$', last, _re_sq.IGNORECASE))
-        if (is_question or is_suggestion) and not is_legit:
+        # Pergunta direta no final (termina com ?) — mas não se for a única linha informativa
+        is_question = last.endswith("?") and len(lines) > 1
+        # Preserva clarificações legítimas (valor ambíguo etc)
+        is_legit = (
+            not is_proactive and len(lines) == 1 or
+            _re_sq.match(r'^R\$[\d,.]+\s+em\s+qu[eê]\??$', last, _re_sq.IGNORECASE) or
+            _re_sq.match(r'^[\d,.]+\s+em\s+qu[eê]\??$', last, _re_sq.IGNORECASE)
+        )
+        if is_proactive or ((is_question) and not is_legit):
             lines.pop()
         else:
             break
