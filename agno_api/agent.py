@@ -193,6 +193,19 @@ def _init_sqlite_tables():
             action_data TEXT NOT NULL,
             created_at TEXT DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS bills (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            amount_cents INTEGER NOT NULL,
+            due_date TEXT NOT NULL,
+            category TEXT DEFAULT 'Outros',
+            recurring_id TEXT,
+            paid INTEGER DEFAULT 0,
+            paid_at TEXT,
+            transaction_id TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
     """)
     conn.commit()
     conn.close()
@@ -341,6 +354,19 @@ def _init_postgres_tables():
             user_phone TEXT NOT NULL,
             action_type TEXT NOT NULL,
             action_data TEXT NOT NULL,
+            created_at TEXT DEFAULT (now()::text)
+        );
+        CREATE TABLE IF NOT EXISTS bills (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            amount_cents INTEGER NOT NULL,
+            due_date TEXT NOT NULL,
+            category TEXT DEFAULT 'Outros',
+            recurring_id TEXT,
+            paid INTEGER DEFAULT 0,
+            paid_at TEXT,
+            transaction_id TEXT,
             created_at TEXT DEFAULT (now()::text)
         );
     """)
@@ -2437,6 +2463,262 @@ def deactivate_recurring(user_phone: str, name: str) -> str:
     conn.commit()
     conn.close()
     return f"'{row[1]}' desativado dos gastos fixos."
+
+
+@tool
+def register_bill(
+    user_phone: str,
+    name: str,
+    amount: float,
+    due_date: str,
+    category: str = "Outros",
+) -> str:
+    """
+    Registra uma conta a pagar AVULSA (boleto, fatura, conta única).
+    NÃO usar para gastos fixos mensais — use register_recurring.
+    Usar quando: "tenho um boleto de 600 no dia 15", "vou pagar IPTU de 1200 dia 20",
+    "fatura do Mercado Pago 2337 vence dia 10".
+
+    name: descrição da conta (ex: "Boleto IPTU", "Fatura Mercado Pago")
+    amount: valor em reais
+    due_date: data de vencimento YYYY-MM-DD
+    category: categoria (Moradia, Saúde, etc.)
+    """
+    amount_cents = round(amount * 100)
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "ERRO: usuário não encontrado."
+
+    bill_id = str(uuid.uuid4())
+    cur.execute(
+        "INSERT INTO bills (id, user_id, name, amount_cents, due_date, category) VALUES (?, ?, ?, ?, ?, ?)",
+        (bill_id, user_id, name, amount_cents, due_date, category),
+    )
+    conn.commit()
+    conn.close()
+
+    d = due_date
+    date_fmt = f"{d[8:10]}/{d[5:7]}/{d[:4]}"
+    return f"📋 Conta registrada: *{name}* — R${amount:,.2f} vence {date_fmt}".replace(",", ".")
+
+
+@tool
+def pay_bill(
+    user_phone: str,
+    name: str,
+    amount: float = 0,
+    category: str = "",
+    payment_method: str = "",
+    card_name: str = "",
+) -> str:
+    """
+    Registra PAGAMENTO de uma conta/fatura/boleto.
+    Usar quando: "paguei o boleto de 600", "paguei a fatura do Nubank", "paguei o aluguel",
+    "pagamento fatura Mercado Pago 2337".
+
+    1. Busca bill/compromisso com nome ou valor parecido
+    2. Se encontrar → registra EXPENSE + marca bill como pago
+    3. Se não encontrar → registra EXPENSE normalmente
+
+    name: o que foi pago (ex: "fatura Mercado Pago", "boleto IPTU", "aluguel")
+    amount: valor pago em reais (0 = usar valor do compromisso encontrado)
+    category: categoria (auto-detecta se possível)
+    payment_method: PIX, DEBIT, CREDIT, BOLETO, TRANSFER
+    card_name: se pagou com cartão de crédito
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "ERRO: usuário não encontrado."
+
+    amount_cents = round(amount * 100) if amount > 0 else 0
+    today = _now_br()
+    today_str = today.strftime("%Y-%m-%d")
+    current_month = today.strftime("%Y-%m")
+
+    # 1. Busca bill pendente com nome parecido
+    matched_bill = None
+    cur.execute(
+        "SELECT id, name, amount_cents, due_date, category, recurring_id FROM bills WHERE user_id = ? AND paid = 0 AND due_date LIKE ?",
+        (user_id, f"{current_month}%"),
+    )
+    bills = cur.fetchall()
+
+    name_lower = name.lower().strip()
+    best_score = 0
+    for b in bills:
+        b_id, b_name, b_amt, b_due, b_cat, b_rec_id = b
+        score = 0
+        # Match por nome (fuzzy)
+        b_name_lower = b_name.lower()
+        for word in name_lower.split():
+            if len(word) >= 3 and word in b_name_lower:
+                score += 3
+        # Match por valor
+        if amount_cents > 0 and abs(b_amt - amount_cents) < amount_cents * 0.1:
+            score += 5
+        elif amount_cents > 0 and abs(b_amt - amount_cents) < amount_cents * 0.25:
+            score += 2
+        if score > best_score:
+            best_score = score
+            matched_bill = b
+
+    # Também busca em recurring_transactions (gastos fixos)
+    if not matched_bill or best_score < 3:
+        cur.execute(
+            "SELECT id, name, amount_cents, day_of_month, category FROM recurring_transactions WHERE user_id = ? AND active = 1",
+            (user_id,),
+        )
+        recs = cur.fetchall()
+        for r in recs:
+            r_id, r_name, r_amt, r_day, r_cat = r
+            score = 0
+            r_name_lower = r_name.lower()
+            for word in name_lower.split():
+                if len(word) >= 3 and word in r_name_lower:
+                    score += 3
+            if amount_cents > 0 and abs(r_amt - amount_cents) < amount_cents * 0.1:
+                score += 5
+            elif amount_cents > 0 and abs(r_amt - amount_cents) < amount_cents * 0.25:
+                score += 2
+            if score > best_score:
+                best_score = score
+                # Cria bill temporário a partir do recurring
+                bill_id = str(uuid.uuid4())
+                due = f"{current_month}-{r_day:02d}"
+                cur.execute(
+                    "INSERT INTO bills (id, user_id, name, amount_cents, due_date, category, recurring_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (bill_id, user_id, r_name, r_amt, due, r_cat, r_id),
+                )
+                matched_bill = (bill_id, r_name, r_amt, due, r_cat, r_id)
+
+    # Define valor e categoria
+    if matched_bill:
+        b_id, b_name, b_amt, b_due, b_cat, b_rec_id = matched_bill
+        if amount_cents == 0:
+            amount_cents = b_amt
+        if not category:
+            category = b_cat
+    if not category:
+        category = "Outros"
+    if amount_cents == 0:
+        conn.close()
+        return f"Quanto foi o pagamento de {name}? Me diz o valor."
+
+    # 2. Registra a EXPENSE
+    tx_id = str(uuid.uuid4())
+    cur.execute(
+        """INSERT INTO transactions (id, user_id, type, amount_cents, category, merchant, payment_method, occurred_at)
+           VALUES (?, ?, 'EXPENSE', ?, ?, ?, ?, ?)""",
+        (tx_id, user_id, amount_cents, category, name, payment_method or "PIX", today_str),
+    )
+
+    # 3. Marca bill como pago
+    result_parts = []
+    amt_fmt = f"R${amount_cents/100:,.2f}".replace(",", ".")
+    if matched_bill:
+        b_id = matched_bill[0]
+        b_name = matched_bill[1]
+        cur.execute(
+            "UPDATE bills SET paid = 1, paid_at = ?, transaction_id = ? WHERE id = ?",
+            (today_str, tx_id, b_id),
+        )
+        result_parts.append(f"✅ *{b_name}* — {amt_fmt} pago!")
+    else:
+        result_parts.append(f"✅ *{name}* — {amt_fmt} pago!")
+
+    # 4. Resumo de compromissos restantes
+    cur.execute(
+        "SELECT COUNT(*), COALESCE(SUM(amount_cents), 0) FROM bills WHERE user_id = ? AND paid = 0 AND due_date LIKE ?",
+        (user_id, f"{current_month}%"),
+    )
+    pending_count, pending_total = cur.fetchone()
+    if pending_count > 0:
+        result_parts.append(f"📋 Ainda faltam {pending_count} conta(s): {f'R${pending_total/100:,.2f}'.replace(',', '.')} pendente")
+
+    conn.commit()
+    conn.close()
+    return "\n".join(result_parts)
+
+
+@tool
+def get_bills(user_phone: str, month: str = "") -> str:
+    """
+    Lista contas a pagar do mês com status pago/pendente.
+    Usar quando: "minhas contas", "o que falta pagar", "compromissos do mês".
+    month: YYYY-MM (padrão = mês atual)
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "Nenhuma conta encontrada."
+
+    today = _now_br()
+    if not month:
+        month = today.strftime("%Y-%m")
+
+    # Auto-gera bills a partir de recurring que ainda não têm bill no mês
+    cur.execute(
+        "SELECT id, name, amount_cents, day_of_month, category FROM recurring_transactions WHERE user_id = ? AND active = 1",
+        (user_id,),
+    )
+    recs = cur.fetchall()
+    for r_id, r_name, r_amt, r_day, r_cat in recs:
+        due = f"{month}-{r_day:02d}"
+        cur.execute(
+            "SELECT id FROM bills WHERE user_id = ? AND recurring_id = ? AND due_date LIKE ?",
+            (user_id, r_id, f"{month}%"),
+        )
+        if not cur.fetchone():
+            bill_id = str(uuid.uuid4())
+            cur.execute(
+                "INSERT INTO bills (id, user_id, name, amount_cents, due_date, category, recurring_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (bill_id, user_id, r_name, r_amt, due, r_cat, r_id),
+            )
+
+    # Busca todas as bills do mês
+    cur.execute(
+        "SELECT name, amount_cents, due_date, paid, paid_at, category FROM bills WHERE user_id = ? AND due_date LIKE ? ORDER BY due_date",
+        (user_id, f"{month}%"),
+    )
+    rows = cur.fetchall()
+    conn.commit()
+    conn.close()
+
+    if not rows:
+        return "Nenhuma conta a pagar neste mês."
+
+    total = sum(r[1] for r in rows)
+    paid_total = sum(r[1] for r in rows if r[3])
+    pending_total = total - paid_total
+    paid_count = sum(1 for r in rows if r[3])
+
+    months_pt = {1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril", 5: "Maio", 6: "Junho",
+                 7: "Julho", 8: "Agosto", 9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"}
+    m_num = int(month.split("-")[1])
+    month_label = months_pt.get(m_num, month)
+
+    lines = [f"📋 *Contas a pagar — {month_label}:*\n"]
+
+    for name, amt, due, paid, paid_at, cat in rows:
+        d = due[8:10] + "/" + due[5:7]
+        amt_fmt = f"R${amt/100:,.2f}".replace(",", ".")
+        if paid:
+            lines.append(f"  ✅ {d} — {name}: {amt_fmt} _(pago)_")
+        else:
+            lines.append(f"  ⬜ {d} — {name}: {amt_fmt}")
+
+    lines.append("")
+    lines.append(f"💰 Total: {f'R${total/100:,.2f}'.replace(',', '.')} | ✅ Pago: {f'R${paid_total/100:,.2f}'.replace(',', '.')} | ⬜ Falta: {f'R${pending_total/100:,.2f}'.replace(',', '.')}")
+
+    return "\n".join(lines)
 
 
 @tool
@@ -4589,15 +4871,37 @@ LISTA DETALHADA (só quando pedir "transações" ou "lista" ou "extrato" explici
 "próxima fatura do Inter" → get_next_bill(user_phone, card_name="Inter")
 Cartão criado automaticamente em save_transaction com card_name — nunca peça cadastro antecipado.
 
-── GASTOS FIXOS ───────────────────────────────────────────────
+── GASTOS FIXOS (mensais recorrentes) ─────────────────────────
 
 "aluguel 1500 todo dia 5" → register_recurring(user_phone, name="Aluguel", amount=1500, category="Moradia", day_of_month=5)
 "quais meus gastos fixos?" → get_recurring(user_phone)
 "cancelei a Netflix" → deactivate_recurring(user_phone, name="Netflix")
-"compromissos futuros" / "o que tenho pra pagar" → get_upcoming_commitments(user_phone, days=60)
-"o que pago em abril" / "compromissos de abril" / "o que tenho em abril" → get_upcoming_commitments(user_phone, days=60, month="2026-04")
-"o que pago em maio" → get_upcoming_commitments(user_phone, days=90, month="2026-05")
 "minhas parcelas" → get_installments_summary(user_phone)
+
+── CONTAS A PAGAR / BOLETOS / COMPROMISSOS ────────────────────
+
+⚠️ DIFERENCIE:
+- Gasto fixo MENSAL (todo mês) → register_recurring
+- Conta AVULSA / boleto / fatura específica → register_bill
+- PAGAMENTO (já pagou algo) → pay_bill
+
+"tenho um boleto de 600 no dia 15" → register_bill(user_phone, name="Boleto", amount=600, due_date="2026-03-15")
+"fatura do Mercado Pago 2337 vence dia 10" → register_bill(user_phone, name="Fatura Mercado Pago", amount=2337, due_date="2026-03-10")
+"IPTU 1200 vence dia 20" → register_bill(user_phone, name="IPTU", amount=1200, due_date="2026-03-20", category="Moradia")
+
+"paguei o boleto de 600" → pay_bill(user_phone, name="boleto", amount=600)
+"pagamento fatura Mercado Pago 2337" → pay_bill(user_phone, name="Fatura Mercado Pago", amount=2337)
+"paguei o aluguel" → pay_bill(user_phone, name="aluguel")
+"paguei a Netflix" → pay_bill(user_phone, name="Netflix")
+"transferi 1500 pro aluguel" → pay_bill(user_phone, name="aluguel", amount=1500, payment_method="TRANSFER")
+
+⚠️ VERBOS DE PAGAMENTO → SEMPRE use pay_bill (NUNCA save_transaction):
+"paguei", "pagamento", "pago", "transferi", "quitei", "depositei", "retira", "retirei"
+Esses verbos indicam que o usuário PAGOU uma conta, não fez uma compra.
+
+"minhas contas" / "o que falta pagar" / "contas do mês" → get_bills(user_phone)
+"compromissos futuros" / "o que tenho pra pagar" → get_bills(user_phone)
+"compromissos de abril" → get_bills(user_phone, month="2026-04")
 
 ── SALÁRIO / CICLO ────────────────────────────────────────────
 
@@ -4893,7 +5197,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=10,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills],
     add_datetime_to_context=True,
     markdown=True,
 )
@@ -5145,9 +5449,12 @@ def _pre_route(message: str) -> dict | None:
     if _re_router.match(r'(gastos? de hoje|o que (?:eu )?gastei hoje|hoje|quanto (?:eu )?gastei hoje|extrato (?:de )?hoje|saldo (?:de )?hoje|me (?:d[aá]|fala|mostra) (?:o )?(?:saldo|extrato|gastos?)(?: de)? (?:de )?hoje|como (?:tá|ta|está) (?:o )?(?:dia de )?hoje)[\?\!\.]*$', msg):
         return {"response": _call(get_today_total, user_phone, "EXPENSE", 1)}
 
-    # --- COMPROMISSOS ---
-    if _re_router.match(r'(meus compromissos|compromissos(?: (?:do|deste|desse|este|esse) m[eê]s)?|quais (?:s[aã]o )?(?:os )?(?:meus )?compromissos|contas? (?:a |pra )pagar|o que (?:eu )?(?:tenho|vou ter) (?:pra|para) pagar|gastos? fixos|fixos)[\?\!\.]*$', msg):
-        return {"response": _call(get_upcoming_commitments, user_phone)}
+    # --- COMPROMISSOS / CONTAS A PAGAR ---
+    if _re_router.match(r'(meus compromissos|compromissos(?: (?:do|deste|desse|este|esse) m[eê]s)?|quais (?:s[aã]o )?(?:os )?(?:meus )?compromissos|contas? (?:a |pra )pagar|o que (?:eu )?(?:tenho|vou ter) (?:pra|para) pagar|(?:minhas |ver )?contas(?: do m[eê]s)?|o que falta pagar)[\?\!\.]*$', msg):
+        return {"response": _call(get_bills, user_phone)}
+    # --- GASTOS FIXOS ---
+    if _re_router.match(r'((?:meus |ver |listar )?gastos? fixos|fixos)[\?\!\.]*$', msg):
+        return {"response": _call(get_recurring, user_phone)}
 
     # --- APAGAR TODOS de merchant → vai pro LLM (precisa de fluxo 2 etapas com confirmação) ---
 
@@ -5228,10 +5535,12 @@ _HELP_TEXT = """📋 *ATLAS — Manual Rápido*
 • _"fatura do Nubank 2300"_
 • _"minhas parcelas"_
 
-📌 *Gastos fixos:*
+📌 *Gastos fixos e contas:*
 • _"aluguel 1500 todo dia 5"_
 • _"Netflix 44,90 todo mês"_
-• _"meus compromissos"_
+• _"boleto de 600 no dia 15"_
+• _"paguei o aluguel"_
+• _"minhas contas"_ (mostra pago/pendente)
 
 🎯 *Metas:*
 • _"quero guardar 5000 pra viagem"_
