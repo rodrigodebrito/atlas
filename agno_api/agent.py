@@ -422,6 +422,30 @@ def _get_conn():
     return _PGConn(psycopg2.connect(DATABASE_URL))
 
 
+def _ensure_pending_actions_table(cur):
+    """Cria tabela pending_actions se não existir (safe para chamar múltiplas vezes)."""
+    if DB_TYPE == "postgres":
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS pending_actions (
+                id SERIAL PRIMARY KEY,
+                user_phone TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                action_data TEXT NOT NULL,
+                created_at TEXT DEFAULT (now()::text)
+            )
+        """)
+    else:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS pending_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_phone TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                action_data TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
+
 def _generate_inline_alerts(cur, user_id: str, user_phone: str, category: str, amount_cents: int) -> list[str]:
     """
     Gera alertas inteligentes inline após registrar um gasto.
@@ -1625,6 +1649,7 @@ def delete_transactions(
         try:
             conn2 = _get_conn()
             cur2 = conn2.cursor()
+            _ensure_pending_actions_table(cur2)
             # Remove ações pendentes antigas deste usuário
             cur2.execute("DELETE FROM pending_actions WHERE user_phone = ?", (user_phone,))
             cur2.execute(
@@ -5023,6 +5048,8 @@ def _pre_route(message: str) -> dict | None:
             import json as _json_pr
             conn_pa = _get_conn()
             cur_pa = conn_pa.cursor()
+            _ensure_pending_actions_table(cur_pa)
+            conn_pa.commit()
             cur_pa.execute(
                 "SELECT id, action_type, action_data FROM pending_actions WHERE user_phone = ? ORDER BY created_at DESC LIMIT 1",
                 (user_phone,),
@@ -5057,6 +5084,8 @@ def _pre_route(message: str) -> dict | None:
         try:
             conn_pa = _get_conn()
             cur_pa = conn_pa.cursor()
+            _ensure_pending_actions_table(cur_pa)
+            conn_pa.commit()
             cur_pa.execute("SELECT id FROM pending_actions WHERE user_phone = ?", (user_phone,))
             pa_row = cur_pa.fetchone()
             if pa_row:
