@@ -6358,6 +6358,7 @@ let currentPeriod = 'month';
 let sortAsc = false;
 let currentCatFilter = null;
 let currentCardFilter = null;
+let pieChart = null;
 
 // ==================== FORMATTING ====================
 function fmt(cents) {{
@@ -6375,10 +6376,66 @@ function showToast(msg, isError) {{
 // ==================== PERIOD FILTER ====================
 function setPeriod(period) {{
   currentPeriod = period;
+  currentCatFilter = null;
+  currentCardFilter = null;
+  currentFilter = 'ALL';
   document.querySelectorAll('.period-btn').forEach(b => b.classList.toggle('active', b.textContent.toLowerCase().includes(
     period === 'month' ? 'mes' : period === 'week' ? 'semana' : period === 'today' ? 'hoje' : period === '7d' ? '7' : '15'
   )));
+  document.querySelectorAll('.tx-filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === 'ALL'));
   renderTxList();
+  updateDashboard();
+}}
+
+function updateDashboard() {{
+  const txs = getFilteredByPeriod([...ALL_TX]);
+  const expenses = txs.filter(t => t.type === 'EXPENSE');
+  const incomeTotal = txs.filter(t => t.type === 'INCOME').reduce((s,t) => s + t.amount, 0);
+  const expenseTotal = expenses.reduce((s,t) => s + t.amount, 0);
+  const balance = incomeTotal - expenseTotal;
+
+  // Update summary cards
+  const cards = document.querySelectorAll('.summary-card');
+  if (cards[0]) cards[0].querySelector('.value').textContent = fmt(incomeTotal);
+  if (cards[1]) cards[1].querySelector('.value').textContent = fmt(expenseTotal);
+  if (cards[2]) {{
+    const v = cards[2].querySelector('.value');
+    v.textContent = (balance >= 0 ? '+' : '') + fmt(Math.abs(balance));
+    v.style.color = balance >= 0 ? 'var(--green)' : 'var(--red)';
+  }}
+
+  // Recalculate categories from filtered transactions
+  const catMap = {{}};
+  expenses.forEach(t => {{ catMap[t.category] = (catMap[t.category] || 0) + t.amount; }});
+  const sortedCats = Object.entries(catMap).sort((a,b) => b[1] - a[1]);
+  const catNames = sortedCats.map(c => c[0]);
+  const catAmounts = sortedCats.map(c => c[1] / 100);
+  const catTotals = sortedCats.map(c => c[1]);
+  const colors = catNames.map((_, i) => CAT_COLORS[i % CAT_COLORS.length]);
+
+  // Update doughnut chart
+  if (pieChart) {{
+    pieChart.data.labels = catNames;
+    pieChart.data.datasets[0].data = catAmounts;
+    pieChart.data.datasets[0].backgroundColor = colors;
+    pieChart.update();
+  }}
+
+  // Update category breakdown list
+  let catHtml = '';
+  sortedCats.forEach(([name, amount], i) => {{
+    const color = CAT_COLORS[i % CAT_COLORS.length];
+    const emoji = CAT_EMOJI[name] || '💸';
+    const pct = expenseTotal > 0 ? (amount / expenseTotal * 100).toFixed(0) : 0;
+    catHtml += `<div class="cat-row" onclick="filterByCategory('${{name}}')">
+      <span class="cat-dot" style="background:${{color}}"></span>
+      <span class="cat-label">${{emoji}} ${{name}}</span>
+      <span class="cat-amount">${{fmt(amount)}}</span>
+      <span class="cat-pct">${{pct}}%</span>
+      <span class="cat-chevron">›</span>
+    </div>`;
+  }});
+  document.getElementById('catBreakdown').innerHTML = catHtml || '<div class="empty-state">Sem gastos neste periodo</div>';
 }}
 
 function getFilteredByPeriod(txs) {{
@@ -6650,7 +6707,7 @@ document.addEventListener('DOMContentLoaded', () => {{
   renderCatBreakdown();
   renderCards();
 
-  new Chart(document.getElementById('pieChart'), {{
+  pieChart = new Chart(document.getElementById('pieChart'), {{
     type: 'doughnut',
     data: {{
       labels: {cat_labels},
@@ -6664,7 +6721,7 @@ document.addEventListener('DOMContentLoaded', () => {{
       cutout: '68%',
       onClick: (e, els) => {{
         if (els.length) {{
-          const cat = {cat_labels}[els[0].index];
+          const cat = pieChart.data.labels[els[0].index];
           filterByCategory(cat);
         }}
       }}
