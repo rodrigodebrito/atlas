@@ -2357,6 +2357,9 @@ def _bill_period_start(closing_day: int) -> str:
     """Calcula a data de início do período de fatura atual."""
     import calendar as _cal_bp
     today = _now_br()
+    if closing_day <= 0:
+        # Cartão sem fechamento configurado: assume início do mês
+        return today.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
     safe_day = min(closing_day, _cal_bp.monthrange(today.year, today.month)[1])
     if today.day >= closing_day:
         start = today.replace(day=safe_day, hour=0, minute=0, second=0, microsecond=0)
@@ -3284,6 +3287,10 @@ def get_next_bill(user_phone: str, card_name: str) -> str:
         return f"Cartão '{card_name}' não encontrado. Use get_cards para ver seus cartões."
 
     card_id, name, closing_day, due_day, limit_cents, opening_cents, last_paid = card[:7]
+
+    if not closing_day or not due_day:
+        conn.close()
+        return f"⚠️ O cartão *{name}* não tem fechamento/vencimento configurado.\nDiga: _\"fecha 25 vence 10\"_ para configurar."
 
     today = _now_br()
 
@@ -4764,6 +4771,8 @@ def will_i_have_leftover(user_phone: str) -> str:
     card_bills_cents = 0
     card_bill_lines = []
     for card_name, opening_cents, closing_day in cards:
+        if not closing_day or closing_day <= 0:
+            continue
         period_start = _bill_period_start(closing_day)
         cur.execute(
             "SELECT SUM(amount_cents) FROM transactions WHERE user_id = ? AND card_id = (SELECT id FROM credit_cards WHERE user_id = ? AND name = ?) AND occurred_at >= ?",
@@ -8616,6 +8625,8 @@ def get_daily_reminders():
             (user_id, target_day)
         )
         for card_id, card_name, closing_day, opening_cents in cur.fetchall():
+            if not closing_day or closing_day <= 0:
+                continue
             period_start = _bill_period_start(closing_day)
             cur.execute(
                 "SELECT SUM(amount_cents) FROM transactions WHERE user_id = ? AND card_id = ? AND occurred_at >= ?",
