@@ -8237,6 +8237,49 @@ def _pre_route(message: str) -> dict | None:
         greeting = f"Fala, {_uname}! 👋" if _uname else "Fala! 👋"
         return {"response": f"{greeting} Sou o *ATLAS*, seu copiloto financeiro.\n\nMe diz o que precisa — lança um gasto, pede o resumo do mês, ou digita *ajuda* pra ver tudo que eu faço. 🎯"}
 
+    # --- GASTO SIMPLES (save_transaction via pré-roteador) ---
+    # Padrão: "gastei/paguei/comprei X reais [em/no MERCHANT] [pelo/no CARTÃO]"
+    _expense_pattern = _re_router.match(
+        r'(?:gastei|paguei|comprei|torrei|saiu|foram?)\s+'
+        r'(?:r\$\s?)?(\d+(?:[.,]\d{1,2})?)\s*(?:reais?|conto|pila|real)?'  # valor
+        r'(?:\s+(?:reais?|conto|pila|real))?'
+        r'(?:\s+(?:n[oa]s?|(?:d[eoa]|em|com))\s+(.+?))?'  # merchant
+        r'(?:\s+(?:pel[oa]s?|n[oa]s?|via|com (?:o )?cart[aã]o)\s+(.+?))?'  # cartão
+        r'[\s\?\!\.]*$',
+        msg
+    )
+    if _expense_pattern:
+        _val_str = _expense_pattern.group(1).replace(",", ".")
+        _val = float(_val_str)
+        _merchant_raw = (_expense_pattern.group(2) or "").strip()
+        _card_raw = (_expense_pattern.group(3) or "").strip()
+        # Se merchant capturou "pelo X" (cartão), separa
+        if not _card_raw and _merchant_raw:
+            _pelo_m = _re_router.search(r'\s+(?:pel[oa]s?|n[oa]s?|via|com (?:o )?cart[aã]o)\s+(.+)', _merchant_raw)
+            if _pelo_m:
+                _card_raw = _pelo_m.group(1).strip()
+                _merchant_raw = _merchant_raw[:_pelo_m.start()].strip()
+        # Auto-categorização simples
+        _cat = "Outros"
+        _m_lower = _merchant_raw.lower() if _merchant_raw else ""
+        _cat_rules = [
+            (("ifood", "rappi", "restaurante", "lanche", "mercado", "almo", "pizza", "burger", "sushi", "padaria", "açougue", "marmit", "comida"), "Alimentação"),
+            (("uber", "99", "gasolina", "pedágio", "onibus", "metro", "táxi", "combustível", "posto", "estacionamento"), "Transporte"),
+            (("netflix", "spotify", "amazon", "disney", "hbo", "youtube", "assinatura", "prime"), "Assinaturas"),
+            (("farmácia", "farmacia", "médico", "remédio", "remedio", "consulta", "plano de saúde", "drogaria"), "Saúde"),
+            (("aluguel", "condomínio", "condominio", "luz", "água", "agua", "internet", "gás", "gas", "iptu"), "Moradia"),
+            (("academia", "bar", "cinema", "show", "viagem", "lazer", "ingresso", "festa"), "Lazer"),
+            (("curso", "livro", "faculdade", "escola", "claude", "chatgpt", "copilot", "cursor"), "Educação"),
+            (("roupa", "tênis", "tenis", "sapato", "acessório", "acessorio", "moda", "camisa"), "Vestuário"),
+            (("ração", "racao", "veterinário", "veterinario", "pet", "banho"), "Pets"),
+        ]
+        for keywords, cat_name in _cat_rules:
+            if any(k in _m_lower for k in keywords):
+                _cat = cat_name
+                break
+        result = _call(save_transaction, user_phone, "EXPENSE", _val, _cat, _merchant_raw, "", "", 1, 0, _card_raw, "")
+        return {"response": result}
+
     return None  # Fallback ao keyword router
 
 
