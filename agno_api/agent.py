@@ -2989,6 +2989,16 @@ def get_bills(user_phone: str, month: str = "") -> str:
     Usar quando: "minhas contas", "o que falta pagar", "compromissos do mês".
     month: YYYY-MM (padrão = mês atual)
     """
+    import logging as _log_bills
+    _logger = _log_bills.getLogger("atlas")
+    try:
+        return _get_bills_impl(user_phone, month)
+    except Exception as e:
+        _logger.error(f"[GET_BILLS] ERROR for {user_phone} month={month}: {e}")
+        import traceback; traceback.print_exc()
+        return f"Erro ao buscar compromissos: {str(e)}"
+
+def _get_bills_impl(user_phone: str, month: str = "") -> str:
     conn = _get_conn()
     cur = conn.cursor()
     user_id = _get_user_id(cur, user_phone)
@@ -2999,6 +3009,12 @@ def get_bills(user_phone: str, month: str = "") -> str:
     today = _now_br()
     if not month:
         month = today.strftime("%Y-%m")
+
+    # Valida formato do mês
+    import re as _re_month
+    if month and not _re_month.match(r'^\d{4}-\d{2}$', month):
+        conn.close()
+        return f"Formato de mês inválido: '{month}'. Use YYYY-MM (ex: 2026-03)."
 
     # Auto-gera bills a partir de recurring que ainda não têm bill no mês
     cur.execute(
