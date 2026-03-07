@@ -9288,6 +9288,56 @@ def get_pending_import(user_phone: str):
     return {"import_id": row[0] if row else None}
 
 
+@app.get("/v1/debug/users")
+def debug_users():
+    """Debug: lista todos os users."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, phone, name FROM users ORDER BY name")
+    rows = cur.fetchall()
+    conn.close()
+    return {"users": [{"id": r[0], "phone": r[1], "name": r[2]} for r in rows]}
+
+
+@app.get("/v1/debug/today")
+def debug_today(user_phone: str):
+    """Debug: testa get_today_total e mostra dados brutos."""
+    user_phone = user_phone.strip()
+    if not user_phone.startswith("+"):
+        user_phone = "+" + user_phone
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return {"error": "user not found", "phone": user_phone}
+    user_id = row[0]
+    today = _now_br()
+    today_str = today.strftime("%Y-%m-%d")
+    cur.execute(
+        "SELECT id, type, amount_cents, merchant, occurred_at, card_id FROM transactions WHERE user_id = ? AND occurred_at LIKE ? ORDER BY occurred_at DESC LIMIT 10",
+        (user_id, f"{today_str}%")
+    )
+    txs = cur.fetchall()
+    # Also check without LIKE filter — last 5 transactions
+    cur.execute(
+        "SELECT id, type, amount_cents, merchant, occurred_at, card_id FROM transactions WHERE user_id = ? ORDER BY occurred_at DESC LIMIT 5",
+        (user_id,)
+    )
+    recent = cur.fetchall()
+    conn.close()
+    return {
+        "phone": user_phone,
+        "user_id": user_id,
+        "now_br": today.isoformat(),
+        "today_str": today_str,
+        "today_like_pattern": f"{today_str}%",
+        "transactions_today": [{"id": t[0], "type": t[1], "amount": t[2], "merchant": t[3], "occurred_at": t[4], "card_id": t[5]} for t in txs],
+        "recent_transactions": [{"id": t[0], "type": t[1], "amount": t[2], "merchant": t[3], "occurred_at": t[4], "card_id": t[5]} for t in recent],
+    }
+
+
 @app.get("/v1/debug/transactions")
 def debug_transactions(user_phone: str, month: str = "", import_source: str = "", limit: int = 20):
     """Debug: lista transações com filtros opcionais."""
