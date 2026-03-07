@@ -433,6 +433,8 @@ def _init_postgres_tables():
         );
         CREATE INDEX IF NOT EXISTS idx_agenda_next_alert ON agenda_events(next_alert_at, status);
     """)
+    # Migração: normaliza type para UPPER (LLM pode ter salvo lowercase)
+    cur.execute("UPDATE transactions SET type = UPPER(type) WHERE type != UPPER(type)")
     conn.commit()
     cur.close()
     conn.close()
@@ -635,6 +637,10 @@ def save_transaction(
     occurred_at: str = "",
 ) -> str:
     """Salva transação. amount=valor da PARCELA (centavos preservados). installments=1 à vista. total_amount=total se parcelado. card_name=cartão se crédito. occurred_at=YYYY-MM-DD ou vazio=hoje. Categorias e exemplos no system prompt."""
+    # Normaliza tipo para UPPER (LLM pode mandar lowercase)
+    transaction_type = transaction_type.strip().upper()
+    if transaction_type not in ("EXPENSE", "INCOME"):
+        transaction_type = "EXPENSE"
     # converter reais → centavos
     amount_cents = round(amount * 100)
     total_amount_cents = round(total_amount * 100)
@@ -923,7 +929,7 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
                   c.name, c.closing_day, c.due_day, t.total_amount_cents
            FROM transactions t
            LEFT JOIN credit_cards c ON t.card_id = c.id
-           WHERE t.user_id = ? AND t.type = 'EXPENSE'
+           WHERE t.user_id = ? AND UPPER(t.type) = 'EXPENSE'
            AND t.occurred_at LIKE ?
            ORDER BY t.category, t.amount_cents DESC""",
         (user_id, f"{month}%"),
@@ -1911,7 +1917,8 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     date_conditions = " OR ".join(["t.occurred_at LIKE ?" for _ in date_list])
     date_params = tuple(f"{d}%" for d in date_list)
 
-    type_filter = "" if filter_type == "ALL" else f"AND t.type = '{filter_type}'"
+    filter_type = filter_type.strip().upper()
+    type_filter = "" if filter_type == "ALL" else f"AND UPPER(t.type) = '{filter_type}'"
     cur.execute(
         f"""SELECT t.type, t.category, t.merchant, t.amount_cents,
                    t.card_id, t.occurred_at, t.installments, t.installment_number,
@@ -1927,7 +1934,8 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
 
     if not rows:
         label_map = {"EXPENSE": "gastos", "INCOME": "receitas", "ALL": "movimentações"}
-        return f"Nenhum(a) {label_map.get(filter_type, 'movimentação')} nos {period_label}."
+        label = label_map.get(filter_type, "movimentação")
+        return f"Nenhum {label} registrado para {period_label}."
 
     from collections import defaultdict
     cat_emoji = {
@@ -3880,7 +3888,8 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     date_conditions = " OR ".join(["t.occurred_at LIKE ?" for _ in week_dates])
     date_params = tuple(f"{d}%" for d in week_dates)
 
-    type_filter = "" if filter_type == "ALL" else f"AND t.type = '{filter_type}'"
+    filter_type = filter_type.strip().upper()
+    type_filter = "" if filter_type == "ALL" else f"AND UPPER(t.type) = '{filter_type}'"
     cur.execute(
         f"""SELECT t.type, t.category, t.merchant, t.amount_cents, t.occurred_at,
                    t.card_id, t.installments, t.installment_number,
