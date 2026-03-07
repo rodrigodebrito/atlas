@@ -9320,13 +9320,13 @@ def debug_today(user_phone: str):
     today = _now_br()
     today_str = today.strftime("%Y-%m-%d")
     cur.execute(
-        "SELECT id, type, amount_cents, merchant, occurred_at, card_id FROM transactions WHERE user_id = ? AND occurred_at LIKE ? ORDER BY occurred_at DESC LIMIT 10",
+        "SELECT id, type, amount_cents, merchant, occurred_at, card_id, category FROM transactions WHERE user_id = ? AND occurred_at LIKE ? ORDER BY occurred_at DESC LIMIT 10",
         (user_id, f"{today_str}%")
     )
     txs = cur.fetchall()
     # Also check without LIKE filter — last 5 transactions
     cur.execute(
-        "SELECT id, type, amount_cents, merchant, occurred_at, card_id FROM transactions WHERE user_id = ? ORDER BY occurred_at DESC LIMIT 5",
+        "SELECT id, type, amount_cents, merchant, occurred_at, card_id, category FROM transactions WHERE user_id = ? ORDER BY occurred_at DESC LIMIT 5",
         (user_id,)
     )
     recent = cur.fetchall()
@@ -9337,8 +9337,8 @@ def debug_today(user_phone: str):
         "now_br": today.isoformat(),
         "today_str": today_str,
         "today_like_pattern": f"{today_str}%",
-        "transactions_today": [{"id": t[0], "type": t[1], "amount": t[2], "merchant": t[3], "occurred_at": t[4], "card_id": t[5]} for t in txs],
-        "recent_transactions": [{"id": t[0], "type": t[1], "amount": t[2], "merchant": t[3], "occurred_at": t[4], "card_id": t[5]} for t in recent],
+        "transactions_today": [{"id": t[0], "type": t[1], "amount": t[2], "merchant": t[3], "occurred_at": t[4], "card_id": t[5], "category": t[6]} for t in txs],
+        "recent_transactions": [{"id": t[0], "type": t[1], "amount": t[2], "merchant": t[3], "occurred_at": t[4], "card_id": t[5], "category": t[6]} for t in recent],
     }
 
 
