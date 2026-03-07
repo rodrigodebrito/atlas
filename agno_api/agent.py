@@ -2352,15 +2352,19 @@ def _find_card(cur, user_id: str, card_name: str):
 
 def _bill_period_start(closing_day: int) -> str:
     """Calcula a data de início do período de fatura atual."""
+    import calendar as _cal_bp
     today = _now_br()
+    safe_day = min(closing_day, _cal_bp.monthrange(today.year, today.month)[1])
     if today.day >= closing_day:
-        start = today.replace(day=closing_day, hour=0, minute=0, second=0, microsecond=0)
+        start = today.replace(day=safe_day, hour=0, minute=0, second=0, microsecond=0)
     else:
         # Mês anterior
         if today.month == 1:
-            start = today.replace(year=today.year - 1, month=12, day=closing_day)
+            prev_safe = min(closing_day, _cal_bp.monthrange(today.year - 1, 12)[1])
+            start = today.replace(year=today.year - 1, month=12, day=prev_safe)
         else:
-            start = today.replace(month=today.month - 1, day=closing_day)
+            prev_safe = min(closing_day, _cal_bp.monthrange(today.year, today.month - 1)[1])
+            start = today.replace(month=today.month - 1, day=prev_safe)
     return start.isoformat()
 
 
@@ -3283,7 +3287,7 @@ def get_next_bill(user_phone: str, card_name: str) -> str:
     # Determina o próximo ciclo de fechamento
     if today.day < closing_day:
         # Ainda não fechou neste mês → próximo fechamento = este mês
-        next_close = today.replace(day=closing_day)
+        next_close = today.replace(day=min(closing_day, calendar.monthrange(today.year, today.month)[1]))
     else:
         # Já fechou → próximo fechamento = mês que vem
         y = today.year + (1 if today.month == 12 else 0)
@@ -8000,14 +8004,17 @@ def _pre_route(message: str) -> dict | None:
 
     # --- AGENDA: criar evento (detecta trigger + tempo) ---
     _agenda_trigger = _re_router.match(
-        r'(?:me\s+)?(?:lembr[aeo]r?|avisa[r]?)\s+.+'
+        r'(?:me\s+)?(?:lembr[aeo]r?|avisa[r]?)\s+(?:de\s+|que\s+|para\s+|pra\s+)?.+'
         r'|tenho\s+(?:um\s+)?(?:compromisso|evento|reuni[aã]o)\s+.+'
-        r'|(?:agendar?|marcar?)\s+.+'
+        r'|(?:agendar?|marcar?)\s+(?:um\s+)?(?:compromisso|evento|reuni[aã]o|lembrete|consulta|hor[aá]rio)\s+.+'
         r'|.+\s+(?:de\s+\d+\s+em\s+\d+\s+hora|a\s+cada\s+\d+\s+hora)',
         msg
     )
     if _agenda_trigger:
-        parsed = _parse_agenda_message(msg)
+        try:
+            parsed = _parse_agenda_message(msg)
+        except Exception:
+            parsed = None
         if parsed and parsed.get("confidence", 0) >= 0.7:
             result = _call(
                 create_agenda_event, user_phone,
@@ -8307,7 +8314,10 @@ def _keyword_route(user_phone: str, msg: str) -> dict | None:
 
     # --- AGENDA: criar (keyword fuzzy) ---
     if any(k in n for k in ("lembra", "lembrar", "lembrete", "agendar", "agenda")) and len(n) > 15:
-        parsed = _parse_agenda_message(msg)
+        try:
+            parsed = _parse_agenda_message(msg)
+        except Exception:
+            parsed = None
         if parsed and parsed.get("confidence", 0) >= 0.7:
             result = _call(
                 create_agenda_event, user_phone,
