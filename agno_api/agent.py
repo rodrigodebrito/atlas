@@ -9347,6 +9347,25 @@ def get_pending_import(user_phone: str):
     return {"import_id": row[0] if row else None}
 
 
+@app.get("/v1/debug/traceback")
+def debug_traceback(user_phone: str, func: str = "get_cards"):
+    """Debug: chama uma função e retorna traceback se der erro."""
+    import traceback as _tb
+    user_phone = user_phone.strip()
+    if not user_phone.startswith("+"):
+        user_phone = "+" + user_phone
+    fn_map = {"get_cards": get_cards, "get_upcoming_commitments": get_upcoming_commitments}
+    tool_fn = fn_map.get(func)
+    if not tool_fn:
+        return {"error": f"func '{func}' not found"}
+    fn = getattr(tool_fn, 'entrypoint', None) or tool_fn
+    try:
+        result = fn(user_phone)
+        return {"result": result[:500] if result else "None"}
+    except Exception as e:
+        return {"error": str(e), "traceback": _tb.format_exc()}
+
+
 @app.get("/v1/debug/users")
 def debug_users():
     """Debug: lista todos os users."""
