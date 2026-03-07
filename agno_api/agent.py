@@ -437,7 +437,8 @@ class _PGCursor:
         self._conn = conn
 
     def execute(self, sql, params=()):
-        self._cur.execute(sql.replace("?", "%s"), params)
+        # Escapa % literais (ex: LIKE 'card_%') antes de converter ? → %s
+        self._cur.execute(sql.replace("%", "%%").replace("?", "%s"), params)
 
     def fetchone(self):
         return self._cur.fetchone()
@@ -2995,12 +2996,8 @@ def get_bills(user_phone: str, month: str = "") -> str:
         return _get_bills_impl(user_phone, month)
     except Exception as e:
         import traceback
-        tb = traceback.format_exc()
-        _logger.error(f"[GET_BILLS] ERROR for {user_phone} month={month}:\n{tb}")
-        # Inclui linha do erro para diagnóstico remoto
-        tb_lines = [l for l in tb.strip().split('\n') if 'agent.py' in l]
-        loc = tb_lines[-1].strip() if tb_lines else "?"
-        return f"Erro ao buscar compromissos: {str(e)} [{loc}]"
+        _logger.error(f"[GET_BILLS] ERROR for {user_phone} month={month}:\n{traceback.format_exc()}")
+        return f"Erro ao buscar compromissos: {str(e)}"
 
 def _get_bills_impl(user_phone: str, month: str = "") -> str:
     conn = _get_conn()
