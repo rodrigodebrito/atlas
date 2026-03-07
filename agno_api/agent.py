@@ -7028,7 +7028,7 @@ def _pre_route(message: str) -> dict | None:
         return {"response": "Nenhum dado encontrado. Comece registrando um gasto!"}
 
     # --- RESUMO MENSAL ---
-    if _re_router.match(r'(como t[aá] meu m[eê]s|resumo (?:do |mensal|deste |desse )?m[eê]s|meus gastos(?: do m[eê]s)?|como (?:foi|esta|está|tá|ta|anda|andou)(?: meu| o)? m[eê]s|me d[aá] (?:o )?resumo|resumo geral|vis[aã]o geral|saldo do m[eê]s|saldo mensal|quanto (?:eu )?(?:j[aá] )?gastei (?:esse|este|no) m[eê]s|total do m[eê]s|balan[çc]o do m[eê]s|extrato do m[eê]s|extrato mensal|como (?:est[aá]|tá|ta|anda) (?:minhas? )?finan[çc]as)[\?\!\.]*$', msg):
+    if _re_router.match(r'(como t[aá] (?:o )?meu m[eê]s|resumo (?:do |mensal|deste |desse )?m[eê]s|meus gastos(?: do m[eê]s)?|como (?:foi|esta|está|tá|ta|anda|andou)(?: (?:o )?meu| o)? m[eê]s|me d[aá] (?:o )?resumo|resumo geral|vis[aã]o geral|saldo do m[eê]s|saldo mensal|quanto (?:eu )?(?:j[aá] )?gastei (?:esse|este|no) m[eê]s|total do m[eê]s|balan[çc]o do m[eê]s|extrato do m[eê]s|extrato mensal|como (?:est[aá]|tá|ta|anda) (?:minhas? )?finan[çc]as)[\?\!\.]*$', msg):
         summary = _call(get_month_summary, user_phone, current_month, "ALL")
         panel_url = get_panel_url(user_phone)
         if panel_url:
