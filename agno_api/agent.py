@@ -5712,15 +5712,17 @@ def _generate_panel_token(user_id: str) -> str:
     token = _secrets.token_urlsafe(32)
     expires = (_now_br() + timedelta(minutes=30)).isoformat()
     conn = _get_conn()
-    cur = conn.cursor()
-    # Limpa tokens expirados deste usuario
-    cur.execute("DELETE FROM panel_tokens WHERE user_id = ?", (user_id,))
-    cur.execute(
-        "INSERT INTO panel_tokens (token, user_id, expires_at) VALUES (?, ?, ?)",
-        (token, user_id, expires),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        # Limpa tokens expirados deste usuario
+        cur.execute("DELETE FROM panel_tokens WHERE user_id = ?", (user_id,))
+        cur.execute(
+            "INSERT INTO panel_tokens (token, user_id, expires_at) VALUES (?, ?, ?)",
+            (token, user_id, expires),
+        )
+        conn.commit()
+    finally:
+        conn.close()
     return token
 
 
@@ -6845,11 +6847,15 @@ def get_panel_url(user_phone: str) -> str:
         cur = conn.cursor()
         cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
         row = cur.fetchone()
-        conn.close()
         if not row:
+            log.warning(f"[PAINEL] get_panel_url: phone '{user_phone}' nao encontrado na tabela users")
+            conn.close()
             return ""
+        conn.close()
         token = _generate_panel_token(row[0])
-        return f"{_PANEL_BASE_URL}/v1/painel?t={token}"
+        url = f"{_PANEL_BASE_URL}/v1/painel?t={token}"
+        log.info(f"[PAINEL] URL gerada para {user_phone}: {url[:60]}...")
+        return url
     except Exception as exc:
         log.error(f"[PAINEL] Erro ao gerar URL para {user_phone}: {exc}")
         return ""
