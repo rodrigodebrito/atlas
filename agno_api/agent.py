@@ -5266,6 +5266,7 @@ PROIBIDO (vale para QUALQUER variação):
 A ÚNICA exceção para perguntar: quando o valor é ambíguo ("gastei 18" sem contexto → "R$18 em quê?")
 Se sua resposta contém "?" → APAGUE a pergunta. O usuário sabe o que quer e vai pedir.
 ⚠️ REFORÇO: se o resultado da tool inclui dados + insights, PARE DEPOIS DOS DADOS. Não pergunte NADA.
+⚠️ REGRA ABSOLUTA: NUNCA escreva "Quer" no início de uma frase. NUNCA termine resposta com "?". NUNCA ofereça próximos passos. Mostre o dado e PARE.
 
 REGRA 3 — FOLLOW-UPS ("sim", "não", "ok"):
 "sim", "ok", "tá", "beleza" sem contexto claro → "Sim pra quê? 😄 Me diz o que precisa!"
@@ -7376,10 +7377,23 @@ def _strip_trailing_questions(text: str) -> str:
             r'me avise|qualquer coisa|pode me perguntar|'
             r'quer que eu|posso te ajudar|precisa de algo|'
             r'se quiser|caso precise|posso ajudar|'
-            r'quer organizar|quer ver|quer conferir|'
-            r'como posso|em que posso|o que mais)',
+            r'quer organizar|quer ver|quer conferir|quer ajuda|'
+            r'como posso|em que posso|o que mais|'
+            r'cuidado|aten[çc][aã]o.*quer)',
             last.lower()
         ))
+        # Também detecta frases coladas: "texto. Quer X?"
+        if not is_proactive and '?' in last:
+            _quer_match = _re_sq.search(r'[.!]\s*(Quer|Gostaria|Posso|Deseja)\s+.+\?$', last)
+            if _quer_match:
+                # Remove só a parte da pergunta
+                last_clean = last[:_quer_match.start()+1].strip()
+                if last_clean:
+                    lines[-1] = last_clean
+                    break
+                else:
+                    lines.pop()
+                    continue
         # Pergunta direta no final (termina com ?) — mas não se for a única linha informativa
         is_question = last.endswith("?") and len(lines) > 1
         # Preserva clarificações legítimas (valor ambíguo etc)
