@@ -7133,6 +7133,12 @@ def _pre_route(message: str) -> dict | None:
     if _re_router.match(r'((?:ver )?categorias|gastos? por categoria|breakdown|quanto (?:gastei )?(?:em |por )cada categoria)[\?\!\.]*$', msg):
         return {"response": _call(get_all_categories_breakdown, user_phone, current_month)}
 
+    # --- EDITAR CARTÃO (link do painel) ---
+    if _re_router.match(r'(?:editar?|configurar?|alterar?|mudar?)\s+(?:o\s+|meu\s+|meus\s+)?(?:cart[aã]o|cart[oõ]es|dados?\s+do\s+cart[aã]o)(?:\s+.+?)?[\?\!\.]*$', msg):
+        panel_url = get_panel_url(user_phone)
+        if panel_url:
+            return {"response": f"📊 Seu painel está pronto!\n\n👉 {panel_url}\n\nLá você pode editar cartões, ver transações e muito mais.\n_Link válido por 30 minutos._"}
+
     # --- AJUDA ---
     if _re_router.match(r'(ajuda|help|menu|o que voc[eê] faz|comandos|como (?:te )?(?:uso|usar)|(?:o que|oque) (?:vc|voc[eê]) (?:faz|sabe fazer)|funcionalidades|recursos)[\?\!\.]*$', msg):
         return {"response": _HELP_TEXT}
@@ -7179,6 +7185,7 @@ _HELP_TEXT = """📋 *ATLAS — Manual Rápido*
 • _"meus cartões"_ — lista todos
 • _"extrato do Nubank"_ — gastos por categoria + limite
 • _"limite do Nubank é 5000"_ — atualiza limite
+• _"editar cartão"_ — abre painel para editar dados
 • _"minhas parcelas"_
 
 📌 *Contas a pagar:*
