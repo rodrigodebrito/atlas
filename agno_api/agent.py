@@ -786,22 +786,32 @@ def save_transaction(
 
     # Monta resposta WhatsApp formatada
     if transaction_type == "INCOME":
-        lines = [f"💰 *R${amount_cents/100:,.2f}* registrado — {category}".replace(",", ".")]
+        amt_fmt = f"R${amount_cents/100:,.2f}".replace(",", ".")
+        lines = [f"💰 *Receita registrada!*"]
+        lines.append(f"*Valor:* {amt_fmt}")
+        lines.append(f"*Categoria:* {category}")
         if merchant:
-            lines[0] += f" ({merchant})"
+            lines.append(f"*Origem:* {merchant}")
+        lines.append(f"📅 *Data:* {date_label}")
+        lines.append('_Errou? → "corrige" ou "apaga"_')
     elif installments > 1:
         parcela_fmt = f"R${amount_cents/100:,.2f}".replace(",", ".")
         total_fmt = f"R${total_amount_cents/100:,.2f}".replace(",", ".")
-        lines = [f"✅ *{parcela_fmt}/mês × {installments}x* — {category}"]
-        detail_parts = merchant_parts + [f"_{total_fmt} total_"]
-        lines.append("📍 " + "  •  ".join(detail_parts))
-        lines.append(f"📅 {date_label}")
+        lines = [f"✅ *Parcelamento registrado!*"]
+        lines.append(f"*Valor:* {parcela_fmt}/mês × {installments}x ({total_fmt} total)")
+        lines.append(f"*Categoria:* {category}")
+        if merchant_parts:
+            lines.append("*Local:* " + "  •  ".join(merchant_parts))
+        lines.append(f"📅 *Data:* {date_label}")
         lines.append('_Errou? → "corrige" ou "apaga"_')
     else:
-        lines = [f"✅ *R${amount_cents/100:,.2f} — {category}*".replace(",", ".")]
+        amt_fmt = f"R${amount_cents/100:,.2f}".replace(",", ".")
+        lines = [f"✅ *Gasto registrado!*"]
+        lines.append(f"*Valor:* {amt_fmt}")
+        lines.append(f"*Categoria:* {category}")
         if merchant_parts:
-            lines.append("📍 " + "  •  ".join(merchant_parts))
-        lines.append(f"📅 {date_label}")
+            lines.append("*Local:* " + "  •  ".join(merchant_parts))
+        lines.append(f"📅 *Data:* {date_label}")
         lines.append('_Errou? → "corrige" ou "apaga"_')
 
     result = "\n".join(lines)
@@ -983,8 +993,8 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
 
     # Filter type label
     filter_label = {"EXPENSE": " — apenas gastos", "INCOME": " — apenas receitas", "ALL": ""}.get(filter_type, "")
-    lines = [f"*{user_name}*, seu resumo de *{month_label}*{date_label}{filter_label}:"]
-    lines.append("")
+    lines = [f"📊 *{user_name}*, seu resumo de *{month_label}*{date_label}{filter_label}:"]
+    lines.append("─────────────────────")
 
     income_rows_detail = [(r[1], r[2]) for r in rows if r[0] == "INCOME"]
     total_expenses = cash_expenses + credit_expenses
@@ -1014,7 +1024,8 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         lines.append(f"💰 *Total recebido: R${income/100:,.2f}*".replace(",", "."))
 
     if filter_type == "ALL":
-        lines.append(f"{'✅' if balance >= 0 else '⚠️'} Saldo: *R${balance/100:,.2f}*".replace(",", "."))
+        lines.append("─────────────────────")
+        lines.append(f"{'✅' if balance >= 0 else '⚠️'} *Saldo: R${balance/100:,.2f}*".replace(",", "."))
 
     # Calcula compromissos restantes do mês — direto da fonte, sem depender da tabela bills
     pending_commitments = 0
@@ -1307,7 +1318,8 @@ def get_installments_summary(user_phone: str) -> str:
 
     total_monthly = 0
     total_commitment = 0
-    lines = ["💳 Compras parceladas:"]
+    lines = ["💳 *Compras parceladas*"]
+    lines.append("─────────────────────")
 
     # Novo sistema: conta registros futuros do grupo
     conn2 = _get_conn()
@@ -1363,8 +1375,9 @@ def get_installments_summary(user_phone: str) -> str:
     if total_monthly == 0:
         return "Nenhuma parcela ativa no momento."
 
-    lines.append(f"\n💸 Total comprometido/mês: R${total_monthly/100:.2f}")
-    lines.append(f"🔒 Compromisso total restante: R${total_commitment/100:.2f}")
+    lines.append("\n─────────────────────")
+    lines.append(f"💸 *Comprometido/mês:* R${total_monthly/100:.2f}")
+    lines.append(f"🔒 *Total restante:* R${total_commitment/100:.2f}")
     return "\n".join(lines)
 
 
@@ -1540,24 +1553,24 @@ def update_last_transaction(
         if found_d:
             ref += f" ({found_d[8:10]}/{found_d[5:7]})"
 
-        parts = []
+        lines = [f"✏️ *Corrigido!* — {ref}"]
         if occurred_at:
             d = occurred_at[:10]
-            parts.append(f"data: {d[8:10]}/{d[5:7]}/{d[:4]}")
+            lines.append(f"*Data:* {d[8:10]}/{d[5:7]}/{d[:4]}")
         if installments > 0:
-            parts.append(f"{installments}x de R${(base_total // installments)/100:.2f} (R${base_total/100:.2f} total)")
+            lines.append(f"*Parcelas:* {installments}x de R${(base_total // installments)/100:.2f} (R${base_total/100:.2f} total)")
         elif amount_cents > 0:
-            parts.append(f"valor: R${amount:.2f}")
+            lines.append(f"*Valor:* R${amount:.2f}")
         if payment_method:
-            parts.append(f"pagamento: {payment_method}")
+            lines.append(f"*Pagamento:* {payment_method}")
         if category:
-            parts.append(f"categoria: {category}")
+            lines.append(f"*Categoria:* {category}")
         if merchant:
-            parts.append(f"local: {merchant}")
+            lines.append(f"*Local:* {merchant}")
         if type_:
-            parts.append(f"tipo: {type_}")
+            lines.append(f"*Tipo:* {type_}")
 
-        return f"OK — {ref} corrigido: {' | '.join(parts)}."
+        return "\n".join(lines)
 
     except Exception as e:
         return f"ERRO: {str(e)}"
@@ -1670,12 +1683,12 @@ def delete_last_transaction(
         conn.commit()
         conn.close()
         total_fmt = f"R${total_cents/100:.2f}" if total_cents else f"R${amount_cents*installments/100:.2f}"
-        return f"✅ Apagado! {installments}x {category}{merchant_info} ({total_fmt} total) removido."
+        return f"🗑️ *Apagado!*\n*Parcelas:* {installments}x {category}{merchant_info}\n*Total removido:* {total_fmt}"
     else:
         cur.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
         conn.commit()
         conn.close()
-        return f"✅ Apagado! R${amount_cents/100:.2f} {category}{merchant_info} removido."
+        return f"🗑️ *Apagado!*\n*Valor:* R${amount_cents/100:.2f}\n*Categoria:* {category}{merchant_info}"
 
 
 @tool(description="Apaga MÚLTIPLAS transações por filtro. Fluxo 2 etapas: 1ª confirm=False (lista), 2ª confirm=True (apaga). Filtros: merchant, date (YYYY-MM-DD), month (YYYY-MM), week=True, category. Uma transação só→use delete_last_transaction.")
@@ -1786,7 +1799,8 @@ def delete_transactions(
             _log_pa.getLogger("atlas").error(f"[PENDING_ACTION] SAVE FAILED: {e}")
             import traceback; traceback.print_exc()
         conn.close()
-        lines = [f"⚠️ *{len(rows)} transação(ões) encontradas* ({total_fmt} total):"]
+        lines = [f"⚠️ *{len(rows)} transação(ões) encontrada(s)* — {total_fmt} total"]
+        lines.append("─────────────────────")
         for _, amt, merch, cat, occ in rows[:15]:
             d = occ[:10]
             d_fmt = f"{d[8:10]}/{d[5:7]}"
@@ -1795,7 +1809,7 @@ def delete_transactions(
         if len(rows) > 15:
             lines.append(f"  _...e mais {len(rows) - 15}_")
         lines.append("")
-        lines.append("Confirma a exclusão? Responda *sim* para apagar.")
+        lines.append("⚠️ Confirma a exclusão? Responda *sim* para apagar.")
         return "\n".join(lines)
 
     # ETAPA 2: apagar de fato (confirm=True)
@@ -1815,7 +1829,8 @@ def delete_transactions(
     conn.commit()
     conn.close()
 
-    lines = [f"✅ *{deleted} transação(ões) apagadas* ({total_fmt} total):"]
+    lines = [f"🗑️ *{deleted} transação(ões) apagada(s)!* — {total_fmt} total"]
+    lines.append("─────────────────────")
     for _, amt, merch, cat, occ in rows[:10]:
         d = occ[:10]
         d_fmt = f"{d[8:10]}/{d[5:7]}"
@@ -1894,8 +1909,8 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     inc_rows = [(r[1], r[2], r[3]) for r in rows if r[0] == "INCOME"]
 
     filter_label = {"EXPENSE": " — apenas gastos", "INCOME": " — apenas receitas", "ALL": ""}.get(filter_type, "")
-    lines = [f"*{user_name}*, suas movimentações — {period_label}{filter_label}:"]
-    lines.append("")
+    lines = [f"📅 *{user_name}*, suas movimentações — {period_label}{filter_label}:"]
+    lines.append("─────────────────────")
 
     def build_exp_block(tx_list, ref_total):
         cat_totals: dict = defaultdict(int)
@@ -2086,7 +2101,7 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
         return f"Nenhuma transação em {category} em {month}."
 
     total = sum(r[1] for r in rows)
-    lines = [f"🔍 {category} em {month} — R${total/100:.2f} total ({len(rows)} transações):"]
+    lines = [f"🔍 *{category}* em {month} — *R${total/100:.2f}* total ({len(rows)} transações)"]
 
     # group by merchant
     merchants: dict[str, int] = {}
@@ -2140,7 +2155,7 @@ def get_all_categories_breakdown(user_phone: str, month: str = "") -> str:
     except Exception:
         month_label = month
 
-    lines = [f"📊 *Categorias — {month_label}*", f"💸 Total: R${grand_total/100:,.2f}".replace(",", "."), ""]
+    lines = [f"📊 *Categorias — {month_label}*", f"💸 *Total:* R${grand_total/100:,.2f}".replace(",", "."), "─────────────────────"]
 
     for cat, total, cnt in rows:
         pct = total / grand_total * 100
@@ -2433,7 +2448,8 @@ def get_cards(user_phone: str) -> str:
         return "Nenhum cartão cadastrado. Use register_card para adicionar."
 
     today = _now_br()
-    lines = [f"💳 Seus cartões ({today.strftime('%d/%m/%Y')}):"]
+    lines = [f"💳 *Seus cartões* — {today.strftime('%d/%m/%Y')}"]
+    lines.append("─────────────────────")
     for card_row in cards:
         card_id, name, closing_day, due_day, limit_cents, opening_cents, last_paid = card_row[:7]
         available_cents = card_row[7] if len(card_row) > 7 else None
@@ -2459,28 +2475,31 @@ def get_cards(user_phone: str) -> str:
                 days_to_close = closing_day - today.day
             else:
                 days_to_close = (30 - today.day) + closing_day
-            close_str = f" (fecha em {days_to_close} dias — dia {closing_day})"
+            close_str = f" _(fecha em {days_to_close} dias)_"
         else:
             close_str = ""
 
         # Limite e disponível
         if available_cents is not None:
-            limit_str = f" | Limite: R${limit_cents/100:.0f}" if limit_cents else ""
-            avail_str = f" | Disponível: R${available_cents/100:.0f}"
+            limit_line = f"\n   *Limite:* R${limit_cents/100:.0f}" if limit_cents else ""
+            avail_line = f"\n   *Disponível:* R${available_cents/100:.0f}"
         elif limit_cents and limit_cents > 0:
             available = limit_cents - bill_total
-            limit_str = f" | Limite: R${limit_cents/100:.0f}"
-            avail_str = f" | Disponível: R${available/100:.0f}"
+            limit_line = f"\n   *Limite:* R${limit_cents/100:.0f}"
+            avail_line = f"\n   *Disponível:* R${available/100:.0f}"
         else:
-            limit_str = ""
-            avail_str = ""
+            limit_line = ""
+            avail_line = ""
 
         lines.append(
-            f"\n💳 {name}\n"
-            f"   Fatura: R${bill_total/100:.2f}{close_str}{limit_str}{avail_str}\n"
-            f"   Vencimento: dia {due_day}"
+            f"\n💳 *{name}*\n"
+            f"   *Fatura:* R${bill_total/100:.2f}{close_str}\n"
+            f"   *Vencimento:* dia {due_day}"
+            f"{limit_line}{avail_line}"
         )
 
+    lines.append("")
+    lines.append('_Dica: "extrato do Nubank" para ver detalhes_')
     conn.close()
     return "\n".join(lines)
 
@@ -2677,12 +2696,13 @@ def get_recurring(user_phone: str) -> str:
 
     total = sum(r[1] for r in rows)
     today = _now_br().day
-    lines = [f"📋 Gastos fixos mensais — Total: R${total/100:.2f}"]
+    lines = [f"📋 *Gastos fixos mensais* — Total: *R${total/100:.2f}*"]
+    lines.append("─────────────────────")
     for name, amount, category, day, merchant, card_name in rows:
         paid = "✅" if day < today else "⏳"
-        card_str = f" ({card_name})" if card_name else ""
+        card_str = f" 💳 {card_name}" if card_name else ""
         merch_str = f" — {merchant}" if merchant else ""
-        lines.append(f"  {paid} Dia {day:02d}: {name}{merch_str} — R${amount/100:.2f} [{category}]{card_str}")
+        lines.append(f"  {paid} *Dia {day:02d}:* {name}{merch_str} — R${amount/100:.2f} [{category}]{card_str}")
 
     return "\n".join(lines)
 
@@ -3090,18 +3110,19 @@ def get_bills(user_phone: str, month: str = "") -> str:
     m_num = int(month.split("-")[1])
     month_label = months_pt.get(m_num, month)
 
-    lines = [f"📋 *Contas a pagar — {month_label}:*\n"]
+    lines = [f"📋 *Contas a pagar — {month_label}*"]
+    lines.append("─────────────────────")
 
     for name, amt, due, paid, paid_at, cat in rows:
         d = due[8:10] + "/" + due[5:7]
         amt_fmt = f"R${amt/100:,.2f}".replace(",", ".")
         if paid:
-            lines.append(f"  ✅ {d} — {name}: {amt_fmt} _(pago)_")
+            lines.append(f"  ✅ *{d}* — {name}: {amt_fmt} _(pago)_")
         else:
-            lines.append(f"  ⬜ {d} — {name}: {amt_fmt}")
+            lines.append(f"  ⬜ *{d}* — {name}: {amt_fmt}")
 
-    lines.append("")
-    lines.append(f"💰 Total: {f'R${total/100:,.2f}'.replace(',', '.')} | ✅ Pago: {f'R${paid_total/100:,.2f}'.replace(',', '.')} | ⬜ Falta: {f'R${pending_total/100:,.2f}'.replace(',', '.')}")
+    lines.append("─────────────────────")
+    lines.append(f"*Total:* {f'R${total/100:,.2f}'.replace(',', '.')} | ✅ *Pago:* {f'R${paid_total/100:,.2f}'.replace(',', '.')} | ⬜ *Falta:* {f'R${pending_total/100:,.2f}'.replace(',', '.')}")
 
     return "\n".join(lines)
 
@@ -3347,7 +3368,7 @@ def get_card_statement(user_phone: str, card_name: str, month: str = "") -> str:
         month_label = month
 
     lines = [f"💳 *{name} — {month_label}*"]
-    lines.append("")
+    lines.append("─────────────────────")
 
     if not rows:
         lines.append("Nenhum gasto neste cartão no período.")
@@ -3842,7 +3863,7 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     filter_label = {"EXPENSE": " — apenas gastos", "INCOME": " — apenas receitas", "ALL": ""}.get(filter_type, "")
     period = f"{start_label}" if start_label == end_label else f"{start_label} a {end_label}"
     lines = [f"📅 *{user_name}*, sua semana ({period}){filter_label}:"]
-    lines.append("")
+    lines.append("─────────────────────")
 
     top_cat_name, top_pct_val = "", 0.0
     alertas = []
@@ -4070,23 +4091,23 @@ def can_i_buy(user_phone: str, amount: float, description: str = "") -> str:
     icon = {"YES": "✅", "CAUTION": "⚠️", "DEFER": "⏳", "NO": "🚫"}[verdict]
     label = {"YES": "Pode comprar", "CAUTION": "Com cautela", "DEFER": "Melhor adiar", "NO": "Não recomendo"}[verdict]
 
-    lines = [f"{icon} {label} — {item_label} (R${amount_cents/100:.2f})"]
-    lines.append("")
+    lines = [f"{icon} *{label}* — {item_label} (R${amount_cents/100:.2f})"]
+    lines.append("─────────────────────")
     renda_label = f"R${income_cents/100:.2f}"
     if income_real > 0 and income_sources:
         renda_label += f"  ({income_sources})"
     elif income_static > 0 and income_real == 0:
-        renda_label += "  (estimativa — registre suas receitas para cálculo exato)"
-    lines.append(f"💰 Renda este mês: {renda_label}")
-    lines.append(f"💸 Gastos este mês: R${expenses_cents/100:.2f}")
+        renda_label += "  _(estimativa)_"
+    lines.append(f"💰 *Renda:* {renda_label}")
+    lines.append(f"💸 *Gastos:* R${expenses_cents/100:.2f}")
     if active_installments_monthly > 0:
-        lines.append(f"💳 Parcelas ativas: R${active_installments_monthly/100:.2f}/mês ({active_installments_count} compra{'s' if active_installments_count > 1 else ''})")
+        lines.append(f"💳 *Parcelas ativas:* R${active_installments_monthly/100:.2f}/mês ({active_installments_count} compra{'s' if active_installments_count > 1 else ''})")
     if upcoming_recurring > 0:
-        lines.append(f"📋 Gastos fixos a vencer: R${upcoming_recurring/100:.2f}")
+        lines.append(f"📋 *Fixos a vencer:* R${upcoming_recurring/100:.2f}")
     if card_pretracking_cents > 0:
-        lines.append(f"💳 Saldo anterior cartões: R${card_pretracking_cents/100:.2f}")
-    lines.append(f"📊 Saldo real: R${budget_remaining/100:.2f} → após compra: R${budget_after/100:.2f}")
-    lines.append(f"📈 Taxa de poupança: {savings_rate_before:.0f}% → {savings_rate_after:.0f}%")
+        lines.append(f"💳 *Saldo anterior cartões:* R${card_pretracking_cents/100:.2f}")
+    lines.append(f"📊 *Saldo real:* R${budget_remaining/100:.2f} → após compra: R${budget_after/100:.2f}")
+    lines.append(f"📈 *Poupança:* {savings_rate_before:.0f}% → {savings_rate_after:.0f}%")
 
     if verdict == "YES":
         lines.append(f"\n✅ Cabe tranquilo. Representa {pct_income:.0f}% da sua renda.")
@@ -4407,33 +4428,37 @@ def get_financial_score(user_phone: str) -> str:
         "C+": "😐", "C": "⚠️", "D": "😟", "F": "🚨"
     }[grade]
 
-    lines = [f"{grade_emoji} Score de {today.strftime('%B/%Y')}: {final}/100 — {grade}"]
-    lines.append("")
+    lines = [f"{grade_emoji} *Score de saúde financeira* — {final}/100 ({grade})"]
+    lines.append("─────────────────────")
 
     # detalhes dos componentes
-    lines.append("📊 Componentes:")
-    lines.append(f"  💰 Poupança      {s_score:.0f}/100  (peso 35%)")
-    lines.append(f"  📅 Consistência  {c_score:.0f}/100  (peso 25%)")
-    lines.append(f"  🎯 Metas         {g_score:.0f}/100  (peso 20%)")
-    lines.append(f"  🧮 Orçamento     {b_score:.0f}/100  (peso 20%)")
+    lines.append("📊 *Componentes:*")
+    bar_s = "█" * round(s_score / 10) + "░" * (10 - round(s_score / 10))
+    bar_c = "█" * round(c_score / 10) + "░" * (10 - round(c_score / 10))
+    bar_g = "█" * round(g_score / 10) + "░" * (10 - round(g_score / 10))
+    bar_b = "█" * round(b_score / 10) + "░" * (10 - round(b_score / 10))
+    lines.append(f"  💰 *Poupança* {bar_s} {s_score:.0f}/100")
+    lines.append(f"  📅 *Consistência* {bar_c} {c_score:.0f}/100")
+    lines.append(f"  🎯 *Metas* {bar_g} {g_score:.0f}/100")
+    lines.append(f"  🧮 *Orçamento* {bar_b} {b_score:.0f}/100")
 
     # contexto adicional
     lines.append("")
     if has_income and savings_rate > 0:
-        lines.append(f"💸 Taxa de poupança: {savings_rate*100:.1f}%")
-    lines.append(f"📅 Registrou em {active_days} de {days_elapsed} dias do mês")
+        lines.append(f"💸 *Poupança:* {savings_rate*100:.1f}%")
+    lines.append(f"📅 *Registros:* {active_days} de {days_elapsed} dias do mês")
     if goals:
-        lines.append(f"🎯 {len(goals)} meta(s) ativas")
+        lines.append(f"🎯 *Metas:* {len(goals)} ativa(s)")
 
     # principal dica de melhoria
     worst = min(
         [("poupança", s_score), ("consistência", c_score), ("metas", g_score), ("orçamento", b_score)],
         key=lambda x: x[1],
     )
-    lines.append(f"\n💡 Para melhorar: foque em {worst[0]} ({worst[1]:.0f}/100 agora)")
+    lines.append(f"\n💡 *Dica:* foque em {worst[0]} ({worst[1]:.0f}/100 agora)")
 
     if not has_income:
-        lines.append("\n⚠️  Cadastre sua renda para um score mais preciso.")
+        lines.append("\n⚠️ Cadastre sua renda para um score mais preciso.")
 
     return "\n".join(lines)
 
@@ -4559,13 +4584,13 @@ def get_salary_cycle(user_phone: str) -> str:
 
     cycle_label = f"dia {salary_day}" if salary_day > 0 else "mês atual"
 
-    lines = [f"📅 Ciclo de salário ({cycle_label})"]
+    lines = [f"📅 *Ciclo de salário* ({cycle_label})"]
     lines.append(f"   Dia {days_elapsed} de {days_total}  •  {days_remaining} dias restantes")
-    lines.append("")
-    lines.append(f"💰 Renda do ciclo:  R${income_to_use/100:.2f}")
-    lines.append(f"💸 Gasto até agora: R${expenses_cents/100:.2f} ({budget_used_pct:.0f}% da renda)  {status_icon}")
-    lines.append(f"📊 Orçamento diário: R${daily_budget/100:.2f}/dia")
-    lines.append(f"📈 Ritmo atual:      R${daily_pace/100:.2f}/dia")
+    lines.append("─────────────────────")
+    lines.append(f"💰 *Renda:* R${income_to_use/100:.2f}")
+    lines.append(f"💸 *Gasto até agora:* R${expenses_cents/100:.2f} ({budget_used_pct:.0f}% da renda)  {status_icon}")
+    lines.append(f"📊 *Orçamento diário:* R${daily_budget/100:.2f}/dia")
+    lines.append(f"📈 *Ritmo atual:* R${daily_pace/100:.2f}/dia")
     lines.append("")
 
     if projected_leftover >= 0:
@@ -4684,8 +4709,9 @@ def will_i_have_leftover(user_phone: str) -> str:
     max_expenses_for_20pct = income_to_use * 0.80
     max_daily_for_20pct = max_expenses_for_20pct / days_total
 
-    lines = ["💭 Vai sobrar?"]
-    lines.append(f"   {days_remaining} dias restantes  •  Renda: R${income_to_use/100:.2f}  •  Gasto até agora: R${expenses_cents/100:.2f}")
+    lines = ["💭 *Vai sobrar?*"]
+    lines.append(f"   {days_remaining} dias restantes  •  *Renda:* R${income_to_use/100:.2f}  •  *Gastos:* R${expenses_cents/100:.2f}")
+    lines.append("─────────────────────")
     if card_bills_cents > 0:
         lines.append(f"   💳 Faturas a pagar: R${card_bills_cents/100:.2f}")
         for cl in card_bill_lines:
@@ -4696,7 +4722,7 @@ def will_i_have_leftover(user_phone: str) -> str:
 
     # Cenário 1 — ritmo atual
     icon1 = "✅" if projected_leftover > 0 else "🚨"
-    lines.append(f"{icon1} No ritmo atual (R${daily_pace/100:.2f}/dia):")
+    lines.append(f"{icon1} *No ritmo atual* (R${daily_pace/100:.2f}/dia):")
     if projected_leftover > 0:
         pct = projected_leftover / income_to_use * 100
         lines.append(f"   → Sobram R${projected_leftover/100:.2f} ({pct:.0f}% de poupança)")
@@ -4709,7 +4735,7 @@ def will_i_have_leftover(user_phone: str) -> str:
     if cuttable_daily > 0:
         lines.append("")
         icon2 = "✅" if projected_reduced > 0 else "⚠️"
-        lines.append(f"✂️  Cortando 30% do supérfluo (economiza R${savings_ganho/100:.2f}):")
+        lines.append(f"✂️ *Cortando 30% do supérfluo* (economiza R${savings_ganho/100:.2f}):")
         if projected_reduced > 0:
             pct2 = projected_reduced / income_to_use * 100
             lines.append(f"   → Sobram R${projected_reduced/100:.2f} ({pct2:.0f}% poupança)")
@@ -5232,21 +5258,49 @@ NUNCA fale como se fosse o usuário. NUNCA diga "Eu sou o [nome do usuário]".
 Se o usuário diz "Oi eu sou o Pedro" → ele está se apresentando PRA VOCÊ.
 Sua resposta começa com "Oi, Pedro!" — NUNCA repita a frase dele.
 
-Tom: amigável, direto, informal. Português brasileiro natural.
+Tom: amigável, divertido, informal. Português brasileiro natural com personalidade.
 WhatsApp markdown: *negrito*, _itálico_, ~tachado~.
 UMA mensagem por resposta. NUNCA mostre JSON ou campos técnicos internos.
+
+╔══════════════════════════════════════════════════════════════╗
+║  FORMATAÇÃO — VISUAL PROFISSIONAL (OBRIGATÓRIO)              ║
+╚══════════════════════════════════════════════════════════════╝
+
+TODA resposta segue este padrão visual:
+
+1. ABERTURA COM PERSONALIDADE (1-2 linhas):
+   Comece com uma frase curta, divertida e contextual. Use emojis.
+   Ex: "Anotado! Mais um almoço delicioso no Talentos 🍽️"
+   Ex: "Eita, março tá puxado! Vamos ver os números 📊"
+   NUNCA use frases genéricas tipo "Aqui está o resultado".
+
+2. BLOCO DE DADOS com *negrito* nos labels:
+   Use *negrito* para TODOS os labels. Um emoji por campo.
+   ✅ *R$45,00* — Alimentação
+   📍 *Estabelecimento:* iFood
+   💳 *Cartão:* Nubank
+   📅 *Data:* 07/03/2026
+   _Errou? → "corrige" ou "apaga"_
+
+3. NUNCA quebre em múltiplas mensagens. Tudo em UM bloco.
+
+4. ENCERRAMENTO (última linha, SEMPRE):
+   Termine com uma frase curta e simpática. SEM perguntas.
+   Ex: "Tá tudo anotado! 💪"
+   Ex: "Suas finanças em dia! 📈"
+   NUNCA "Se precisar de algo..." ou "Qualquer coisa me chame".
 
 ╔══════════════════════════════════════════════════════════════╗
 ║  REGRAS CRÍTICAS — VIOLAÇÃO = BUG GRAVE                     ║
 ╚══════════════════════════════════════════════════════════════╝
 
-REGRA 1 — TOOL OUTPUT VERBATIM (A MAIS IMPORTANTE):
-Após chamar QUALQUER tool, copie o resultado EXATAMENTE como veio.
-NÃO reformule. NÃO resuma. NÃO prefixe com nome do usuário.
-O PRIMEIRO CARACTERE da sua resposta = primeiro caractere do output da tool.
-ERRADO: "Pronto! Anotei R$45 no iFood." ← NUNCA reformule
-ERRADO: "Rodrigo, aqui está seu resumo..." ← NUNCA prefixe
-CERTO: colar o output da tool inteiro, começando pelo ✅ ou 💸 ou 🔍
+REGRA 1 — TOOL OUTPUT COM PERSONALIDADE:
+Após chamar QUALQUER tool, inclua TODOS os dados do resultado sem omitir nada.
+PODE adicionar uma abertura curta e divertida (1 linha) ANTES dos dados.
+PODE formatar com *negrito* nos labels e emojis contextuais.
+NÃO resuma nem omita dados. NÃO invente números. NÃO mude valores.
+ERRADO: omitir categorias do resumo, arredondar valores
+CERTO: abertura divertida + todos os dados formatados com negrito e emojis
 
 REGRA 2 — ZERO PERGUNTAS (CRÍTICA — VIOLAÇÃO = FALHA TOTAL):
 NUNCA faça perguntas ao usuário. NUNCA. Isso inclui:
@@ -7125,7 +7179,7 @@ def _pre_route(message: str) -> dict | None:
     if _re_router.match(r'(painel|dashboard|meu painel|me mostr[ea] o painel|abr[ea] o painel|quero ver o painel|ver painel)[\?\!\.]*$', msg):
         panel_url = get_panel_url(user_phone)
         if panel_url:
-            return {"response": f"📊 Seu painel esta pronto!\n\n👉 {panel_url}\n\n_Link valido por 30 minutos. La voce pode ver graficos, editar e apagar transacoes._"}
+            return {"response": f"📊 *Seu painel está pronto!*\n\n👉 {panel_url}\n\n_Link válido por 30 minutos. Lá você pode ver gráficos, editar e apagar transações._"}
         return {"response": "Nenhum dado encontrado. Comece registrando um gasto!"}
 
     # --- RESUMO MENSAL ---
@@ -7135,7 +7189,7 @@ def _pre_route(message: str) -> dict | None:
         panel_url = get_panel_url(user_phone)
         print(f"[PRE-ROUTE] panel_url = '{panel_url}'")
         if panel_url:
-            summary += f"\n\n📊 Ver painel com graficos: {panel_url}"
+            summary += f"\n\n📊 *Ver painel com gráficos:* {panel_url}"
         return {"response": summary}
 
     # Resumo de dois meses: "resumo de março e abril", "gastos de fevereiro e março"
@@ -7284,7 +7338,7 @@ def _pre_route(message: str) -> dict | None:
     if _re_router.match(r'(?:editar?|configurar?|alterar?|mudar?)\s+(?:o\s+|meu\s+|meus\s+)?(?:cart[aã]o|cart[oõ]es|dados?\s+do\s+cart[aã]o)(?:\s+.+?)?[\?\!\.]*$', msg):
         panel_url = get_panel_url(user_phone)
         if panel_url:
-            return {"response": f"📊 Seu painel está pronto!\n\n👉 {panel_url}\n\nLá você pode editar cartões, ver transações e muito mais.\n_Link válido por 30 minutos._"}
+            return {"response": f"📊 *Seu painel está pronto!*\n\n👉 {panel_url}\n\nLá você pode editar cartões, ver transações e muito mais.\n_Link válido por 30 minutos._"}
 
     # --- AJUDA ---
     if _re_router.match(r'(ajuda|help|menu|o que voc[eê] faz|comandos|como (?:te )?(?:uso|usar)|(?:o que|oque) (?:vc|voc[eê]) (?:faz|sabe fazer)|funcionalidades|recursos)[\?\!\.]*$', msg):
@@ -7304,61 +7358,65 @@ def _pre_route(message: str) -> dict | None:
                 _uname = _urow[0]
         except Exception:
             pass
-        greeting = f"Olá, {_uname}! 👋" if _uname else "Olá! 👋"
-        return {"response": f"{greeting} Sou o *ATLAS*, seu assistente financeiro.\n\nMe diz o que precisa — pode lançar um gasto, pedir o resumo do mês, ou digitar *ajuda* pra ver tudo que eu faço."}
+        greeting = f"Fala, {_uname}! 👋" if _uname else "Fala! 👋"
+        return {"response": f"{greeting} Sou o *ATLAS*, seu copiloto financeiro.\n\nMe diz o que precisa — lança um gasto, pede o resumo do mês, ou digita *ajuda* pra ver tudo que eu faço. 🎯"}
 
     return None  # Fallback ao agente LLM
 
 _HELP_TEXT = """📋 *ATLAS — Manual Rápido*
+─────────────────────
 
 💸 *Lançar gastos:*
-• _"gastei 45 no iFood"_
-• _"mercado 120"_
-• _"uber 18 ontem"_
-• _"tênis 300 em 3x no Nubank"_
+  • _"gastei 45 no iFood"_
+  • _"mercado 120"_
+  • _"uber 18 ontem"_
+  • _"tênis 300 em 3x no Nubank"_
 
 💰 *Receitas:*
-• _"recebi 4500 de salário"_
-• _"entrou 1200 de freela"_
+  • _"recebi 4500 de salário"_
+  • _"entrou 1200 de freela"_
 
-📊 *Resumos:*
-• _"como tá meu mês?"_ — saldo + compromissos
-• _"como foi minha semana?"_
-• _"gastos de hoje"_
-• _"extrato de março"_ — entradas e saídas separadas
-• _"resumo de março e abril"_ — dois meses
+📊 *Resumos e relatórios:*
+  • _"como tá meu mês?"_ — saldo + compromissos
+  • _"como foi minha semana?"_
+  • _"gastos de hoje"_
+  • _"extrato de março"_
+  • _"resumo de março e abril"_
+  • _"categorias"_ — breakdown por categoria
 
 💳 *Cartões:*
-• _"meus cartões"_ — lista todos
-• _"extrato do Nubank"_ — gastos por categoria + limite
-• _"limite do Nubank é 5000"_ — atualiza limite
-• _"editar cartão"_ — abre painel para editar dados
-• _"minhas parcelas"_
+  • _"meus cartões"_ — lista com faturas
+  • _"extrato do Nubank"_ — gastos + limite
+  • _"limite do Nubank é 5000"_
+  • _"editar cartão"_ — abre painel
+  • _"minhas parcelas"_
 
 📌 *Contas a pagar:*
-• _"aluguel 1500 todo dia 5"_ — gasto fixo
-• _"boleto de 600 no dia 15"_ — conta avulsa
-• _"paguei o aluguel"_ — marca como pago
-• _"meus compromissos"_ — pago/pendente
-• _"compromissos dos próximos 3 meses"_
+  • _"aluguel 1500 todo dia 5"_ — gasto fixo
+  • _"boleto de 600 no dia 15"_
+  • _"paguei o aluguel"_
+  • _"meus compromissos"_
+  • _"compromissos dos próximos 3 meses"_
 
 🧠 *Inteligência:*
-• _"posso comprar um tênis de 200?"_
-• _"vai sobrar até o fim do mês?"_
-• _"quanto posso gastar por dia?"_
-• _"meu score financeiro"_
+  • _"posso comprar um tênis de 200?"_
+  • _"vai sobrar até o fim do mês?"_
+  • _"quanto posso gastar por dia?"_
+  • _"meu score financeiro"_
 
 🎯 *Metas:*
-• _"quero guardar 5000 pra viagem"_
-• _"guardei 500 na meta"_
+  • _"quero guardar 5000 pra viagem"_
+  • _"guardei 500 na meta"_
 
 ✏️ *Corrigir / Apagar:*
-• _"corrige"_ ou _"apaga"_ — última transação
-• _"apaga todos do iFood deste mês"_
+  • _"corrige"_ ou _"apaga"_
+  • _"apaga todos do iFood"_
+  • _"iFood é Lazer"_ — muda categoria
 
 📊 *Painel visual:*
-• _"painel"_ — abre dashboard com gráficos e edição
+  • _"painel"_ — gráficos + edição
 
+─────────────────────
 👉 Manual completo: https://atlas-m3wb.onrender.com/manual"""
 
 from fastapi import Form as _Form
