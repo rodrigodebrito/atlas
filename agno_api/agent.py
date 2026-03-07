@@ -5743,6 +5743,13 @@ def _validate_panel_token(token: str) -> str | None:
 def _get_panel_data(user_id: str, month: str) -> dict:
     """Coleta todos os dados necessarios para o painel."""
     conn = _get_conn()
+    try:
+        return _get_panel_data_inner(conn, user_id, month)
+    finally:
+        conn.close()
+
+
+def _get_panel_data_inner(conn, user_id: str, month: str) -> dict:
     cur = conn.cursor()
 
     # User info
@@ -5866,8 +5873,6 @@ def _get_panel_data(user_id: str, month: str) -> dict:
         projected = (expense_total / days_elapsed) * 30
         insights.append(f"Projecao mensal: R${projected/100:.2f}")
 
-    conn.close()
-
     # Month label
     months_pt = ["", "Janeiro", "Fevereiro", "Marco", "Abril", "Maio", "Junho",
                  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
@@ -5921,15 +5926,17 @@ def _render_panel_html(data: dict, token: str) -> str:
     def esc(s):
         return s.replace("'", "\\'").replace('"', '\\"').replace("\n", " ")
 
-    # JSON data for JS
-    tx_json = _json.dumps(data["transactions"], ensure_ascii=False)
-    cards_json = _json.dumps(data["cards"], ensure_ascii=False)
-    cat_labels = _json.dumps([c["name"] for c in data["categories"]])
+    # JSON data for JS (sanitize </script> to prevent HTML injection)
+    def _safe_json(obj):
+        return _json.dumps(obj, ensure_ascii=False).replace("</", "<\\/")
+    tx_json = _safe_json(data["transactions"])
+    cards_json = _safe_json(data["cards"])
+    cat_labels = _safe_json([c["name"] for c in data["categories"]])
     cat_values = _json.dumps([c["amount"] / 100 for c in data["categories"]])
     cat_colors_json = _json.dumps(cat_colors[:max(len(data["categories"]), 1)])
     daily_labels_json = _json.dumps(data["daily_labels"])
     daily_values_json = _json.dumps(data["daily_values"])
-    cats_data_json = _json.dumps(data["categories"], ensure_ascii=False)
+    cats_data_json = _safe_json(data["categories"])
 
     # Score
     sc = data["score"]
@@ -6691,30 +6698,45 @@ document.addEventListener('DOMContentLoaded', () => {{
 @app.get("/v1/painel")
 def panel_page(t: str = "", phone: str = "", month: str = ""):
     """Painel HTML inteligente — acesso via token temporario."""
+    _error_page = (
+        "<html><body style='background:#0a0a1a;color:#fff;text-align:center;padding:60px;font-family:sans-serif'>"
+        "<h2>{title}</h2><p>{msg}</p></body></html>"
+    )
     user_id = None
     if t:
         user_id = _validate_panel_token(t)
     if not user_id and phone:
         # Fallback: gera token pelo phone (para debug)
-        conn = _get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE phone = ?", (phone,))
-        row = cur.fetchone()
-        conn.close()
-        if row:
-            user_id = row[0]
-            t = _generate_panel_token(user_id)
+        try:
+            conn = _get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM users WHERE phone = ?", (phone,))
+            row = cur.fetchone()
+            conn.close()
+            if row:
+                user_id = row[0]
+                t = _generate_panel_token(user_id)
+        except Exception:
+            pass
     if not user_id:
         return _HTMLResponse(
-            "<html><body style='background:#0a0a1a;color:#fff;text-align:center;padding:60px;font-family:sans-serif'>"
-            "<h2>Link expirado</h2><p>Peca um novo link no WhatsApp:<br><b>\"me mostra o painel\"</b></p></body></html>",
+            _error_page.format(title="Link expirado", msg='Peca um novo link no WhatsApp:<br><b>"me mostra o painel"</b>'),
             status_code=200,
         )
     if not month:
         month = _now_br().strftime("%Y-%m")
-    data = _get_panel_data(user_id, month)
-    html = _render_panel_html(data, t)
-    return _HTMLResponse(html)
+    try:
+        data = _get_panel_data(user_id, month)
+        html = _render_panel_html(data, t)
+        return _HTMLResponse(html)
+    except Exception as exc:
+        import traceback as _tb
+        _err = _tb.format_exc()
+        log.error(f"[PAINEL] Erro ao gerar painel: {_err}")
+        return _HTMLResponse(
+            _error_page.format(title="Erro temporario", msg="Tente novamente em alguns segundos.<br>Se persistir, peca um novo link no WhatsApp."),
+            status_code=200,
+        )
 
 
 @app.delete("/v1/api/transaction/{tx_id}")
@@ -6723,15 +6745,19 @@ def delete_transaction_api(tx_id: str, t: str = ""):
     user_id = _validate_panel_token(t)
     if not user_id:
         return _JSONResponse({"error": "Token invalido ou expirado"}, status_code=401)
-    conn = _get_conn()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM transactions WHERE id = ? AND user_id = ?", (tx_id, user_id))
-    affected = cur.rowcount
-    conn.commit()
-    conn.close()
-    if affected:
-        return _JSONResponse({"ok": True})
-    return _JSONResponse({"error": "Transacao nao encontrada"}, status_code=404)
+    try:
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM transactions WHERE id = ? AND user_id = ?", (tx_id, user_id))
+        affected = cur.rowcount
+        conn.commit()
+        conn.close()
+        if affected:
+            return _JSONResponse({"ok": True})
+        return _JSONResponse({"error": "Transacao nao encontrada"}, status_code=404)
+    except Exception as exc:
+        log.error(f"[PAINEL] Erro ao deletar tx {tx_id}: {exc}")
+        return _JSONResponse({"error": "Erro interno"}, status_code=500)
 
 
 @app.put("/v1/api/transaction/{tx_id}")
@@ -6740,33 +6766,37 @@ async def edit_transaction_api(tx_id: str, request: _Request, t: str = ""):
     user_id = _validate_panel_token(t)
     if not user_id:
         return _JSONResponse({"error": "Token invalido ou expirado"}, status_code=401)
-    body = await request.json()
-    updates = []
-    params = []
-    if "amount_cents" in body:
-        updates.append("amount_cents = ?")
-        params.append(int(body["amount_cents"]))
-    if "category" in body:
-        updates.append("category = ?")
-        params.append(body["category"])
-    if "merchant" in body:
-        updates.append("merchant = ?")
-        params.append(body["merchant"])
-    if "occurred_at" in body:
-        updates.append("occurred_at = ?")
-        params.append(body["occurred_at"])
-    if not updates:
-        return _JSONResponse({"error": "Nada para atualizar"}, status_code=400)
-    params.extend([tx_id, user_id])
-    conn = _get_conn()
-    cur = conn.cursor()
-    cur.execute(f"UPDATE transactions SET {', '.join(updates)} WHERE id = ? AND user_id = ?", params)
-    affected = cur.rowcount
-    conn.commit()
-    conn.close()
-    if affected:
-        return _JSONResponse({"ok": True})
-    return _JSONResponse({"error": "Transacao nao encontrada"}, status_code=404)
+    try:
+        body = await request.json()
+        updates = []
+        params = []
+        if "amount_cents" in body:
+            updates.append("amount_cents = ?")
+            params.append(int(body["amount_cents"]))
+        if "category" in body:
+            updates.append("category = ?")
+            params.append(body["category"])
+        if "merchant" in body:
+            updates.append("merchant = ?")
+            params.append(body["merchant"])
+        if "occurred_at" in body:
+            updates.append("occurred_at = ?")
+            params.append(body["occurred_at"])
+        if not updates:
+            return _JSONResponse({"error": "Nada para atualizar"}, status_code=400)
+        params.extend([tx_id, user_id])
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute(f"UPDATE transactions SET {', '.join(updates)} WHERE id = ? AND user_id = ?", params)
+        affected = cur.rowcount
+        conn.commit()
+        conn.close()
+        if affected:
+            return _JSONResponse({"ok": True})
+        return _JSONResponse({"error": "Transacao nao encontrada"}, status_code=404)
+    except Exception as exc:
+        log.error(f"[PAINEL] Erro ao editar tx {tx_id}: {exc}")
+        return _JSONResponse({"error": "Erro interno"}, status_code=500)
 
 
 @app.put("/v1/api/card/{card_id}")
@@ -6775,46 +6805,54 @@ async def edit_card_api(card_id: str, request: _Request, t: str = ""):
     user_id = _validate_panel_token(t)
     if not user_id:
         return _JSONResponse({"error": "Token invalido ou expirado"}, status_code=401)
-    body = await request.json()
-    updates = []
-    params = []
-    if "closing_day" in body:
-        updates.append("closing_day = ?")
-        params.append(int(body["closing_day"]))
-    if "due_day" in body:
-        updates.append("due_day = ?")
-        params.append(int(body["due_day"]))
-    if "limit_cents" in body:
-        updates.append("limit_cents = ?")
-        params.append(int(body["limit_cents"]))
-    if "available_limit_cents" in body:
-        updates.append("available_limit_cents = ?")
-        params.append(int(body["available_limit_cents"]))
-    if not updates:
-        return _JSONResponse({"error": "Nada para atualizar"}, status_code=400)
-    params.extend([card_id, user_id])
-    conn = _get_conn()
-    cur = conn.cursor()
-    cur.execute(f"UPDATE credit_cards SET {', '.join(updates)} WHERE id = ? AND user_id = ?", params)
-    affected = cur.rowcount
-    conn.commit()
-    conn.close()
-    if affected:
-        return _JSONResponse({"ok": True})
-    return _JSONResponse({"error": "Cartao nao encontrado"}, status_code=404)
+    try:
+        body = await request.json()
+        updates = []
+        params = []
+        if "closing_day" in body:
+            updates.append("closing_day = ?")
+            params.append(int(body["closing_day"]))
+        if "due_day" in body:
+            updates.append("due_day = ?")
+            params.append(int(body["due_day"]))
+        if "limit_cents" in body:
+            updates.append("limit_cents = ?")
+            params.append(int(body["limit_cents"]))
+        if "available_limit_cents" in body:
+            updates.append("available_limit_cents = ?")
+            params.append(int(body["available_limit_cents"]))
+        if not updates:
+            return _JSONResponse({"error": "Nada para atualizar"}, status_code=400)
+        params.extend([card_id, user_id])
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute(f"UPDATE credit_cards SET {', '.join(updates)} WHERE id = ? AND user_id = ?", params)
+        affected = cur.rowcount
+        conn.commit()
+        conn.close()
+        if affected:
+            return _JSONResponse({"ok": True})
+        return _JSONResponse({"error": "Cartao nao encontrado"}, status_code=404)
+    except Exception as exc:
+        log.error(f"[PAINEL] Erro ao editar card {card_id}: {exc}")
+        return _JSONResponse({"error": "Erro interno"}, status_code=500)
 
 
 def get_panel_url(user_phone: str) -> str:
     """Gera URL do painel para um usuario."""
-    conn = _get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
-    row = cur.fetchone()
-    conn.close()
-    if not row:
+    try:
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return ""
+        token = _generate_panel_token(row[0])
+        return f"{_PANEL_BASE_URL}/v1/painel?t={token}"
+    except Exception as exc:
+        log.error(f"[PAINEL] Erro ao gerar URL para {user_phone}: {exc}")
         return ""
-    token = _generate_panel_token(row[0])
-    return f"{_PANEL_BASE_URL}/v1/painel?t={token}"
 
 
 # ============================================================
