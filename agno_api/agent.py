@@ -7044,7 +7044,7 @@ def _pre_route(message: str) -> dict | None:
         return onboard
 
     body = _extract_body(message)
-    msg = body.lower().strip()
+    msg = " ".join(body.lower().split())  # normaliza espaços múltiplos
     today = _now_br()
     current_month = today.strftime("%Y-%m")
 
