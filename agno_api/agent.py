@@ -1981,6 +1981,14 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     if top_cat_name:
         lines.append(f"__top_category:{top_cat_name}:{top_pct_val:.0f}%")
 
+    # Link do painel
+    try:
+        panel_url = get_panel_url(user_phone)
+        if panel_url:
+            lines.append(f"\n📊 *Ver painel com gráficos:* {panel_url}")
+    except Exception:
+        pass
+
     return "\n".join(lines)
 
 
@@ -3959,6 +3967,14 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
         insight_parts.append(f"cat_top={top_cat_name} ({top_pct_val:.0f}%)")
     if insight_parts:
         lines.append(f"__insight:{' | '.join(insight_parts)}")
+
+    # Link do painel
+    try:
+        panel_url = get_panel_url(user_phone)
+        if panel_url:
+            lines.append(f"\n📊 *Ver painel com gráficos:* {panel_url}")
+    except Exception:
+        pass
 
     return "\n".join(lines)
 
