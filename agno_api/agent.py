@@ -48,7 +48,7 @@ else:
 print(f"[ATLAS] Banco: {DB_TYPE}")
 
 def _now_br() -> datetime:
-    """Retorna datetime atual no fuso de Brasília (UTC-3)."""
+    """Retorna datetime atual no fuso de Brasília (UTC-3)."""  # v2
     return datetime.now(timezone.utc) - timedelta(hours=3)
 
 # ============================================================
