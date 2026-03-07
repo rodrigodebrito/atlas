@@ -6257,6 +6257,16 @@ body{{
   <button class="period-btn" onclick="setPeriod('today')">Hoje</button>
   <button class="period-btn" onclick="setPeriod('7d')">7 dias</button>
   <button class="period-btn" onclick="setPeriod('15d')">15 dias</button>
+  <button class="period-btn" onclick="toggleCustomPeriod()">📅</button>
+</div>
+<div id="customPeriod" style="display:none;padding:8px 16px;gap:8px;align-items:center;flex-wrap:wrap">
+  <div style="display:flex;gap:8px;align-items:center;width:100%">
+    <label style="color:var(--text2);font-size:12px">De:</label>
+    <input type="date" id="periodFrom" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:var(--radius-xs);padding:6px 8px;font-size:13px">
+    <label style="color:var(--text2);font-size:12px">Ate:</label>
+    <input type="date" id="periodTo" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:var(--radius-xs);padding:6px 8px;font-size:13px">
+    <button onclick="applyCustomPeriod()" style="background:var(--green);color:#000;border:none;border-radius:var(--radius-xs);padding:6px 12px;font-weight:600;font-size:13px;cursor:pointer">OK</button>
+  </div>
 </div>
 
 <div class="section">
@@ -6438,6 +6448,8 @@ function updateDashboard() {{
   document.getElementById('catBreakdown').innerHTML = catHtml || '<div class="empty-state">Sem gastos neste periodo</div>';
 }}
 
+let customFrom = '', customTo = '';
+
 function getFilteredByPeriod(txs) {{
   if (currentPeriod === 'month') return txs;
   const today = new Date();
@@ -6456,7 +6468,33 @@ function getFilteredByPeriod(txs) {{
     const d = new Date(); d.setDate(d.getDate() - 15);
     return txs.filter(t => t.date >= d.toISOString().slice(0,10));
   }}
+  if (currentPeriod === 'custom' && customFrom && customTo) {{
+    return txs.filter(t => t.date >= customFrom && t.date <= customTo);
+  }}
   return txs;
+}}
+
+function toggleCustomPeriod() {{
+  const el = document.getElementById('customPeriod');
+  el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+}}
+
+function applyCustomPeriod() {{
+  customFrom = document.getElementById('periodFrom').value;
+  customTo = document.getElementById('periodTo').value;
+  if (!customFrom || !customTo) {{ showToast('Preencha as duas datas', true); return; }}
+  if (customFrom > customTo) {{ showToast('Data inicial maior que final', true); return; }}
+  currentPeriod = 'custom';
+  currentCatFilter = null;
+  currentCardFilter = null;
+  currentFilter = 'ALL';
+  document.querySelectorAll('.period-btn').forEach(b => {{
+    b.classList.toggle('active', b.textContent.includes('📅'));
+  }});
+  document.querySelectorAll('.tx-filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === 'ALL'));
+  document.getElementById('customPeriod').style.display = 'none';
+  renderTxList();
+  updateDashboard();
 }}
 
 // ==================== TX FILTER & SORT ====================
