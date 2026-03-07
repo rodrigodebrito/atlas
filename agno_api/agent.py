@@ -747,36 +747,31 @@ def save_transaction(
         merchant_key = merchant.upper().strip()
         if merchant_key:
             try:
+                # SAVEPOINT protege a transação principal se o upsert falhar
                 if DB_TYPE == "postgres":
+                    cur._cur.execute("SAVEPOINT auto_learn")
+                cur.execute(
+                    """INSERT INTO merchant_category_rules (user_id, merchant_pattern, category)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT (user_id, merchant_pattern) DO UPDATE SET category = EXCLUDED.category""",
+                    (user_id, merchant_key, category)
+                )
+                if card_id:
                     cur.execute(
-                        """INSERT INTO merchant_category_rules (user_id, merchant_pattern, category)
-                           VALUES (%s, %s, %s)
-                           ON CONFLICT (user_id, merchant_pattern) DO UPDATE SET category = EXCLUDED.category""",
-                        (user_id, merchant_key, category)
-                    )
-                    if card_id:
-                        cur.execute(
-                            """INSERT INTO merchant_card_rules (user_id, merchant_pattern, card_id)
-                               VALUES (%s, %s, %s)
-                               ON CONFLICT (user_id, merchant_pattern) DO UPDATE SET card_id = EXCLUDED.card_id""",
-                            (user_id, merchant_key, card_id)
-                        )
-                else:
-                    cur.execute(
-                        """INSERT INTO merchant_category_rules (user_id, merchant_pattern, category)
+                        """INSERT INTO merchant_card_rules (user_id, merchant_pattern, card_id)
                            VALUES (?, ?, ?)
-                           ON CONFLICT(user_id, merchant_pattern) DO UPDATE SET category = excluded.category""",
-                        (user_id, merchant_key, category)
+                           ON CONFLICT (user_id, merchant_pattern) DO UPDATE SET card_id = EXCLUDED.card_id""",
+                        (user_id, merchant_key, card_id)
                     )
-                    if card_id:
-                        cur.execute(
-                            """INSERT INTO merchant_card_rules (user_id, merchant_pattern, card_id)
-                               VALUES (?, ?, ?)
-                               ON CONFLICT(user_id, merchant_pattern) DO UPDATE SET card_id = excluded.card_id""",
-                            (user_id, merchant_key, card_id)
-                        )
+                if DB_TYPE == "postgres":
+                    cur._cur.execute("RELEASE SAVEPOINT auto_learn")
             except Exception:
-                pass  # não impede a transação principal
+                if DB_TYPE == "postgres":
+                    try:
+                        cur._cur.execute("ROLLBACK TO SAVEPOINT auto_learn")
+                    except Exception:
+                        pass
+                # não impede a transação principal
 
     conn.commit()
     conn.close()
@@ -1644,19 +1639,11 @@ def update_merchant_category(user_phone: str, merchant_query: str, category: str
 
         # Salva/atualiza a regra para futuras importações (UPSERT)
         merchant_key = merchant_query.upper().strip()
-        if DB_TYPE == "postgres":
-            cur.execute(
-                """INSERT INTO merchant_category_rules (user_id, merchant_pattern, category)
-                   VALUES (%s, %s, %s)
-                   ON CONFLICT (user_id, merchant_pattern) DO UPDATE SET category = EXCLUDED.category""",
-                (user_id, merchant_key, category)
-            )
-        else:
-            cur.execute(
-                """INSERT INTO merchant_category_rules (user_id, merchant_pattern, category)
-                   VALUES (?, ?, ?)
-                   ON CONFLICT(user_id, merchant_pattern) DO UPDATE SET category = excluded.category""",
-                (user_id, merchant_key, category)
+        cur.execute(
+            """INSERT INTO merchant_category_rules (user_id, merchant_pattern, category)
+               VALUES (?, ?, ?)
+               ON CONFLICT (user_id, merchant_pattern) DO UPDATE SET category = EXCLUDED.category""",
+            (user_id, merchant_key, category)
             )
         conn.commit()
         conn.close()
@@ -3246,7 +3233,7 @@ def set_future_bill(
     else:
         cur.execute(
             """INSERT INTO card_bill_snapshots (id, card_id, bill_month, opening_cents)
-               VALUES (%s, %s, %s, %s)
+               VALUES (?, ?, ?, ?)
                ON CONFLICT (card_id, bill_month) DO UPDATE SET opening_cents = EXCLUDED.opening_cents""",
             (snapshot_id, card_id, bill_month, amount_cents)
         )
