@@ -5754,27 +5754,33 @@ def _get_panel_data(user_id: str, month: str) -> dict:
     # Transactions
     cur.execute(
         """SELECT id, type, amount_cents, category, merchant, occurred_at, card_id, payment_method,
-                  installments, installment_number
+                  installments, installment_number, total_amount_cents
            FROM transactions WHERE user_id = ? AND occurred_at LIKE ?
            ORDER BY occurred_at DESC""",
         (user_id, f"{month}%"),
     )
     tx_rows = cur.fetchall()
 
+    # Card id→name map
+    cur.execute("SELECT id, name FROM credit_cards WHERE user_id = ?", (user_id,))
+    card_map = {r[0]: r[1] for r in cur.fetchall()}
+
     transactions = []
     expense_total = 0
     income_total = 0
-    cat_totals = {}
-    daily_totals = {}
-    merchants_count = {}
+    cat_totals: dict = {}
+    daily_totals: dict = {}
+    merchants_count: dict = {}
 
     for tx in tx_rows:
-        tx_id, tx_type, amt, cat, merchant, occurred, card_id, pay_method, inst, inst_num = tx
+        tx_id, tx_type, amt, cat, merchant, occurred, card_id, pay_method, inst, inst_num, total_amt = tx
         transactions.append({
             "id": tx_id, "type": tx_type, "amount": amt, "category": cat or "Outros",
             "merchant": merchant or "", "date": occurred[:10] if occurred else "",
-            "card_id": card_id, "payment_method": pay_method or "",
+            "card_id": card_id, "card_name": card_map.get(card_id, "") if card_id else "",
+            "payment_method": pay_method or "",
             "installments": inst or 1, "installment_number": inst_num or 1,
+            "total_amount": total_amt or amt,
         })
         if tx_type == "EXPENSE":
             expense_total += amt
@@ -5803,7 +5809,7 @@ def _get_panel_data(user_id: str, month: str) -> dict:
     )
     prev_total = (cur.fetchone()[0] or 0)
 
-    # Cards
+    # Cards with id
     cur.execute(
         "SELECT id, name, closing_day, due_day, limit_cents, current_bill_opening_cents, available_limit_cents FROM credit_cards WHERE user_id = ?",
         (user_id,),
@@ -5816,10 +5822,16 @@ def _get_panel_data(user_id: str, month: str) -> dict:
             (user_id, c_id, f"{month}%"),
         )
         c_spent = cur.fetchone()[0]
+        # Count transactions on card this month
+        cur.execute(
+            "SELECT COUNT(*) FROM transactions WHERE user_id = ? AND card_id = ? AND occurred_at LIKE ?",
+            (user_id, c_id, f"{month}%"),
+        )
+        c_tx_count = cur.fetchone()[0]
         cards.append({
-            "name": c_name, "closing_day": c_close or 0, "due_day": c_due or 0,
+            "id": c_id, "name": c_name, "closing_day": c_close or 0, "due_day": c_due or 0,
             "limit": c_limit or 0, "available": c_avail,
-            "bill": c_spent + (c_opening or 0),
+            "bill": c_spent + (c_opening or 0), "tx_count": c_tx_count,
         })
 
     # Score (simplified)
@@ -5886,7 +5898,7 @@ def _get_panel_data(user_id: str, month: str) -> dict:
 
 
 def _render_panel_html(data: dict, token: str) -> str:
-    """Gera o HTML completo do painel."""
+    """Gera o HTML completo do painel — versao profissional."""
     import json as _json
 
     cat_emoji = {
@@ -5894,281 +5906,348 @@ def _render_panel_html(data: dict, token: str) -> str:
         "Moradia": "🏠", "Lazer": "🎮", "Assinaturas": "📱",
         "Educacao": "📚", "Educação": "📚", "Vestuario": "👟", "Vestuário": "👟",
         "Investimento": "📈", "Pets": "🐾", "Outros": "📦", "Cartão": "💳",
+        "Salário": "💼", "Freelance": "💻", "Aluguel Recebido": "🏘",
+        "Investimentos": "📊", "Benefício": "🎁", "Venda": "🛒",
     }
 
     cat_colors = [
         "#00e5a0", "#4fc3f7", "#ff7043", "#ab47bc", "#ffca28",
-        "#ef5350", "#26c6da", "#66bb6a", "#8d6e63", "#78909c", "#ec407a"
+        "#ef5350", "#26c6da", "#66bb6a", "#8d6e63", "#78909c", "#ec407a", "#7e57c2"
     ]
 
     def fmt(cents):
         return f"R${cents/100:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-    # Transaction rows HTML
-    tx_html = ""
-    for tx in data["transactions"][:50]:
-        emoji = cat_emoji.get(tx["category"], "💸")
-        date_lbl = f'{tx["date"][8:10]}/{tx["date"][5:7]}' if tx["date"] else ""
-        merchant_lbl = tx["merchant"] or tx["category"]
-        inst_lbl = f' <span class="inst">{tx["installment_number"]}/{tx["installments"]}</span>' if tx["installments"] > 1 else ""
-        type_class = "income" if tx["type"] == "INCOME" else "expense"
-        sign = "+" if tx["type"] == "INCOME" else "-"
-        tx_html += f'''<div class="tx-row" data-id="{tx['id']}">
-  <div class="tx-left">
-    <span class="tx-emoji">{emoji}</span>
-    <div class="tx-info">
-      <span class="tx-merchant">{merchant_lbl}{inst_lbl}</span>
-      <span class="tx-meta">{date_lbl} · {tx["category"]}</span>
-    </div>
-  </div>
-  <div class="tx-right">
-    <span class="tx-amount {type_class}">{sign}{fmt(tx['amount'])}</span>
-    <div class="tx-actions">
-      <button class="btn-edit" onclick="editTx('{tx['id']}',{tx['amount']},'{tx['category']}','{tx['merchant'].replace(chr(39),'')}')">✏️</button>
-      <button class="btn-del" onclick="deleteTx('{tx['id']}')">🗑️</button>
-    </div>
-  </div>
-</div>'''
+    def esc(s):
+        return s.replace("'", "\\'").replace('"', '\\"').replace("\n", " ")
 
-    # Cards HTML
-    cards_html = ""
-    for card in data["cards"]:
-        bill_fmt = fmt(card["bill"])
-        if card["limit"] > 0:
-            if card["available"] is not None:
-                avail = card["available"]
-                pct = ((card["limit"] - avail) / card["limit"]) * 100
-            else:
-                avail = card["limit"] - card["bill"]
-                pct = (card["bill"] / card["limit"]) * 100
-            limit_html = f'''<div class="card-bar-wrap">
-              <div class="card-bar" style="width:{min(pct,100):.0f}%"></div>
-            </div>
-            <div class="card-limits">
-              <span>Usado: {fmt(card['limit'] - avail)}</span>
-              <span>Disponivel: <b>{fmt(avail)}</b></span>
-            </div>'''
-        else:
-            limit_html = ""
-            pct = 0
-        cards_html += f'''<div class="card-item">
-  <div class="card-header">
-    <span class="card-name">💳 {card['name']}</span>
-    <span class="card-bill">{bill_fmt}</span>
-  </div>
-  {f'<div class="card-limit-total">Limite: {fmt(card["limit"])}</div>' if card["limit"] else ''}
-  {limit_html}
-  {f'<div class="card-cycle">Fecha dia {card["closing_day"]} · Vence dia {card["due_day"]}</div>' if card["closing_day"] else ''}
-</div>'''
-
-    # Insights HTML
-    insights_html = "".join(f'<div class="insight-item">💡 {i}</div>' for i in data["insights"])
-
-    # Category chart data
+    # JSON data for JS
+    tx_json = _json.dumps(data["transactions"], ensure_ascii=False)
+    cards_json = _json.dumps(data["cards"], ensure_ascii=False)
     cat_labels = _json.dumps([c["name"] for c in data["categories"]])
     cat_values = _json.dumps([c["amount"] / 100 for c in data["categories"]])
-    cat_colors_json = _json.dumps(cat_colors[:len(data["categories"])])
+    cat_colors_json = _json.dumps(cat_colors[:max(len(data["categories"]), 1)])
     daily_labels_json = _json.dumps(data["daily_labels"])
     daily_values_json = _json.dumps(data["daily_values"])
+    cats_data_json = _json.dumps(data["categories"], ensure_ascii=False)
 
-    # Score color
+    # Score
     sc = data["score"]
     score_color = "#00e5a0" if sc >= 70 else "#ffca28" if sc >= 45 else "#ef5350"
     score_dash = 283 - (283 * sc / 100)
-
     balance = data["balance"]
     balance_color = "#00e5a0" if balance >= 0 else "#ef5350"
     balance_sign = "+" if balance >= 0 else ""
 
-    # Categories breakdown HTML
-    cats_breakdown_html = ""
-    for i, c in enumerate(data["categories"]):
-        color = cat_colors[i % len(cat_colors)]
-        emoji = cat_emoji.get(c["name"], "💸")
-        cats_breakdown_html += f'''<div class="cat-row">
-  <span class="cat-dot" style="background:{color}"></span>
-  <span class="cat-label">{emoji} {c['name']}</span>
-  <span class="cat-amount">{fmt(c['amount'])}</span>
-  <span class="cat-pct">{c['pct']:.0f}%</span>
-</div>'''
+    # Insights HTML
+    insights_html = "".join(f'<div class="insight-item">💡 {i}</div>' for i in data["insights"])
+
+    # Month navigation
+    m_y, m_m = int(data["month"][:4]), int(data["month"][5:7])
+    prev_m = m_m - 1 if m_m > 1 else 12
+    prev_y = m_y if m_m > 1 else m_y - 1
+    next_m = m_m + 1 if m_m < 12 else 1
+    next_y = m_y if m_m < 12 else m_y + 1
+    prev_month_str = f"{prev_y}-{prev_m:02d}"
+    next_month_str = f"{next_y}-{next_m:02d}"
+    base_url = f"{_PANEL_BASE_URL}/v1/painel?t={token}"
+
+    # Category options for select
+    all_cats = ["Alimentação", "Transporte", "Moradia", "Saúde", "Lazer", "Educação",
+                "Assinaturas", "Vestuário", "Investimento", "Pets", "Outros",
+                "Salário", "Freelance", "Aluguel Recebido", "Investimentos", "Benefício", "Venda"]
+    cat_options = "".join(f"<option value=\"{c}\">{c}</option>" for c in all_cats)
 
     return f'''<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<title>ATLAS — Painel de {data['user_name']}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>ATLAS — {data['user_name']}</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 :root{{
   --bg:#0a0a1a;--surface:rgba(255,255,255,0.04);--surface2:rgba(255,255,255,0.08);
-  --border:rgba(255,255,255,0.08);--text:#f0f0f0;--text2:rgba(255,255,255,0.55);
+  --surface3:rgba(255,255,255,0.12);--border:rgba(255,255,255,0.08);
+  --text:#f0f0f0;--text2:rgba(255,255,255,0.55);--text3:rgba(255,255,255,0.35);
   --green:#00e5a0;--red:#ef5350;--blue:#4fc3f7;--yellow:#ffca28;--purple:#ab47bc;
-  --radius:16px;--radius-sm:10px;
+  --radius:16px;--radius-sm:10px;--radius-xs:8px;
+  --max-w:540px;
 }}
 body{{
   font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   background:var(--bg);color:var(--text);min-height:100vh;
-  padding:0 0 80px;overflow-x:hidden;
+  padding:0;overflow-x:hidden;-webkit-font-smoothing:antialiased;
 }}
+.container{{max-width:var(--max-w);margin:0 auto;padding-bottom:80px}}
+
+/* Header */
 .header{{
   background:linear-gradient(135deg,#0d1b2a 0%,#1b2838 50%,#0a2a1a 100%);
-  padding:28px 20px 24px;text-align:center;
-  border-bottom:1px solid var(--border);
+  padding:24px 20px 20px;text-align:center;
+  border-bottom:1px solid var(--border);position:sticky;top:0;z-index:50;
+  backdrop-filter:blur(20px);
 }}
-.header h1{{font-size:14px;color:var(--text2);font-weight:500;letter-spacing:2px;text-transform:uppercase}}
-.header .month{{font-size:26px;font-weight:700;margin-top:4px}}
-.header .name{{font-size:13px;color:var(--text2);margin-top:2px}}
+.header h1{{font-size:12px;color:var(--green);font-weight:600;letter-spacing:3px;text-transform:uppercase}}
+.header .name{{font-size:12px;color:var(--text3);margin-top:2px}}
+.month-nav{{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:8px}}
+.month-nav a{{color:var(--text2);text-decoration:none;font-size:20px;padding:4px 8px;
+  border-radius:8px;transition:all 0.2s}}
+.month-nav a:hover{{background:var(--surface2);color:var(--text)}}
+.month-nav .current{{font-size:22px;font-weight:700;color:var(--text);min-width:160px}}
 
-.score-section{{display:flex;justify-content:center;padding:24px 20px 8px}}
-.score-circle{{position:relative;width:120px;height:120px}}
+/* Score */
+.score-section{{display:flex;align-items:center;justify-content:center;gap:20px;padding:20px}}
+.score-circle{{position:relative;width:100px;height:100px;flex-shrink:0}}
 .score-circle svg{{transform:rotate(-90deg)}}
 .score-circle .bg{{fill:none;stroke:var(--surface2);stroke-width:8}}
 .score-circle .fg{{fill:none;stroke:{score_color};stroke-width:8;stroke-linecap:round;
   stroke-dasharray:283;stroke-dashoffset:{score_dash};transition:stroke-dashoffset 1.5s ease}}
 .score-value{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center}}
-.score-value .num{{font-size:32px;font-weight:800;color:{score_color}}}
-.score-value .grade{{font-size:14px;color:var(--text2);display:block;margin-top:-2px}}
+.score-value .num{{font-size:28px;font-weight:800;color:{score_color}}}
+.score-value .grade{{font-size:12px;color:var(--text2);display:block}}
+.score-details{{font-size:13px;color:var(--text2)}}
+.score-details span{{display:block;margin:2px 0}}
 
-.summary{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;padding:16px 16px 0}}
+/* Summary Cards — clickable */
+.summary{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:0 16px 0}}
 .summary-card{{
   background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);
-  padding:14px 10px;text-align:center;
+  padding:14px 8px;text-align:center;cursor:pointer;transition:all 0.2s;position:relative;
 }}
-.summary-card .label{{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px}}
-.summary-card .value{{font-size:18px;font-weight:700;margin-top:4px}}
+.summary-card:hover,.summary-card.active{{background:var(--surface2);border-color:var(--text3)}}
+.summary-card .label{{font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px}}
+.summary-card .value{{font-size:16px;font-weight:700;margin-top:4px}}
 .summary-card .value.green{{color:var(--green)}}
 .summary-card .value.red{{color:var(--red)}}
 .summary-card .value.balance{{color:{balance_color}}}
+.summary-card .arrow{{font-size:8px;color:var(--text3);display:block;margin-top:2px}}
 
-.section{{padding:20px 16px 0}}
-.section-title{{font-size:13px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;font-weight:600}}
+/* Period filter */
+.period-bar{{display:flex;gap:6px;padding:12px 16px;overflow-x:auto;-webkit-overflow-scrolling:touch}}
+.period-bar::-webkit-scrollbar{{display:none}}
+.period-btn{{
+  padding:6px 14px;border-radius:20px;border:1px solid var(--border);
+  background:var(--surface);color:var(--text2);font-size:12px;font-weight:500;
+  cursor:pointer;white-space:nowrap;transition:all 0.2s;flex-shrink:0;
+}}
+.period-btn.active{{background:var(--green);color:#000;border-color:var(--green);font-weight:600}}
+.period-btn:hover:not(.active){{background:var(--surface2)}}
 
+/* Section */
+.section{{padding:16px 16px 0}}
+.section-title{{
+  font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;
+  margin-bottom:10px;font-weight:600;display:flex;align-items:center;justify-content:space-between;
+}}
+.section-title .count{{color:var(--text3);font-weight:400}}
+
+/* Charts */
 .chart-container{{
   background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
   padding:16px;margin-bottom:8px;
 }}
-.chart-wrap{{position:relative;height:220px}}
+.chart-wrap{{position:relative;height:200px}}
 
-.cat-row{{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)}}
+/* Category rows — clickable */
+.cat-row{{
+  display:flex;align-items:center;gap:8px;padding:10px 8px;border-bottom:1px solid var(--border);
+  cursor:pointer;border-radius:var(--radius-xs);transition:background 0.2s;
+}}
+.cat-row:hover{{background:var(--surface)}}
 .cat-row:last-child{{border-bottom:none}}
 .cat-dot{{width:10px;height:10px;border-radius:50%;flex-shrink:0}}
 .cat-label{{flex:1;font-size:14px}}
 .cat-amount{{font-size:14px;font-weight:600}}
 .cat-pct{{font-size:12px;color:var(--text2);width:36px;text-align:right}}
+.cat-chevron{{color:var(--text3);font-size:12px}}
 
+/* Insights */
 .insight-item{{
   background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);
-  padding:12px 14px;margin-bottom:8px;font-size:14px;line-height:1.4;
+  padding:12px 14px;margin-bottom:6px;font-size:13px;line-height:1.4;
 }}
 
+/* Transaction list */
+.tx-filters{{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}}
+.tx-filter-btn{{
+  padding:5px 12px;border-radius:16px;border:1px solid var(--border);
+  background:var(--surface);color:var(--text2);font-size:11px;cursor:pointer;transition:all 0.2s;
+}}
+.tx-filter-btn.active{{background:var(--blue);color:#000;border-color:var(--blue)}}
+.tx-sort-btn{{
+  margin-left:auto;padding:5px 12px;border-radius:16px;border:1px solid var(--border);
+  background:var(--surface);color:var(--text2);font-size:11px;cursor:pointer;
+}}
+.tx-list{{max-height:600px;overflow-y:auto;-webkit-overflow-scrolling:touch}}
 .tx-row{{
   display:flex;justify-content:space-between;align-items:center;
-  padding:12px 0;border-bottom:1px solid var(--border);
+  padding:10px 4px;border-bottom:1px solid var(--border);transition:background 0.15s;
 }}
+.tx-row:active{{background:var(--surface)}}
 .tx-row:last-child{{border-bottom:none}}
 .tx-left{{display:flex;align-items:center;gap:10px;flex:1;min-width:0}}
-.tx-emoji{{font-size:20px;flex-shrink:0}}
+.tx-emoji{{font-size:18px;flex-shrink:0;width:28px;text-align:center}}
 .tx-info{{display:flex;flex-direction:column;min-width:0}}
-.tx-merchant{{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+.tx-merchant{{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
 .tx-meta{{font-size:11px;color:var(--text2)}}
 .inst{{background:var(--surface2);border-radius:4px;padding:1px 5px;font-size:10px;margin-left:4px}}
-.tx-right{{display:flex;align-items:center;gap:8px;flex-shrink:0}}
-.tx-amount{{font-size:15px;font-weight:600}}
+.tx-card-badge{{background:var(--surface2);border-radius:4px;padding:1px 5px;font-size:9px;color:var(--yellow);margin-left:4px}}
+.tx-right{{display:flex;align-items:center;gap:6px;flex-shrink:0}}
+.tx-amount{{font-size:14px;font-weight:600}}
 .tx-amount.income{{color:var(--green)}}
 .tx-amount.expense{{color:var(--red)}}
-.tx-actions{{display:flex;gap:2px}}
+.tx-actions{{display:flex;gap:0}}
 .tx-actions button{{
-  background:none;border:none;font-size:14px;cursor:pointer;padding:4px;
-  border-radius:6px;transition:background 0.2s;
+  background:none;border:none;font-size:13px;cursor:pointer;padding:6px;
+  border-radius:6px;transition:background 0.2s;opacity:0.6;
 }}
-.tx-actions button:hover{{background:var(--surface2)}}
+.tx-actions button:hover{{background:var(--surface2);opacity:1}}
 
+/* Card section — expandable */
 .card-item{{
   background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
-  padding:16px;margin-bottom:10px;
+  margin-bottom:10px;overflow:hidden;transition:all 0.3s;
 }}
+.card-top{{padding:16px;cursor:pointer;transition:background 0.2s}}
+.card-top:hover{{background:var(--surface2)}}
 .card-header{{display:flex;justify-content:space-between;align-items:center}}
-.card-name{{font-size:16px;font-weight:600}}
-.card-bill{{font-size:16px;font-weight:700;color:var(--yellow)}}
-.card-limit-total{{font-size:12px;color:var(--text2);margin-top:6px}}
-.card-bar-wrap{{height:6px;background:var(--surface2);border-radius:3px;margin-top:8px;overflow:hidden}}
-.card-bar{{height:100%;background:linear-gradient(90deg,var(--green),var(--yellow),var(--red));border-radius:3px;transition:width 1s ease}}
-.card-limits{{display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-top:4px}}
-.card-cycle{{font-size:12px;color:var(--text2);margin-top:6px}}
+.card-name{{font-size:15px;font-weight:600}}
+.card-bill{{font-size:15px;font-weight:700;color:var(--yellow)}}
+.card-limit-total{{font-size:12px;color:var(--text2);margin-top:4px}}
+.card-bar-wrap{{height:5px;background:var(--surface2);border-radius:3px;margin-top:8px;overflow:hidden}}
+.card-bar{{height:100%;border-radius:3px;transition:width 1s ease}}
+.card-limits{{display:flex;justify-content:space-between;font-size:11px;color:var(--text2);margin-top:4px}}
+.card-cycle{{font-size:11px;color:var(--text2);margin-top:4px;display:flex;justify-content:space-between}}
+.card-expand-hint{{font-size:10px;color:var(--text3);text-align:center;margin-top:6px}}
+.card-detail{{
+  max-height:0;overflow:hidden;transition:max-height 0.4s ease;
+  border-top:0 solid var(--border);
+}}
+.card-detail.open{{max-height:2000px;border-top-width:1px}}
+.card-detail-inner{{padding:12px 16px 16px}}
+.card-edit-row{{display:flex;gap:8px;margin-bottom:10px;align-items:center}}
+.card-edit-row label{{font-size:11px;color:var(--text2);min-width:50px}}
+.card-edit-row input{{
+  flex:1;padding:8px 10px;border-radius:var(--radius-xs);border:1px solid var(--border);
+  background:var(--surface2);color:var(--text);font-size:14px;
+}}
+.card-edit-btns{{display:flex;gap:8px;margin-top:8px}}
+.card-edit-btns button{{
+  padding:8px 16px;border-radius:var(--radius-xs);border:none;font-size:13px;
+  font-weight:600;cursor:pointer;
+}}
+.card-tx-title{{font-size:12px;color:var(--text2);text-transform:uppercase;margin:12px 0 8px;letter-spacing:0.5px}}
 
 /* Modal */
 .modal-overlay{{
   display:none;position:fixed;top:0;left:0;width:100%;height:100%;
-  background:rgba(0,0,0,0.7);z-index:100;justify-content:center;align-items:flex-end;
+  background:rgba(0,0,0,0.75);z-index:100;justify-content:center;align-items:flex-end;
+  backdrop-filter:blur(4px);
 }}
 .modal-overlay.active{{display:flex}}
 .modal{{
-  background:#1a1a2e;border-radius:20px 20px 0 0;padding:24px 20px 32px;width:100%;max-width:500px;
-  border:1px solid var(--border);
+  background:#1a1a2e;border-radius:20px 20px 0 0;padding:24px 20px 32px;
+  width:100%;max-width:var(--max-w);border:1px solid var(--border);
+  animation:slideModal 0.3s ease;
 }}
-.modal h3{{font-size:18px;margin-bottom:16px}}
-.modal label{{font-size:12px;color:var(--text2);display:block;margin-bottom:4px;margin-top:12px}}
+@keyframes slideModal{{from{{transform:translateY(100%)}}to{{transform:translateY(0)}}}}
+.modal h3{{font-size:17px;margin-bottom:16px;display:flex;align-items:center;gap:8px}}
+.modal label{{font-size:11px;color:var(--text2);display:block;margin-bottom:4px;margin-top:12px;text-transform:uppercase;letter-spacing:0.5px}}
 .modal input,.modal select{{
-  width:100%;padding:12px;border-radius:var(--radius-sm);border:1px solid var(--border);
-  background:var(--surface2);color:var(--text);font-size:16px;
+  width:100%;padding:12px;border-radius:var(--radius-xs);border:1px solid var(--border);
+  background:var(--surface2);color:var(--text);font-size:15px;outline:none;
+  transition:border-color 0.2s;
 }}
+.modal input:focus,.modal select:focus{{border-color:var(--green)}}
 .modal-btns{{display:flex;gap:10px;margin-top:20px}}
 .modal-btns button{{
   flex:1;padding:14px;border-radius:var(--radius-sm);border:none;font-size:15px;
-  font-weight:600;cursor:pointer;
+  font-weight:600;cursor:pointer;transition:opacity 0.2s;
 }}
+.modal-btns button:active{{opacity:0.8}}
 .btn-save{{background:var(--green);color:#000}}
 .btn-cancel{{background:var(--surface2);color:var(--text)}}
+.btn-danger{{background:var(--red);color:#fff}}
 
+/* Toast */
 .toast{{
   position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
   background:#1a1a2e;border:1px solid var(--green);color:var(--green);
   padding:12px 24px;border-radius:var(--radius-sm);font-size:14px;font-weight:500;
-  z-index:200;display:none;box-shadow:0 4px 20px rgba(0,0,0,0.5);
+  z-index:200;display:none;box-shadow:0 4px 20px rgba(0,0,0,0.5);max-width:90vw;
 }}
+.toast.error{{border-color:var(--red);color:var(--red)}}
 .toast.show{{display:block;animation:slideUp 0.3s ease}}
 @keyframes slideUp{{from{{transform:translateX(-50%) translateY(20px);opacity:0}}to{{transform:translateX(-50%) translateY(0);opacity:1}}}}
 
-.footer{{text-align:center;padding:24px;color:var(--text2);font-size:12px}}
-.footer a{{color:var(--green);text-decoration:none}}
+.footer{{text-align:center;padding:24px 16px;color:var(--text3);font-size:11px}}
+
+/* Empty state */
+.empty-state{{text-align:center;padding:40px 20px;color:var(--text3)}}
+.empty-state .emoji{{font-size:40px;margin-bottom:8px}}
+
+@media(min-width:400px){{
+  .summary-card .value{{font-size:18px}}
+  .tx-merchant{{font-size:14px}}
+}}
 </style>
 </head>
 <body>
+<div class="container">
 
 <div class="header">
   <h1>ATLAS</h1>
-  <div class="month">{data['month_label']}</div>
-  <div class="name">Painel de {data['user_name']}</div>
+  <div class="name">{data['user_name']}</div>
+  <div class="month-nav">
+    <a href="{base_url}&month={prev_month_str}">‹</a>
+    <span class="current">{data['month_label']}</span>
+    <a href="{base_url}&month={next_month_str}">›</a>
+  </div>
 </div>
 
 <div class="score-section">
   <div class="score-circle">
-    <svg width="120" height="120" viewBox="0 0 100 100">
+    <svg width="100" height="100" viewBox="0 0 100 100">
       <circle class="bg" cx="50" cy="50" r="45"/>
       <circle class="fg" cx="50" cy="50" r="45"/>
     </svg>
     <div class="score-value">
-      <span class="num">{data['score']}</span>
+      <span class="num">{sc}</span>
       <span class="grade">{data['grade']}</span>
     </div>
+  </div>
+  <div class="score-details">
+    <span>Poupanca: {data['savings_rate']*100:.0f}%</span>
+    <span>{'📈' if data['expenses'] < data['prev_total'] else '📉' if data['prev_total'] > 0 else ''} {'vs mes ant: ' + fmt(data['prev_total']) if data['prev_total'] > 0 else ''}</span>
   </div>
 </div>
 
 <div class="summary">
-  <div class="summary-card">
+  <div class="summary-card" onclick="filterTx('INCOME')">
     <div class="label">Receitas</div>
     <div class="value green">{fmt(data['income'])}</div>
+    <div class="arrow">toque para ver ▾</div>
   </div>
-  <div class="summary-card">
+  <div class="summary-card" onclick="filterTx('EXPENSE')">
     <div class="label">Gastos</div>
     <div class="value red">{fmt(data['expenses'])}</div>
+    <div class="arrow">toque para ver ▾</div>
   </div>
-  <div class="summary-card">
+  <div class="summary-card" onclick="filterTx('ALL')">
     <div class="label">Saldo</div>
     <div class="value balance">{balance_sign}{fmt(abs(balance))}</div>
+    <div class="arrow">ver tudo ▾</div>
   </div>
+</div>
+
+<div class="period-bar">
+  <button class="period-btn active" onclick="setPeriod('month')">Mes</button>
+  <button class="period-btn" onclick="setPeriod('week')">Semana</button>
+  <button class="period-btn" onclick="setPeriod('today')">Hoje</button>
+  <button class="period-btn" onclick="setPeriod('7d')">7 dias</button>
+  <button class="period-btn" onclick="setPeriod('15d')">15 dias</button>
 </div>
 
 <div class="section">
@@ -6176,7 +6255,7 @@ body{{
   <div class="chart-container">
     <div class="chart-wrap"><canvas id="pieChart"></canvas></div>
   </div>
-  <div style="padding:0 4px">{cats_breakdown_html}</div>
+  <div id="catBreakdown"></div>
 </div>
 
 <div class="section">
@@ -6188,37 +6267,67 @@ body{{
 
 {'<div class="section"><div class="section-title">Insights</div>' + insights_html + '</div>' if data['insights'] else ''}
 
-<div class="section">
-  <div class="section-title">Transacoes ({len(data['transactions'])})</div>
-  {tx_html}
+<div class="section" id="txSection">
+  <div class="section-title">
+    <span id="txTitle">Transacoes</span>
+    <span class="count" id="txCount"></span>
+  </div>
+  <div class="tx-filters">
+    <button class="tx-filter-btn active" data-filter="ALL" onclick="setTxFilter('ALL')">Todas</button>
+    <button class="tx-filter-btn" data-filter="EXPENSE" onclick="setTxFilter('EXPENSE')">Gastos</button>
+    <button class="tx-filter-btn" data-filter="INCOME" onclick="setTxFilter('INCOME')">Receitas</button>
+    <button class="tx-sort-btn" onclick="toggleSort()" id="sortBtn">↓ Recentes</button>
+  </div>
+  <div class="tx-list" id="txList"></div>
 </div>
 
-{'<div class="section"><div class="section-title">Cartoes</div>' + cards_html + '</div>' if data['cards'] else ''}
+<div class="section" id="cardsSection">
+  <div class="section-title">Cartoes</div>
+  <div id="cardsList"></div>
+</div>
 
 <div class="footer">
-  ATLAS — Seu assistente financeiro<br>
-  <a href="{_PANEL_BASE_URL}/manual">Ver manual</a> · Link valido por 30 min
+  ATLAS — Seu assistente financeiro · Link valido por 30 min
 </div>
 
+</div><!-- /container -->
+
 <!-- Edit Modal -->
-<div class="modal-overlay" id="editModal">
+<div class="modal-overlay" id="editModal" onclick="if(event.target===this)closeModal()">
   <div class="modal">
-    <h3>Editar transacao</h3>
+    <h3>✏️ Editar transacao</h3>
     <input type="hidden" id="editId">
     <label>Valor (R$)</label>
-    <input type="number" id="editAmount" step="0.01" inputmode="decimal">
+    <input type="number" id="editAmount" step="0.01" inputmode="decimal" placeholder="0,00">
     <label>Categoria</label>
-    <select id="editCategory">
-      <option>Alimentacao</option><option>Transporte</option><option>Moradia</option>
-      <option>Saude</option><option>Lazer</option><option>Educacao</option>
-      <option>Assinaturas</option><option>Vestuario</option><option>Investimento</option>
-      <option>Pets</option><option>Outros</option>
-    </select>
+    <select id="editCategory">{cat_options}</select>
     <label>Descricao</label>
-    <input type="text" id="editMerchant">
+    <input type="text" id="editMerchant" placeholder="Nome do local">
+    <label>Data</label>
+    <input type="date" id="editDate">
     <div class="modal-btns">
       <button class="btn-cancel" onclick="closeModal()">Cancelar</button>
       <button class="btn-save" onclick="saveTx()">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Card Edit Modal -->
+<div class="modal-overlay" id="cardEditModal" onclick="if(event.target===this)closeCardModal()">
+  <div class="modal">
+    <h3>💳 Editar cartao</h3>
+    <input type="hidden" id="cardEditId">
+    <label>Dia de fechamento</label>
+    <input type="number" id="cardClose" min="1" max="31" inputmode="numeric">
+    <label>Dia de vencimento</label>
+    <input type="number" id="cardDue" min="1" max="31" inputmode="numeric">
+    <label>Limite total (R$)</label>
+    <input type="number" id="cardLimit" step="0.01" inputmode="decimal">
+    <label>Disponivel (R$)</label>
+    <input type="number" id="cardAvail" step="0.01" inputmode="decimal">
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeCardModal()">Cancelar</button>
+      <button class="btn-save" onclick="saveCard()">Salvar</button>
     </div>
   </div>
 </div>
@@ -6228,30 +6337,276 @@ body{{
 <script>
 const TOKEN = "{token}";
 const API = window.location.origin;
+const MONTH = "{data['month']}";
+const ALL_TX = {tx_json};
+const ALL_CARDS = {cards_json};
+const CAT_COLORS = {cat_colors_json};
+const CAT_DATA = {cats_data_json};
+const CAT_EMOJI = {_json.dumps(cat_emoji, ensure_ascii=False)};
 
-function showToast(msg) {{
+let currentFilter = 'ALL';
+let currentPeriod = 'month';
+let sortAsc = false;
+let currentCatFilter = null;
+let currentCardFilter = null;
+
+// ==================== FORMATTING ====================
+function fmt(cents) {{
+  return 'R$' + (cents/100).toLocaleString('pt-BR', {{minimumFractionDigits:2, maximumFractionDigits:2}});
+}}
+
+// ==================== TOAST ====================
+function showToast(msg, isError) {{
   const t = document.getElementById('toast');
   t.textContent = msg;
-  t.className = 'toast show';
+  t.className = 'toast show' + (isError ? ' error' : '');
   setTimeout(() => t.className = 'toast', 2500);
 }}
 
+// ==================== PERIOD FILTER ====================
+function setPeriod(period) {{
+  currentPeriod = period;
+  document.querySelectorAll('.period-btn').forEach(b => b.classList.toggle('active', b.textContent.toLowerCase().includes(
+    period === 'month' ? 'mes' : period === 'week' ? 'semana' : period === 'today' ? 'hoje' : period === '7d' ? '7' : '15'
+  )));
+  renderTxList();
+}}
+
+function getFilteredByPeriod(txs) {{
+  if (currentPeriod === 'month') return txs;
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0,10);
+  if (currentPeriod === 'today') return txs.filter(t => t.date === todayStr);
+  if (currentPeriod === 'week') {{
+    const d = new Date(); d.setDate(d.getDate() - d.getDay());
+    const weekStart = d.toISOString().slice(0,10);
+    return txs.filter(t => t.date >= weekStart);
+  }}
+  if (currentPeriod === '7d') {{
+    const d = new Date(); d.setDate(d.getDate() - 7);
+    return txs.filter(t => t.date >= d.toISOString().slice(0,10));
+  }}
+  if (currentPeriod === '15d') {{
+    const d = new Date(); d.setDate(d.getDate() - 15);
+    return txs.filter(t => t.date >= d.toISOString().slice(0,10));
+  }}
+  return txs;
+}}
+
+// ==================== TX FILTER & SORT ====================
+function filterTx(type) {{
+  currentCatFilter = null;
+  currentCardFilter = null;
+  currentFilter = type;
+  document.querySelectorAll('.tx-filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === type));
+  document.querySelectorAll('.summary-card').forEach((c,i) => c.classList.remove('active'));
+  if (type === 'INCOME') document.querySelectorAll('.summary-card')[0].classList.add('active');
+  else if (type === 'EXPENSE') document.querySelectorAll('.summary-card')[1].classList.add('active');
+  renderTxList();
+  document.getElementById('txSection').scrollIntoView({{behavior:'smooth',block:'start'}});
+}}
+
+function setTxFilter(type) {{
+  currentCatFilter = null;
+  currentCardFilter = null;
+  currentFilter = type;
+  document.querySelectorAll('.tx-filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === type));
+  renderTxList();
+}}
+
+function filterByCategory(catName) {{
+  currentCardFilter = null;
+  currentFilter = 'EXPENSE';
+  currentCatFilter = catName;
+  document.querySelectorAll('.tx-filter-btn').forEach(b => b.classList.remove('active'));
+  renderTxList();
+  document.getElementById('txSection').scrollIntoView({{behavior:'smooth',block:'start'}});
+}}
+
+function filterByCard(cardId) {{
+  currentCatFilter = null;
+  currentFilter = 'ALL';
+  currentCardFilter = cardId;
+  document.querySelectorAll('.tx-filter-btn').forEach(b => b.classList.remove('active'));
+  renderTxList();
+  document.getElementById('txSection').scrollIntoView({{behavior:'smooth',block:'start'}});
+}}
+
+function toggleSort() {{
+  sortAsc = !sortAsc;
+  document.getElementById('sortBtn').textContent = sortAsc ? '↑ Antigos' : '↓ Recentes';
+  renderTxList();
+}}
+
+function renderTxList() {{
+  let txs = [...ALL_TX];
+  txs = getFilteredByPeriod(txs);
+  if (currentFilter !== 'ALL') txs = txs.filter(t => t.type === currentFilter);
+  if (currentCatFilter) txs = txs.filter(t => t.category === currentCatFilter);
+  if (currentCardFilter) txs = txs.filter(t => t.card_id === currentCardFilter);
+  if (sortAsc) txs.reverse();
+
+  const title = currentCatFilter ? currentCatFilter :
+                currentCardFilter ? ALL_CARDS.find(c => c.id === currentCardFilter)?.name || 'Cartao' :
+                currentFilter === 'INCOME' ? 'Receitas' :
+                currentFilter === 'EXPENSE' ? 'Gastos' : 'Transacoes';
+  document.getElementById('txTitle').textContent = title;
+  document.getElementById('txCount').textContent = txs.length + ' itens';
+
+  if (!txs.length) {{
+    document.getElementById('txList').innerHTML = '<div class="empty-state"><div class="emoji">📭</div>Nenhuma transacao neste periodo</div>';
+    return;
+  }}
+
+  let html = '';
+  for (const tx of txs) {{
+    const emoji = CAT_EMOJI[tx.category] || '💸';
+    const dateLbl = tx.date ? tx.date.slice(8,10) + '/' + tx.date.slice(5,7) : '';
+    const merchant = tx.merchant || tx.category;
+    const inst = tx.installments > 1 ? ` <span class="inst">${{tx.installment_number}}/${{tx.installments}}</span>` : '';
+    const cardBadge = tx.card_name ? ` <span class="tx-card-badge">${{tx.card_name}}</span>` : '';
+    const cls = tx.type === 'INCOME' ? 'income' : 'expense';
+    const sign = tx.type === 'INCOME' ? '+' : '-';
+    const m = merchant.replace(/'/g, "\\\\'");
+    html += `<div class="tx-row" data-id="${{tx.id}}">
+      <div class="tx-left">
+        <span class="tx-emoji">${{emoji}}</span>
+        <div class="tx-info">
+          <span class="tx-merchant">${{merchant}}${{inst}}${{cardBadge}}</span>
+          <span class="tx-meta">${{dateLbl}} · ${{tx.category}}</span>
+        </div>
+      </div>
+      <div class="tx-right">
+        <span class="tx-amount ${{cls}}">${{sign}}${{fmt(tx.amount)}}</span>
+        <div class="tx-actions">
+          <button onclick="editTx('${{tx.id}}',${{tx.amount}},'${{tx.category}}','${{m}}','${{tx.date}}')">✏️</button>
+          <button onclick="deleteTx('${{tx.id}}')">🗑️</button>
+        </div>
+      </div>
+    </div>`;
+  }}
+  document.getElementById('txList').innerHTML = html;
+}}
+
+// ==================== CATEGORY BREAKDOWN ====================
+function renderCatBreakdown() {{
+  let html = '';
+  CAT_DATA.forEach((c, i) => {{
+    const color = CAT_COLORS[i % CAT_COLORS.length];
+    const emoji = CAT_EMOJI[c.name] || '💸';
+    html += `<div class="cat-row" onclick="filterByCategory('${{c.name}}')">
+      <span class="cat-dot" style="background:${{color}}"></span>
+      <span class="cat-label">${{emoji}} ${{c.name}}</span>
+      <span class="cat-amount">${{fmt(c.amount)}}</span>
+      <span class="cat-pct">${{c.pct.toFixed(0)}}%</span>
+      <span class="cat-chevron">›</span>
+    </div>`;
+  }});
+  document.getElementById('catBreakdown').innerHTML = html;
+}}
+
+// ==================== CARDS ====================
+function renderCards() {{
+  if (!ALL_CARDS.length) {{
+    document.getElementById('cardsSection').style.display = 'none';
+    return;
+  }}
+  let html = '';
+  for (const card of ALL_CARDS) {{
+    const billFmt = fmt(card.bill);
+    let barPct = 0, limitHtml = '', availFmt = '';
+    if (card.limit > 0) {{
+      const avail = card.available !== null ? card.available : card.limit - card.bill;
+      barPct = Math.min(((card.limit - avail) / card.limit) * 100, 100);
+      const barColor = barPct > 80 ? 'var(--red)' : barPct > 50 ? 'var(--yellow)' : 'var(--green)';
+      availFmt = fmt(avail);
+      limitHtml = `<div class="card-bar-wrap"><div class="card-bar" style="width:${{barPct.toFixed(0)}}%;background:${{barColor}}"></div></div>
+        <div class="card-limits"><span>Usado: ${{fmt(card.limit - avail)}}</span><span>Disponivel: <b>${{availFmt}}</b></span></div>`;
+    }}
+    html += `<div class="card-item" id="card-${{card.id}}">
+      <div class="card-top" onclick="toggleCard('${{card.id}}')">
+        <div class="card-header">
+          <span class="card-name">💳 ${{card.name}}</span>
+          <span class="card-bill">${{billFmt}}</span>
+        </div>
+        ${{card.limit ? '<div class="card-limit-total">Limite: ' + fmt(card.limit) + '</div>' : ''}}
+        ${{limitHtml}}
+        ${{card.closing_day ? '<div class="card-cycle"><span>Fecha dia ' + card.closing_day + '</span><span>Vence dia ' + card.due_day + '</span></div>' : ''}}
+        <div class="card-expand-hint">${{card.tx_count}} transacoes · toque para expandir</div>
+      </div>
+      <div class="card-detail" id="cardDetail-${{card.id}}">
+        <div class="card-detail-inner">
+          <button class="tx-filter-btn" onclick="editCard('${{card.id}}', ${{card.closing_day}}, ${{card.due_day}}, ${{card.limit}}, ${{card.available || 0}})" style="margin-bottom:10px">⚙️ Editar cartao</button>
+          <button class="tx-filter-btn" onclick="filterByCard('${{card.id}}')" style="margin-bottom:10px">📋 Ver transacoes</button>
+        </div>
+      </div>
+    </div>`;
+  }}
+  document.getElementById('cardsList').innerHTML = html;
+}}
+
+function toggleCard(cardId) {{
+  const detail = document.getElementById('cardDetail-' + cardId);
+  detail.classList.toggle('open');
+}}
+
+// ==================== CARD EDIT ====================
+function editCard(id, close, due, limit, avail) {{
+  document.getElementById('cardEditId').value = id;
+  document.getElementById('cardClose').value = close || '';
+  document.getElementById('cardDue').value = due || '';
+  document.getElementById('cardLimit').value = limit ? (limit/100).toFixed(2) : '';
+  document.getElementById('cardAvail').value = avail ? (avail/100).toFixed(2) : '';
+  document.getElementById('cardEditModal').classList.add('active');
+}}
+
+function closeCardModal() {{
+  document.getElementById('cardEditModal').classList.remove('active');
+}}
+
+async function saveCard() {{
+  const id = document.getElementById('cardEditId').value;
+  const body = {{}};
+  const close = document.getElementById('cardClose').value;
+  const due = document.getElementById('cardDue').value;
+  const limit = document.getElementById('cardLimit').value;
+  const avail = document.getElementById('cardAvail').value;
+  if (close) body.closing_day = parseInt(close);
+  if (due) body.due_day = parseInt(due);
+  if (limit) body.limit_cents = Math.round(parseFloat(limit) * 100);
+  if (avail) body.available_limit_cents = Math.round(parseFloat(avail) * 100);
+  try {{
+    const r = await fetch(API + '/v1/api/card/' + id + '?t=' + TOKEN, {{
+      method: 'PUT', headers: {{'Content-Type':'application/json'}}, body: JSON.stringify(body)
+    }});
+    if (r.ok) {{
+      showToast('Cartao atualizado');
+      closeCardModal();
+      setTimeout(() => location.reload(), 800);
+    }} else {{ showToast('Erro ao salvar', true); }}
+  }} catch(e) {{ showToast('Erro de conexao', true); }}
+}}
+
+// ==================== TX CRUD ====================
 async function deleteTx(id) {{
   if (!confirm('Apagar esta transacao?')) return;
   try {{
     const r = await fetch(API + '/v1/api/transaction/' + id + '?t=' + TOKEN, {{method:'DELETE'}});
     if (r.ok) {{
-      document.querySelector('[data-id="'+id+'"]')?.remove();
+      const idx = ALL_TX.findIndex(t => t.id === id);
+      if (idx >= 0) ALL_TX.splice(idx, 1);
+      renderTxList();
       showToast('Transacao apagada');
-    }} else {{ showToast('Erro ao apagar'); }}
-  }} catch(e) {{ showToast('Erro de conexao'); }}
+    }} else {{ showToast('Erro ao apagar', true); }}
+  }} catch(e) {{ showToast('Erro de conexao', true); }}
 }}
 
-function editTx(id, amount, category, merchant) {{
+function editTx(id, amount, category, merchant, date) {{
   document.getElementById('editId').value = id;
   document.getElementById('editAmount').value = (amount / 100).toFixed(2);
   document.getElementById('editCategory').value = category;
   document.getElementById('editMerchant').value = merchant;
+  document.getElementById('editDate').value = date || '';
   document.getElementById('editModal').classList.add('active');
 }}
 
@@ -6261,26 +6616,31 @@ function closeModal() {{
 
 async function saveTx() {{
   const id = document.getElementById('editId').value;
-  const amount = parseFloat(document.getElementById('editAmount').value);
-  const category = document.getElementById('editCategory').value;
-  const merchant = document.getElementById('editMerchant').value;
+  const body = {{
+    amount_cents: Math.round(parseFloat(document.getElementById('editAmount').value) * 100),
+    category: document.getElementById('editCategory').value,
+    merchant: document.getElementById('editMerchant').value,
+  }};
+  const date = document.getElementById('editDate').value;
+  if (date) body.occurred_at = date + 'T12:00:00';
   try {{
     const r = await fetch(API + '/v1/api/transaction/' + id + '?t=' + TOKEN, {{
-      method: 'PUT',
-      headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{amount_cents: Math.round(amount * 100), category, merchant}})
+      method: 'PUT', headers: {{'Content-Type':'application/json'}}, body: JSON.stringify(body)
     }});
     if (r.ok) {{
       showToast('Transacao atualizada');
       closeModal();
       setTimeout(() => location.reload(), 800);
-    }} else {{ showToast('Erro ao salvar'); }}
-  }} catch(e) {{ showToast('Erro de conexao'); }}
+    }} else {{ showToast('Erro ao salvar', true); }}
+  }} catch(e) {{ showToast('Erro de conexao', true); }}
 }}
 
-// Charts
+// ==================== CHARTS ====================
 document.addEventListener('DOMContentLoaded', () => {{
-  // Pie
+  renderTxList();
+  renderCatBreakdown();
+  renderCards();
+
   new Chart(document.getElementById('pieChart'), {{
     type: 'doughnut',
     data: {{
@@ -6290,12 +6650,18 @@ document.addEventListener('DOMContentLoaded', () => {{
     options: {{
       responsive: true, maintainAspectRatio: false,
       plugins: {{
-        legend: {{ display: true, position: 'bottom', labels: {{ color: '#aaa', padding: 12, font: {{ size: 11 }} }} }}
+        legend: {{ display: true, position: 'bottom', labels: {{ color: '#888', padding: 10, font: {{ size: 11 }}, usePointStyle: true }} }}
       }},
-      cutout: '65%'
+      cutout: '68%',
+      onClick: (e, els) => {{
+        if (els.length) {{
+          const cat = {cat_labels}[els[0].index];
+          filterByCategory(cat);
+        }}
+      }}
     }}
   }});
-  // Line
+
   new Chart(document.getElementById('lineChart'), {{
     type: 'line',
     data: {{
@@ -6303,15 +6669,15 @@ document.addEventListener('DOMContentLoaded', () => {{
       datasets: [{{
         label: 'Gastos',
         data: {daily_values_json},
-        borderColor: '#4fc3f7', backgroundColor: 'rgba(79,195,247,0.1)',
-        fill: true, tension: 0.3, pointRadius: 2, pointHoverRadius: 6, borderWidth: 2
+        borderColor: '#4fc3f7', backgroundColor: 'rgba(79,195,247,0.08)',
+        fill: true, tension: 0.3, pointRadius: 1.5, pointHoverRadius: 6, borderWidth: 2
       }}]
     }},
     options: {{
       responsive: true, maintainAspectRatio: false,
       scales: {{
-        x: {{ ticks: {{ color: '#666', maxTicksLimit: 10 }}, grid: {{ color: 'rgba(255,255,255,0.03)' }} }},
-        y: {{ ticks: {{ color: '#666', callback: v => 'R$' + v }}, grid: {{ color: 'rgba(255,255,255,0.05)' }} }}
+        x: {{ ticks: {{ color: '#555', maxTicksLimit: 10, font: {{size:10}} }}, grid: {{ color: 'rgba(255,255,255,0.03)' }} }},
+        y: {{ ticks: {{ color: '#555', callback: v => 'R$' + v, font: {{size:10}} }}, grid: {{ color: 'rgba(255,255,255,0.05)' }} }}
       }},
       plugins: {{ legend: {{ display: false }} }}
     }}
@@ -6386,6 +6752,9 @@ async def edit_transaction_api(tx_id: str, request: _Request, t: str = ""):
     if "merchant" in body:
         updates.append("merchant = ?")
         params.append(body["merchant"])
+    if "occurred_at" in body:
+        updates.append("occurred_at = ?")
+        params.append(body["occurred_at"])
     if not updates:
         return _JSONResponse({"error": "Nada para atualizar"}, status_code=400)
     params.extend([tx_id, user_id])
@@ -6398,6 +6767,41 @@ async def edit_transaction_api(tx_id: str, request: _Request, t: str = ""):
     if affected:
         return _JSONResponse({"ok": True})
     return _JSONResponse({"error": "Transacao nao encontrada"}, status_code=404)
+
+
+@app.put("/v1/api/card/{card_id}")
+async def edit_card_api(card_id: str, request: _Request, t: str = ""):
+    """Edita dados de um cartao via API do painel."""
+    user_id = _validate_panel_token(t)
+    if not user_id:
+        return _JSONResponse({"error": "Token invalido ou expirado"}, status_code=401)
+    body = await request.json()
+    updates = []
+    params = []
+    if "closing_day" in body:
+        updates.append("closing_day = ?")
+        params.append(int(body["closing_day"]))
+    if "due_day" in body:
+        updates.append("due_day = ?")
+        params.append(int(body["due_day"]))
+    if "limit_cents" in body:
+        updates.append("limit_cents = ?")
+        params.append(int(body["limit_cents"]))
+    if "available_limit_cents" in body:
+        updates.append("available_limit_cents = ?")
+        params.append(int(body["available_limit_cents"]))
+    if not updates:
+        return _JSONResponse({"error": "Nada para atualizar"}, status_code=400)
+    params.extend([card_id, user_id])
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE credit_cards SET {', '.join(updates)} WHERE id = ? AND user_id = ?", params)
+    affected = cur.rowcount
+    conn.commit()
+    conn.close()
+    if affected:
+        return _JSONResponse({"ok": True})
+    return _JSONResponse({"error": "Cartao nao encontrado"}, status_code=404)
 
 
 def get_panel_url(user_phone: str) -> str:
