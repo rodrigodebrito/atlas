@@ -47,6 +47,10 @@ Sem app para baixar. Sem planilha para abrir. Sem fricção.
 | Lembretes proativos de gastos fixos e faturas (cron) | ✅ |
 | Alertas inline (categoria estourou, ritmo acelerado) | ✅ |
 | Pré-roteador regex (~70% sem LLM) | ✅ |
+| Painel HTML visual com gráficos, filtros por período e período personalizado | ✅ |
+| Link do painel no resumo mensal (token temporário 30min) | ✅ |
+| "Editar cartão" via WhatsApp → gera link fresco do painel | ✅ |
+| Pós-processador anti-perguntas (LLM nunca faz pergunta ao usuário) | ✅ |
 | Manual mobile-friendly em `/manual` | ✅ |
 
 ---
@@ -91,6 +95,7 @@ O pré-roteador resolve ~70% das mensagens (resumos, saldos, compromissos, confi
 | `get_transactions` | Extrato por data/mês (separado entradas vs saídas) |
 | `get_transactions_by_merchant` | Filtra por estabelecimento |
 | `get_category_breakdown` | Detalhe por categoria |
+| `get_all_categories_breakdown` | Breakdown geral de todas as categorias do mês |
 | `get_month_summary` | Resumo mensal + compromissos pendentes + saldo real |
 | `get_month_comparison` | Comparativo mês atual vs anterior |
 | `get_week_summary` | Resumo semanal + alertas |
@@ -119,6 +124,7 @@ O pré-roteador resolve ~70% das mensagens (resumos, saldos, compromissos, confi
 | `get_goals` | Lista metas com progresso |
 | `add_to_goal` | Adiciona valor a uma meta |
 | `set_reminder_days` | Configura antecedência dos lembretes |
+| `get_panel_url` | Gera link temporário (30min) para o painel visual |
 
 ---
 
@@ -221,6 +227,7 @@ financial_goals          — metas com progresso
 pending_actions          — ações pendentes de confirmação (deleção em massa)
 merchant_category_rules  — auto-aprendizado merchant→categoria
 merchant_card_rules      — auto-aprendizado merchant→cartão
+panel_tokens             — tokens temporários (30min) para acesso ao painel visual
 pending_statement_imports — importações pendentes (legacy)
 ```
 
@@ -258,7 +265,7 @@ Nota 0-100, graus A+ / A / B+ / B / C / D / F.
 - [x] Auto-aprendizado merchant→categoria e merchant→cartão
 
 ### Fase 2 — Engajamento (em andamento)
-- [ ] Painel HTML inteligente (gráficos, insights, link temporário)
+- [x] Painel HTML inteligente (gráficos, filtros por período, link temporário 30min)
 - [ ] Relatório semanal automático (cron domingo 20h)
 - [ ] Recap mensal ("Spotify Wrapped" das finanças)
 - [ ] Modo Desafio (gamificação de economia)

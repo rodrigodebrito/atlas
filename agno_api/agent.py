@@ -8556,6 +8556,8 @@ h1{font-size:1.8em;text-align:center;margin:20px 0 8px;color:#fff}
 <div class="example"><code>"Nubank fecha 25 vence 10"</code> — configura ciclo do cartão</div>
 <div class="example"><code>"minhas parcelas"</code> — lista parcelamentos ativos</div>
 <div class="example"><code>"próxima fatura do Inter"</code> — estimativa da próxima fatura</div>
+<div class="example"><code>"excluir cartão Nubank"</code> — remove o cartão</div>
+<div class="example"><code>"editar cartão"</code> — abre o painel para editar/excluir cartões</div>
 </div>
 
 <div class="section">
@@ -8576,6 +8578,16 @@ h1{font-size:1.8em;text-align:center;margin:20px 0 8px;color:#fff}
 <div class="example"><code>"quero guardar 5000 pra viagem"</code> — cria meta</div>
 <div class="example"><code>"guardei 500 na meta viagem"</code> — adiciona valor</div>
 <div class="example"><code>"minhas metas"</code> — vê progresso</div>
+</div>
+
+<div class="section">
+<h2>📊 Painel visual</h2>
+<p>Acesse um painel interativo com gráficos direto no navegador:</p>
+<div class="example"><code>"como tá meu mês?"</code> — resumo + link do painel</div>
+<div class="example"><code>"editar cartão"</code> — abre o painel para editar cartões</div>
+<p style="margin-top:8px">No painel você pode:</p>
+<div class="tip">📈 Gráfico de pizza com categorias<br>📅 Filtros: Hoje, Semana, 7 dias, 15 dias, Mês, Tudo<br>📆 Período personalizado (datas de/até)<br>💳 Filtrar por cartão<br>🗑️ Excluir cartões<br>📋 Lista de transações detalhada</div>
+<div class="tip">💡 O link é válido por 30 minutos. Peça "editar cartão" para gerar um novo a qualquer momento.</div>
 </div>
 
 <div class="section">
