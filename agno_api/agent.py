@@ -215,6 +215,27 @@ def _init_sqlite_tables():
             created_at TEXT DEFAULT (datetime('now')),
             expires_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS agenda_events (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            event_at TEXT NOT NULL,
+            all_day INTEGER DEFAULT 0,
+            recurrence_type TEXT DEFAULT 'once',
+            recurrence_rule TEXT DEFAULT '',
+            recurrence_end TEXT DEFAULT '',
+            alert_minutes_before INTEGER DEFAULT 30,
+            active_start_hour INTEGER DEFAULT 8,
+            active_end_hour INTEGER DEFAULT 22,
+            status TEXT DEFAULT 'active',
+            last_notified_at TEXT DEFAULT '',
+            next_alert_at TEXT DEFAULT '',
+            gcal_event_id TEXT DEFAULT '',
+            category TEXT DEFAULT 'geral',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
     """)
     conn.commit()
     conn.close()
@@ -388,6 +409,29 @@ def _init_postgres_tables():
             created_at TEXT DEFAULT (now()::text),
             expires_at TEXT NOT NULL
         );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS agenda_events (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            event_at TEXT NOT NULL,
+            all_day INTEGER DEFAULT 0,
+            recurrence_type TEXT DEFAULT 'once',
+            recurrence_rule TEXT DEFAULT '',
+            recurrence_end TEXT DEFAULT '',
+            alert_minutes_before INTEGER DEFAULT 30,
+            active_start_hour INTEGER DEFAULT 8,
+            active_end_hour INTEGER DEFAULT 22,
+            status TEXT DEFAULT 'active',
+            last_notified_at TEXT DEFAULT '',
+            next_alert_at TEXT DEFAULT '',
+            gcal_event_id TEXT DEFAULT '',
+            category TEXT DEFAULT 'geral',
+            created_at TEXT DEFAULT (now()::text),
+            updated_at TEXT DEFAULT (now()::text)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agenda_next_alert ON agenda_events(next_alert_at, status);
     """)
     conn.commit()
     cur.close()
@@ -4781,6 +4825,626 @@ def will_i_have_leftover(user_phone: str) -> str:
 
 
 # ============================================================
+# AGENDA INTELIGENTE — Helpers + Tools
+# ============================================================
+
+import json as _json_agenda
+
+_WEEKDAY_MAP_BR = {
+    "segunda": 0, "seg": 0, "segunda-feira": 0,
+    "terca": 1, "terça": 1, "ter": 1, "terca-feira": 1, "terça-feira": 1,
+    "quarta": 2, "qua": 2, "quarta-feira": 2,
+    "quinta": 3, "qui": 3, "quinta-feira": 3,
+    "sexta": 4, "sex": 4, "sexta-feira": 4,
+    "sabado": 5, "sábado": 5, "sab": 5,
+    "domingo": 6, "dom": 6,
+}
+
+_MONTH_MAP_BR = {
+    "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3, "abril": 4,
+    "maio": 5, "junho": 6, "julho": 7, "agosto": 8,
+    "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12,
+}
+
+
+def _parse_agenda_message(msg: str) -> dict | None:
+    """
+    Tenta extrair título, data/hora e recorrência de uma mensagem BR.
+    Retorna dict com {title, event_at, recurrence_type, recurrence_rule, all_day, confidence}
+    ou None se não conseguir parsear.
+    """
+    import unicodedata
+    import re as _re_ag
+
+    # Normaliza: lowercase, remove acentos
+    raw = msg.strip()
+    norm = unicodedata.normalize('NFKD', raw.lower())
+    norm = ''.join(c for c in norm if not unicodedata.combining(c))
+
+    today = _now_br()
+    parsed_date = None
+    parsed_time = None
+    recurrence_type = "once"
+    recurrence_rule = ""
+    all_day = False
+    confidence = 0.0
+    time_tokens = []  # partes do texto que são data/hora (para remover e extrair título)
+
+    # --- RECORRENCIA: "de N em N horas" / "a cada N horas" ---
+    m_interval = _re_ag.search(r'(?:de\s+)?(\d+)\s+em\s+\1\s+hora|a\s+cada\s+(\d+)\s+hora', norm)
+    if m_interval:
+        hours = int(m_interval.group(1) or m_interval.group(2))
+        recurrence_type = "interval"
+        recurrence_rule = _json_agenda.dumps({"interval_hours": hours})
+        # Para interval, event_at = próximo slot dentro do horário ativo
+        next_hour = today.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        if next_hour.hour < 8:
+            next_hour = next_hour.replace(hour=8)
+        parsed_date = next_hour.date()
+        parsed_time = next_hour.time()
+        time_tokens.append(m_interval.group(0))
+        confidence = 0.85
+
+    # --- RECORRENCIA: "todo dia" / "toda segunda" / "toda terca e quinta" ---
+    if not m_interval:
+        m_weekly = _re_ag.search(r'tod[ao]s?\s+(?:as?\s+)?(segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo)(?:\s+e\s+(segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo))?', norm)
+        if m_weekly:
+            days = [_WEEKDAY_MAP_BR.get(m_weekly.group(1), 0)]
+            if m_weekly.group(2):
+                days.append(_WEEKDAY_MAP_BR.get(m_weekly.group(2), 0))
+            recurrence_type = "weekly"
+            recurrence_rule = _json_agenda.dumps({"weekdays": sorted(days)})
+            # Próxima ocorrência
+            for offset in range(1, 8):
+                candidate = today + timedelta(days=offset)
+                if candidate.weekday() in days:
+                    parsed_date = candidate.date()
+                    break
+            time_tokens.append(m_weekly.group(0))
+            confidence = 0.8
+        else:
+            m_daily = _re_ag.search(r'tod[ao]s?\s+(?:os?\s+)?dia', norm)
+            if m_daily:
+                recurrence_type = "daily"
+                recurrence_rule = ""
+                parsed_date = (today + timedelta(days=1)).date() if today.hour >= 22 else today.date()
+                time_tokens.append(m_daily.group(0))
+                confidence = 0.8
+
+        # --- RECORRENCIA: "dia N de cada mes" / "todo dia N" ---
+        m_monthly = _re_ag.search(r'(?:todo\s+)?dia\s+(\d{1,2})\s+(?:de\s+cada\s+mes|mensal)', norm)
+        if m_monthly:
+            day_of = int(m_monthly.group(1))
+            recurrence_type = "monthly"
+            recurrence_rule = _json_agenda.dumps({"day_of_month": day_of})
+            # Próxima ocorrência
+            try:
+                candidate = today.replace(day=day_of)
+                if candidate <= today:
+                    if today.month == 12:
+                        candidate = candidate.replace(year=today.year + 1, month=1)
+                    else:
+                        candidate = candidate.replace(month=today.month + 1)
+                parsed_date = candidate.date()
+            except ValueError:
+                parsed_date = (today + timedelta(days=30)).date()
+            time_tokens.append(m_monthly.group(0))
+            confidence = 0.8
+
+    # --- DATA ABSOLUTA: "amanha", "hoje", "dia N", "dia N de MES" ---
+    if parsed_date is None:
+        if "amanha" in norm or "amanhã" in norm.replace(norm, msg.lower()):
+            parsed_date = (today + timedelta(days=1)).date()
+            time_tokens.append("amanha" if "amanha" in norm else "amanhã")
+            confidence = max(confidence, 0.9)
+        elif "hoje" in norm:
+            parsed_date = today.date()
+            time_tokens.append("hoje")
+            confidence = max(confidence, 0.9)
+        elif "depois de amanha" in norm:
+            parsed_date = (today + timedelta(days=2)).date()
+            time_tokens.append("depois de amanha")
+            confidence = max(confidence, 0.85)
+        else:
+            # "dia 15", "dia 15 de março"
+            m_dia = _re_ag.search(r'dia\s+(\d{1,2})(?:\s+(?:de\s+)?(\w+))?', norm)
+            if m_dia:
+                day_num = int(m_dia.group(1))
+                month_name = m_dia.group(2) or ""
+                year = today.year
+                if month_name and month_name in _MONTH_MAP_BR:
+                    month = _MONTH_MAP_BR[month_name]
+                else:
+                    month = today.month
+                try:
+                    from datetime import date as _dt_date
+                    candidate = _dt_date(year, month, day_num)
+                    if candidate < today.date():
+                        if month_name:
+                            candidate = _dt_date(year + 1, month, day_num)
+                        else:
+                            if today.month == 12:
+                                candidate = _dt_date(year + 1, 1, day_num)
+                            else:
+                                candidate = _dt_date(year, today.month + 1, day_num)
+                    parsed_date = candidate
+                except ValueError:
+                    pass
+                time_tokens.append(m_dia.group(0))
+                confidence = max(confidence, 0.8)
+
+        # "daqui a N dias/horas/minutos" / "em N horas"
+        m_rel = _re_ag.search(r'(?:daqui\s+a|em)\s+(\d+)\s+(minuto|hora|dia)', norm)
+        if m_rel and parsed_date is None:
+            n = int(m_rel.group(1))
+            unit = m_rel.group(2)
+            if "dia" in unit:
+                parsed_date = (today + timedelta(days=n)).date()
+                parsed_time = today.time() if today.hour >= 8 else today.replace(hour=9, minute=0).time()
+            elif "hora" in unit:
+                future = today + timedelta(hours=n)
+                parsed_date = future.date()
+                parsed_time = future.time()
+            elif "minuto" in unit:
+                future = today + timedelta(minutes=n)
+                parsed_date = future.date()
+                parsed_time = future.time()
+            time_tokens.append(m_rel.group(0))
+            confidence = max(confidence, 0.85)
+
+    # --- HORA: "as 14h", "as 10:30", "14h30", "meio-dia" ---
+    m_time = _re_ag.search(r'(?:[aà]s?\s+)?(\d{1,2})\s*(?::(\d{2})|h(\d{2})?)\s*(?:h(?:oras?)?)?', norm)
+    if m_time:
+        hour = int(m_time.group(1))
+        minute = int(m_time.group(2) or m_time.group(3) or 0)
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            from datetime import time as _dt_time
+            parsed_time = _dt_time(hour, minute)
+            time_tokens.append(m_time.group(0))
+            confidence = max(confidence, 0.8)
+    elif "meio-dia" in norm or "meio dia" in norm:
+        from datetime import time as _dt_time
+        parsed_time = _dt_time(12, 0)
+        time_tokens.append("meio dia" if "meio dia" in norm else "meio-dia")
+        confidence = max(confidence, 0.8)
+    elif "meia-noite" in norm or "meia noite" in norm:
+        from datetime import time as _dt_time
+        parsed_time = _dt_time(0, 0)
+        time_tokens.append("meia noite")
+        confidence = max(confidence, 0.8)
+
+    if parsed_date is None:
+        return None  # Não conseguiu extrair data
+
+    if parsed_time is None:
+        all_day = True
+
+    # --- EXTRAIR TÍTULO: remove triggers e tokens de tempo ---
+    title_raw = raw
+    # Remove trigger words
+    for pattern in [
+        r'(?:me\s+)?(?:lembr[aeo]r?|avisa[r]?|agenda[r]?)\s+(?:de\s+|que\s+|para\s+|pra\s+)?',
+        r'tenho\s+(?:um\s+)?(?:compromisso|evento|reuniao|reunião)\s+',
+        r'(?:marcar?|agendar?)\s+(?:um\s+)?(?:compromisso|evento|reuniao|reunião)?\s*',
+    ]:
+        title_raw = _re_ag.sub(pattern, '', title_raw, count=1, flags=_re_ag.IGNORECASE)
+    # Remove time tokens
+    for tok in time_tokens:
+        title_raw = title_raw.replace(tok, '')
+    # Remove preposições soltas e limpa
+    title_raw = _re_ag.sub(r'\b(as|às|no|na|de|do|da|em|pra|para)\b\s*$', '', title_raw.strip(), flags=_re_ag.IGNORECASE)
+    title_raw = _re_ag.sub(r'^\s*(de|que|para|pra)\s+', '', title_raw.strip(), flags=_re_ag.IGNORECASE)
+    title = title_raw.strip().strip('.,!?; ')
+
+    if not title:
+        title = "Lembrete"
+
+    # Capitaliza primeira letra
+    title = title[0].upper() + title[1:] if title else "Lembrete"
+
+    # Monta event_at
+    if all_day:
+        event_at = parsed_date.strftime("%Y-%m-%d")
+    else:
+        from datetime import datetime as _dt_datetime
+        event_at = _dt_datetime.combine(parsed_date, parsed_time).strftime("%Y-%m-%d %H:%M")
+
+    return {
+        "title": title,
+        "event_at": event_at,
+        "recurrence_type": recurrence_type,
+        "recurrence_rule": recurrence_rule,
+        "all_day": all_day,
+        "confidence": confidence,
+    }
+
+
+def _compute_next_alert_at(event_at: str, alert_minutes_before: int) -> str:
+    """Calcula quando o próximo alerta deve disparar."""
+    if alert_minutes_before <= 0:
+        return ""
+    try:
+        if " " in event_at:
+            dt = datetime.strptime(event_at, "%Y-%m-%d %H:%M")
+        else:
+            dt = datetime.strptime(event_at, "%Y-%m-%d").replace(hour=8, minute=0)
+        alert_dt = dt - timedelta(minutes=alert_minutes_before)
+        return alert_dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return ""
+
+
+def _advance_recurring_event(event_at: str, recurrence_type: str, recurrence_rule: str,
+                              active_start_hour: int = 8, active_end_hour: int = 22) -> str:
+    """Avança event_at para a próxima ocorrência. Retorna novo event_at."""
+    try:
+        if " " in event_at:
+            dt = datetime.strptime(event_at, "%Y-%m-%d %H:%M")
+        else:
+            dt = datetime.strptime(event_at, "%Y-%m-%d").replace(hour=8, minute=0)
+
+        rule = _json_agenda.loads(recurrence_rule) if recurrence_rule else {}
+        now = _now_br()
+
+        if recurrence_type == "daily":
+            dt += timedelta(days=1)
+        elif recurrence_type == "weekly":
+            weekdays = rule.get("weekdays", [dt.weekday()])
+            for offset in range(1, 8):
+                candidate = dt + timedelta(days=offset)
+                if candidate.weekday() in weekdays:
+                    dt = candidate
+                    break
+        elif recurrence_type == "monthly":
+            day_of = rule.get("day_of_month", dt.day)
+            if dt.month == 12:
+                next_month = dt.replace(year=dt.year + 1, month=1, day=min(day_of, 28))
+            else:
+                import calendar
+                max_day = calendar.monthrange(dt.year, dt.month + 1)[1]
+                next_month = dt.replace(month=dt.month + 1, day=min(day_of, max_day))
+            dt = next_month
+        elif recurrence_type == "interval":
+            hours = rule.get("interval_hours", 4)
+            dt = now + timedelta(hours=hours)
+            # Clampa ao horário ativo
+            if dt.hour < active_start_hour:
+                dt = dt.replace(hour=active_start_hour, minute=0)
+            elif dt.hour >= active_end_hour:
+                dt = (dt + timedelta(days=1)).replace(hour=active_start_hour, minute=0)
+
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return event_at
+
+
+_AGENDA_CATEGORY_EMOJI = {
+    "geral": "🔵", "saude": "💊", "trabalho": "💼",
+    "pessoal": "👤", "financeiro": "💰",
+}
+
+_WEEKDAY_NAMES_BR = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
+
+
+@tool
+def create_agenda_event(
+    user_phone: str,
+    title: str,
+    event_at: str = "",
+    recurrence_type: str = "once",
+    recurrence_rule: str = "",
+    alert_minutes_before: int = -1,
+    category: str = "geral",
+) -> str:
+    """Cria um evento ou lembrete na agenda do usuário.
+    Use quando o usuário pedir para lembrar, agendar, marcar compromisso.
+    event_at: ISO datetime 'YYYY-MM-DD HH:MM' ou 'YYYY-MM-DD' (dia inteiro).
+    recurrence_type: 'once', 'daily', 'weekly', 'monthly', 'interval'.
+    recurrence_rule: JSON com detalhes da recorrência.
+    alert_minutes_before: -1 = perguntar ao usuário.
+    category: 'geral', 'saude', 'trabalho', 'pessoal', 'financeiro'."""
+    import uuid
+    conn, cur = _db()
+    try:
+        cur.execute("SELECT id, name FROM users WHERE phone = ?", (user_phone,))
+        row = cur.fetchone()
+        if not row:
+            return "Usuário não encontrado."
+        user_id, user_name = row[0], row[1]
+
+        if not event_at:
+            return "Data/hora não especificada. Informe quando é o evento."
+        if not title:
+            return "Título não especificado. Informe o que é o evento."
+
+        all_day = 1 if " " not in event_at else 0
+        event_id = str(uuid.uuid4())
+
+        # Se alert_minutes_before == -1, salva com 0 (sem alerta) e cria pending_action
+        effective_alert = 0 if alert_minutes_before == -1 else alert_minutes_before
+        next_alert = _compute_next_alert_at(event_at, effective_alert)
+
+        cur.execute(
+            """INSERT INTO agenda_events
+               (id, user_id, title, event_at, all_day, recurrence_type, recurrence_rule,
+                alert_minutes_before, status, next_alert_at, category, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)""",
+            (event_id, user_id, title, event_at, all_day, recurrence_type,
+             recurrence_rule, effective_alert, next_alert, category,
+             _now_br().strftime("%Y-%m-%d %H:%M:%S"),
+             _now_br().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        conn.commit()
+
+        # Formata resposta
+        emoji = _AGENDA_CATEGORY_EMOJI.get(category, "🔵")
+        rec_label = ""
+        if recurrence_type == "daily":
+            rec_label = " _(todo dia)_"
+        elif recurrence_type == "weekly":
+            rule = _json_agenda.loads(recurrence_rule) if recurrence_rule else {}
+            days = rule.get("weekdays", [])
+            day_names = [_WEEKDAY_NAMES_BR[d] for d in days if d < 7]
+            rec_label = f" _(toda {', '.join(day_names)})_" if day_names else " _(semanal)_"
+        elif recurrence_type == "monthly":
+            rule = _json_agenda.loads(recurrence_rule) if recurrence_rule else {}
+            d = rule.get("day_of_month", "")
+            rec_label = f" _(todo dia {d})_" if d else " _(mensal)_"
+        elif recurrence_type == "interval":
+            rule = _json_agenda.loads(recurrence_rule) if recurrence_rule else {}
+            h = rule.get("interval_hours", "")
+            rec_label = f" _(a cada {h}h)_" if h else " _(intervalo)_"
+
+        if all_day:
+            time_str = event_at
+        else:
+            time_str = event_at.replace("-", "/").replace(" ", " às ")
+
+        lines = [
+            f"{emoji} *Evento agendado!*",
+            f"*Título:* {title}{rec_label}",
+            f"*Quando:* {time_str}",
+        ]
+
+        # Se precisa perguntar alerta → cria pending_action
+        if alert_minutes_before == -1:
+            import json as _j
+            cur.execute("DELETE FROM pending_actions WHERE user_phone = ?", (user_phone,))
+            cur.execute(
+                "INSERT INTO pending_actions (user_phone, action_type, action_data, created_at) VALUES (?, ?, ?, ?)",
+                (user_phone, "set_agenda_alert",
+                 _j.dumps({"event_id": event_id, "title": title}),
+                 _now_br().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            conn.commit()
+            lines.append("")
+            lines.append("⏰ *Quanto tempo antes quer que eu avise?*")
+            lines.append("_15 min · 30 min · 1 hora · 2 horas · 1 dia antes · não avisar_")
+
+        return "\n".join(lines)
+    finally:
+        _safe_close(conn)
+
+
+@tool
+def list_agenda_events(
+    user_phone: str,
+    days: int = 7,
+    category: str = "",
+) -> str:
+    """Lista os próximos eventos da agenda do usuário.
+    Use quando o usuário pedir 'minha agenda', 'meus lembretes', 'próximos eventos'.
+    days: quantos dias à frente (padrão 7). category: filtrar por categoria."""
+    conn, cur = _db()
+    try:
+        cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+        row = cur.fetchone()
+        if not row:
+            return "Usuário não encontrado."
+        user_id = row[0]
+
+        now = _now_br()
+        end_date = (now + timedelta(days=days)).strftime("%Y-%m-%d 23:59")
+
+        if category:
+            cur.execute(
+                """SELECT id, title, event_at, all_day, recurrence_type, recurrence_rule, status, category, alert_minutes_before
+                   FROM agenda_events WHERE user_id = ? AND status = 'active'
+                   AND event_at <= ? AND category = ?
+                   ORDER BY event_at ASC""",
+                (user_id, end_date, category),
+            )
+        else:
+            cur.execute(
+                """SELECT id, title, event_at, all_day, recurrence_type, recurrence_rule, status, category, alert_minutes_before
+                   FROM agenda_events WHERE user_id = ? AND status = 'active'
+                   AND event_at <= ?
+                   ORDER BY event_at ASC""",
+                (user_id, end_date),
+            )
+        rows = cur.fetchall()
+
+        if not rows:
+            return f"📅 Sua agenda está vazia para os próximos {days} dias.\n\n💡 _Dica: diga \"me lembra amanhã às 14h reunião\" para agendar._"
+
+        # Agrupa por data
+        from collections import OrderedDict
+        by_date = OrderedDict()
+        for r in rows:
+            ev_at = r[2]
+            dt_str = ev_at[:10] if ev_at else ""
+            if dt_str not in by_date:
+                by_date[dt_str] = []
+            by_date[dt_str].append(r)
+
+        lines = [f"📅 *Sua agenda (próximos {days} dias):*", "─────────────────────"]
+
+        for date_str, events in by_date.items():
+            try:
+                dt = datetime.strptime(date_str, "%Y-%m-%d")
+                wday = _WEEKDAY_NAMES_BR[dt.weekday()]
+                if dt.date() == now.date():
+                    label = f"*Hoje, {dt.strftime('%d/%m')} ({wday})*"
+                elif dt.date() == (now + timedelta(days=1)).date():
+                    label = f"*Amanhã, {dt.strftime('%d/%m')} ({wday})*"
+                else:
+                    label = f"*{dt.strftime('%d/%m')} ({wday})*"
+            except Exception:
+                label = f"*{date_str}*"
+
+            lines.append(f"\n{label}")
+            for ev in events:
+                title = ev[1]
+                ev_at = ev[2]
+                all_day = ev[3]
+                rec_type = ev[4]
+                cat = ev[7] or "geral"
+                emoji = _AGENDA_CATEGORY_EMOJI.get(cat, "🔵")
+
+                time_part = ""
+                if not all_day and " " in ev_at:
+                    time_part = ev_at.split(" ")[1][:5]
+
+                rec_badge = ""
+                if rec_type == "daily":
+                    rec_badge = " 🔄"
+                elif rec_type == "weekly":
+                    rec_badge = " 🔄"
+                elif rec_type == "monthly":
+                    rec_badge = " 🔄"
+                elif rec_type == "interval":
+                    rule = _json_agenda.loads(ev[5]) if ev[5] else {}
+                    h = rule.get("interval_hours", "")
+                    rec_badge = f" ⏱️{h}h" if h else " ⏱️"
+
+                if time_part:
+                    lines.append(f"  {emoji} {time_part} — {title}{rec_badge}")
+                else:
+                    lines.append(f"  {emoji} (dia todo) — {title}{rec_badge}")
+
+        return "\n".join(lines)
+    finally:
+        _safe_close(conn)
+
+
+@tool
+def complete_agenda_event(
+    user_phone: str,
+    event_query: str = "last",
+) -> str:
+    """Marca um evento da agenda como concluído.
+    Use quando o usuário disser 'feito', 'pronto', 'concluído' referente a um lembrete.
+    event_query: título parcial para buscar, ou 'last' para o mais recente notificado."""
+    conn, cur = _db()
+    try:
+        cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+        row = cur.fetchone()
+        if not row:
+            return "Usuário não encontrado."
+        user_id = row[0]
+
+        now = _now_br()
+
+        if event_query == "last":
+            cur.execute(
+                """SELECT id, title, recurrence_type, recurrence_rule, event_at, active_start_hour, active_end_hour
+                   FROM agenda_events WHERE user_id = ? AND status = 'active'
+                   AND last_notified_at != ''
+                   ORDER BY last_notified_at DESC LIMIT 1""",
+                (user_id,),
+            )
+        else:
+            cur.execute(
+                """SELECT id, title, recurrence_type, recurrence_rule, event_at, active_start_hour, active_end_hour
+                   FROM agenda_events WHERE user_id = ? AND status = 'active'
+                   AND LOWER(title) LIKE ?
+                   ORDER BY event_at ASC LIMIT 1""",
+                (user_id, f"%{event_query.lower()}%"),
+            )
+
+        ev = cur.fetchone()
+        if not ev:
+            return "Não encontrei esse evento na sua agenda."
+
+        ev_id, title, rec_type, rec_rule, ev_at, start_h, end_h = ev
+
+        if rec_type == "once":
+            cur.execute(
+                "UPDATE agenda_events SET status = 'done', updated_at = ? WHERE id = ?",
+                (now.strftime("%Y-%m-%d %H:%M:%S"), ev_id),
+            )
+            conn.commit()
+            return f"✅ *{title}* — marcado como concluído!"
+        else:
+            # Avança para próxima ocorrência
+            new_event_at = _advance_recurring_event(ev_at, rec_type, rec_rule, start_h, end_h)
+            alert_min = 30  # mantém padrão
+            cur.execute("SELECT alert_minutes_before FROM agenda_events WHERE id = ?", (ev_id,))
+            r2 = cur.fetchone()
+            if r2:
+                alert_min = r2[0]
+            new_alert = _compute_next_alert_at(new_event_at, alert_min)
+            cur.execute(
+                """UPDATE agenda_events SET event_at = ?, next_alert_at = ?, last_notified_at = '', updated_at = ?
+                   WHERE id = ?""",
+                (new_event_at, new_alert, now.strftime("%Y-%m-%d %H:%M:%S"), ev_id),
+            )
+            conn.commit()
+            return f"✅ *{title}* — feito! Próximo: {new_event_at.replace('-', '/').replace(' ', ' às ')}"
+    finally:
+        _safe_close(conn)
+
+
+@tool
+def delete_agenda_event(
+    user_phone: str,
+    event_query: str,
+) -> str:
+    """Remove um evento da agenda. Pede confirmação.
+    Use quando o usuário pedir para apagar/remover/cancelar um lembrete ou evento.
+    event_query: título parcial para buscar."""
+    import json as _j
+    conn, cur = _db()
+    try:
+        cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+        row = cur.fetchone()
+        if not row:
+            return "Usuário não encontrado."
+        user_id = row[0]
+
+        cur.execute(
+            """SELECT id, title, event_at, recurrence_type
+               FROM agenda_events WHERE user_id = ? AND status = 'active'
+               AND LOWER(title) LIKE ?
+               ORDER BY event_at ASC LIMIT 1""",
+            (user_id, f"%{event_query.lower()}%"),
+        )
+        ev = cur.fetchone()
+        if not ev:
+            return "Não encontrei esse evento na sua agenda."
+
+        ev_id, title, ev_at, rec_type = ev
+
+        # Cria pending_action para confirmação
+        cur.execute("DELETE FROM pending_actions WHERE user_phone = ?", (user_phone,))
+        cur.execute(
+            "INSERT INTO pending_actions (user_phone, action_type, action_data, created_at) VALUES (?, ?, ?, ?)",
+            (user_phone, "delete_agenda_event",
+             _j.dumps({"event_id": ev_id, "title": title}),
+             _now_br().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        conn.commit()
+
+        rec_label = ""
+        if rec_type != "once":
+            rec_label = " _(recorrente)_"
+
+        return f"🗑️ Apagar *{title}*{rec_label}?\n_Responda *sim* para confirmar ou *não* para cancelar._"
+    finally:
+        _safe_close(conn)
+
+
+# ============================================================
 # SCHEMAS — ParseAgent
 # ============================================================
 
@@ -5478,6 +6142,16 @@ CONSULTAS — escolha a tool CERTA:
 - EXTRATO CARTÃO → get_card_statement
 - LISTA DETALHADA (só se pedir "transações"/"lista") → get_transactions
 
+AGENDA / LEMBRETES:
+- "me lembra amanhã às 14h reunião" → create_agenda_event(title="Reunião", event_at="YYYY-MM-DD 14:00")
+- "todo dia às 8h tomar remédio" → create_agenda_event(recurrence_type="daily", event_at="YYYY-MM-DD 08:00")
+- "de 4 em 4 horas tomar água" → create_agenda_event(recurrence_type="interval", recurrence_rule='{"interval_hours":4}')
+- "toda segunda reunião 9h" → create_agenda_event(recurrence_type="weekly", recurrence_rule='{"weekdays":[0]}')
+- "minha agenda" → list_agenda_events
+- "feito" (após lembrete) → complete_agenda_event
+- "apagar lembrete X" → delete_agenda_event
+- Sempre use alert_minutes_before=-1 para perguntar ao usuário quando avisar
+
 PAGAMENTOS — SEMPRE pay_bill (NUNCA save_transaction):
 "paguei", "pagamento", "transferi", "quitei" → pay_bill
 
@@ -5694,7 +6368,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=5,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event],
     add_datetime_to_context=True,
     markdown=True,
 )
@@ -7174,6 +7848,32 @@ def _pre_route(message: str) -> dict | None:
                         confirm=True,
                     )
                     return {"response": result}
+                elif action_type == "delete_agenda_event":
+                    data = _json_pr.loads(action_data_str)
+                    ev_id = data.get("event_id", "")
+                    title = data.get("title", "evento")
+                    try:
+                        conn2, cur2 = _db()
+                        cur2.execute("DELETE FROM agenda_events WHERE id = ?", (ev_id,))
+                        conn2.commit()
+                        _safe_close(conn2)
+                    except Exception:
+                        pass
+                    return {"response": f"🗑️ *{title}* removido da sua agenda!"}
+                elif action_type == "set_agenda_alert":
+                    # Não é confirmação "sim" — é a resposta do alerta, tratada abaixo
+                    # Re-insere a pending_action para ser tratada no bloco de alerta
+                    try:
+                        conn3 = _get_conn()
+                        cur3 = conn3.cursor()
+                        cur3.execute(
+                            "INSERT INTO pending_actions (user_phone, action_type, action_data, created_at) VALUES (?, ?, ?, ?)",
+                            (user_phone, action_type, action_data_str, _now_br().strftime("%Y-%m-%d %H:%M:%S")),
+                        )
+                        conn3.commit()
+                        conn3.close()
+                    except Exception:
+                        pass
             else:
                 conn_pa.close()
                 # Sem ação pendente — "sim" solto não tem contexto, responde direto
@@ -7196,6 +7896,109 @@ def _pre_route(message: str) -> dict | None:
                 conn_pa.close()
                 return {"response": "Ok, cancelado! Nada foi apagado. ✌️"}
             conn_pa.close()
+        except Exception:
+            pass
+
+    # --- AGENDA: resposta de alerta (pending_action set_agenda_alert) ---
+    _alert_match = _re_router.match(
+        r'(\d+)\s*(?:min(?:uto)?s?|h(?:ora)?s?|dia(?:s)?\s+antes)'
+        r'|(?:n[aã]o\s+avisa|sem\s+(?:alerta|aviso)|n[aã]o\s+(?:precisa|quero)\s+(?:de\s+)?(?:alerta|aviso))'
+        r'|(?:dia\s+anterior|1\s+dia\s+antes|um\s+dia\s+antes|na\s+v[eé]spera)',
+        msg
+    )
+    if _alert_match:
+        import json as _j_alert
+        try:
+            conn_al = _get_conn()
+            cur_al = conn_al.cursor()
+            cur_al.execute(
+                "SELECT id, action_type, action_data FROM pending_actions WHERE user_phone = ? AND action_type = 'set_agenda_alert' ORDER BY created_at DESC LIMIT 1",
+                (user_phone,),
+            )
+            pa_alert = cur_al.fetchone()
+            if pa_alert:
+                pa_id, _, action_data_str = pa_alert
+                data = _j_alert.loads(action_data_str)
+                ev_id = data.get("event_id", "")
+                title = data.get("title", "")
+
+                # Parseia a preferência do usuário
+                alert_min = 30  # padrão
+                raw_alert = msg.lower().strip()
+                if "não" in raw_alert or "nao" in raw_alert or "sem" in raw_alert:
+                    alert_min = 0
+                elif "dia anterior" in raw_alert or "véspera" in raw_alert or "vespera" in raw_alert or "1 dia" in raw_alert or "um dia" in raw_alert:
+                    alert_min = 1440  # 24h
+                else:
+                    m_num = _re_router.match(r'(\d+)\s*(min|h)', raw_alert)
+                    if m_num:
+                        n_val = int(m_num.group(1))
+                        unit = m_num.group(2)
+                        if unit.startswith('h'):
+                            alert_min = n_val * 60
+                        else:
+                            alert_min = n_val
+
+                # Atualiza o evento
+                cur_al.execute("SELECT event_at FROM agenda_events WHERE id = ?", (ev_id,))
+                ev_row = cur_al.fetchone()
+                next_alert = ""
+                if ev_row:
+                    next_alert = _compute_next_alert_at(ev_row[0], alert_min)
+
+                cur_al.execute(
+                    "UPDATE agenda_events SET alert_minutes_before = ?, next_alert_at = ?, updated_at = ? WHERE id = ?",
+                    (alert_min, next_alert, _now_br().strftime("%Y-%m-%d %H:%M:%S"), ev_id),
+                )
+                cur_al.execute("DELETE FROM pending_actions WHERE user_phone = ? AND action_type = 'set_agenda_alert'", (user_phone,))
+                conn_al.commit()
+                conn_al.close()
+
+                if alert_min == 0:
+                    return {"response": f"✅ *{title}* agendado sem alerta."}
+                elif alert_min >= 1440:
+                    return {"response": f"🔔 Vou te avisar *1 dia antes* de *{title}*!"}
+                elif alert_min >= 60:
+                    h = alert_min // 60
+                    return {"response": f"🔔 Vou te avisar *{h}h antes* de *{title}*!"}
+                else:
+                    return {"response": f"🔔 Vou te avisar *{alert_min} min antes* de *{title}*!"}
+            conn_al.close()
+        except Exception:
+            pass
+
+    # --- AGENDA: criar evento (detecta trigger + tempo) ---
+    _agenda_trigger = _re_router.match(
+        r'(?:me\s+)?(?:lembr[aeo]r?|avisa[r]?)\s+.+'
+        r'|tenho\s+(?:um\s+)?(?:compromisso|evento|reuni[aã]o)\s+.+'
+        r'|(?:agendar?|marcar?)\s+.+'
+        r'|.+\s+(?:de\s+\d+\s+em\s+\d+\s+hora|a\s+cada\s+\d+\s+hora)',
+        msg
+    )
+    if _agenda_trigger:
+        parsed = _parse_agenda_message(msg)
+        if parsed and parsed.get("confidence", 0) >= 0.7:
+            result = _call(
+                create_agenda_event, user_phone,
+                title=parsed["title"],
+                event_at=parsed["event_at"],
+                recurrence_type=parsed["recurrence_type"],
+                recurrence_rule=parsed["recurrence_rule"],
+                alert_minutes_before=-1,
+                category="geral",
+            )
+            return {"response": result}
+
+    # --- AGENDA: listar ---
+    if _re_router.match(r'(?:minha\s+)?agenda|(?:meus\s+)?(?:lembrete|evento|compromisso)s?\s+(?:da\s+semana|de\s+hoje|de\s+amanh[aã]|do\s+m[eê]s|pr[oó]ximos)[\s\?\!\.]*$', msg):
+        return {"response": _call(list_agenda_events, user_phone)}
+
+    # --- AGENDA: feito/concluído (verifica se tem evento notificado recente) ---
+    if _re_router.match(r'(feito|pronto|conclu[ií]do?|fiz|j[aá] fiz|cumpri|marquei|done)[\s\?\!\.]*$', msg):
+        try:
+            _r = _call(complete_agenda_event, user_phone, "last")
+            if "não encontrei" not in _r.lower():
+                return {"response": _r}
         except Exception:
             pass
 
@@ -7467,6 +8270,25 @@ def _keyword_route(user_phone: str, msg: str) -> dict | None:
         if panel_url:
             return {"response": f"📊 *Seu painel está pronto!*\n\n👉 {panel_url}\n\n_Link válido por 30 minutos._"}
 
+    # --- AGENDA: listar ---
+    if any(k in n for k in ("agenda", "lembrete", "lembretes", "evento", "eventos")) and any(k in n for k in ("ver", "mostra", "lista", "minha", "meus", "proxim", "quais")):
+        return {"response": _call(list_agenda_events, user_phone)}
+
+    # --- AGENDA: criar (keyword fuzzy) ---
+    if any(k in n for k in ("lembra", "lembrar", "lembrete", "agendar", "agenda")) and len(n) > 15:
+        parsed = _parse_agenda_message(msg)
+        if parsed and parsed.get("confidence", 0) >= 0.7:
+            result = _call(
+                create_agenda_event, user_phone,
+                title=parsed["title"],
+                event_at=parsed["event_at"],
+                recurrence_type=parsed["recurrence_type"],
+                recurrence_rule=parsed["recurrence_rule"],
+                alert_minutes_before=-1,
+                category="geral",
+            )
+            return {"response": result}
+
     # --- AJUDA ---
     if any(k in n for k in ("ajuda", "help", "menu", "comando", "o que voce faz", "o que vc faz")):
         return {"response": _HELP_TEXT}
@@ -7518,6 +8340,13 @@ _HELP_TEXT = """📋 *ATLAS — Manual Rápido*
 🎯 *Metas:*
   • _"quero guardar 5000 pra viagem"_
   • _"guardei 500 na meta"_
+
+📅 *Agenda / Lembretes:*
+  • _"me lembra amanhã às 14h reunião"_
+  • _"lembrete de tomar remédio todo dia 8h"_
+  • _"tomar água de 4 em 4 horas"_
+  • _"minha agenda"_ — ver próximos eventos
+  • _"feito"_ — marcar lembrete como concluído
 
 ✏️ *Corrigir / Apagar:*
   • _"corrige"_ ou _"apaga"_
@@ -7707,6 +8536,103 @@ def get_daily_reminders():
 
     conn.close()
     return {"reminders": results, "date": today.strftime("%Y-%m-%d"), "count": len(results)}
+
+
+@app.get("/v1/reminders/check")
+def check_agenda_reminders():
+    """
+    Verifica lembretes da agenda que precisam ser enviados AGORA.
+    Chamado pelo n8n a cada 15 minutos.
+    Retorna: {"reminders": [{"phone": ..., "message": ..., "event_id": ...}], "count": N}
+    """
+    import logging as _log_chk
+    _logger = _log_chk.getLogger("atlas")
+
+    now = _now_br()
+    now_str = now.strftime("%Y-%m-%d %H:%M")
+
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    # Busca eventos cujo next_alert_at já passou e estão ativos
+    cur.execute(
+        """SELECT ae.id, ae.user_id, ae.title, ae.event_at, ae.all_day,
+                  ae.recurrence_type, ae.recurrence_rule, ae.alert_minutes_before,
+                  ae.active_start_hour, ae.active_end_hour, ae.category,
+                  u.phone, u.name
+           FROM agenda_events ae
+           JOIN users u ON ae.user_id = u.id
+           WHERE ae.status = 'active'
+             AND ae.next_alert_at != ''
+             AND ae.next_alert_at <= ?
+           ORDER BY ae.next_alert_at ASC""",
+        (now_str,),
+    )
+    rows = cur.fetchall()
+
+    results = []
+    for row in rows:
+        ev_id, user_id, title, event_at, all_day, rec_type, rec_rule, alert_min, start_h, end_h, category, phone, user_name = row
+
+        # Monta mensagem
+        emoji = _AGENDA_CATEGORY_EMOJI.get(category or "geral", "🔵")
+        if rec_type == "interval":
+            rule = _json_agenda.loads(rec_rule) if rec_rule else {}
+            h = rule.get("interval_hours", 4)
+            message = f"{emoji} *Lembrete:* {title}\n_Próximo em {h}h._\n\n_\"feito\" para marcar · \"pausa\" para parar_"
+        else:
+            # Formata data/hora legível
+            try:
+                if " " in event_at:
+                    ev_dt = datetime.strptime(event_at, "%Y-%m-%d %H:%M")
+                    if ev_dt.date() == now.date():
+                        time_label = f"Hoje às {ev_dt.strftime('%H:%M')}"
+                    elif ev_dt.date() == (now + timedelta(days=1)).date():
+                        time_label = f"Amanhã às {ev_dt.strftime('%H:%M')}"
+                    else:
+                        wday = _WEEKDAY_NAMES_BR[ev_dt.weekday()]
+                        time_label = f"{ev_dt.strftime('%d/%m')} ({wday}) às {ev_dt.strftime('%H:%M')}"
+                else:
+                    time_label = event_at
+            except Exception:
+                time_label = event_at
+
+            rec_badge = ""
+            if rec_type == "daily":
+                rec_badge = " _(diário)_"
+            elif rec_type == "weekly":
+                rec_badge = " _(semanal)_"
+            elif rec_type == "monthly":
+                rec_badge = " _(mensal)_"
+
+            message = f"🔔 *Lembrete:* {title}{rec_badge}\n📅 {time_label}\n\n_\"feito\" para concluir · \"apagar {title[:20]}\" para remover_"
+
+        results.append({"phone": phone, "message": message, "event_id": ev_id, "user_id": user_id})
+
+        # Atualiza o evento
+        now_ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        if rec_type == "once":
+            # Alerta disparou — limpa next_alert_at
+            cur.execute(
+                "UPDATE agenda_events SET last_notified_at = ?, next_alert_at = '', updated_at = ? WHERE id = ?",
+                (now_ts, now_ts, ev_id),
+            )
+        else:
+            # Avança para próxima ocorrência
+            new_event_at = _advance_recurring_event(event_at, rec_type, rec_rule, start_h, end_h)
+            new_alert = _compute_next_alert_at(new_event_at, alert_min)
+            cur.execute(
+                "UPDATE agenda_events SET event_at = ?, next_alert_at = ?, last_notified_at = ?, updated_at = ? WHERE id = ?",
+                (new_event_at, new_alert, now_ts, now_ts, ev_id),
+            )
+
+    conn.commit()
+    conn.close()
+
+    if results:
+        _logger.info(f"[AGENDA_CHECK] Enviando {len(results)} lembretes")
+
+    return {"reminders": results, "date": now.strftime("%Y-%m-%d %H:%M"), "count": len(results)}
 
 
 # ============================================================
