@@ -8277,7 +8277,15 @@ def _pre_route(message: str) -> dict | None:
             if any(k in _m_lower for k in keywords):
                 _cat = cat_name
                 break
-        result = _call(save_transaction, user_phone, "EXPENSE", _val, _cat, _merchant_raw, "", "", 1, 0, _card_raw, "")
+        import logging as _log_exp
+        _logger_exp = _log_exp.getLogger("atlas")
+        _logger_exp.info(f"[PRE-ROUTER EXPENSE] phone={user_phone} val={_val} cat={_cat} merchant={_merchant_raw} card={_card_raw}")
+        try:
+            result = _call(save_transaction, user_phone, "EXPENSE", _val, _cat, _merchant_raw, "", "", 1, 0, _card_raw, "")
+            _logger_exp.info(f"[PRE-ROUTER EXPENSE] result={result[:100] if result else 'None'}")
+        except Exception as _exp_err:
+            _logger_exp.error(f"[PRE-ROUTER EXPENSE] ERROR: {_exp_err}")
+            return None  # fallback ao LLM
         return {"response": result}
 
     return None  # Fallback ao keyword router
@@ -9336,6 +9344,30 @@ def get_pending_import(user_phone: str):
     row = cur.fetchone()
     conn.close()
     return {"import_id": row[0] if row else None}
+
+
+@app.get("/v1/debug/test_save")
+def debug_test_save(user_phone: str, amount: float = 1.0, merchant: str = "debug_test"):
+    """Debug: testa save_transaction diretamente e verifica se persiste."""
+    user_phone = user_phone.strip()
+    if not user_phone.startswith("+"):
+        user_phone = "+" + user_phone
+    fn = getattr(save_transaction, 'entrypoint', None) or save_transaction
+    result = fn(user_phone, "EXPENSE", amount, "Outros", merchant, "", "", 1, 0, "", "")
+    # Now verify it's in the DB
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return {"result": result, "verify": "user not found"}
+    user_id = row[0]
+    today_str = _now_br().strftime("%Y-%m-%d")
+    cur.execute("SELECT id, merchant, amount_cents, occurred_at FROM transactions WHERE user_id = ? AND occurred_at LIKE ? ORDER BY occurred_at DESC LIMIT 5", (user_id, f"{today_str}%"))
+    txs = cur.fetchall()
+    conn.close()
+    return {"result": result[:200], "verify_count": len(txs), "transactions": [{"id": t[0], "merchant": t[1], "amount": t[2], "occurred_at": t[3]} for t in txs]}
 
 
 @app.get("/v1/debug/users")
