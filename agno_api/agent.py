@@ -1143,6 +1143,14 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     if insight_parts:
         lines.append(f"__insight:{' | '.join(insight_parts)}")
 
+    # Link do painel (sempre incluído no resumo mensal)
+    try:
+        panel_url = get_panel_url(user_phone)
+        if panel_url:
+            lines.append(f"\n📊 *Ver painel com gráficos:* {panel_url}")
+    except Exception:
+        pass
+
     return "\n".join(lines)
 
 
@@ -7111,7 +7119,7 @@ def _pre_route(message: str) -> dict | None:
         return fn(*args, **kwargs)
 
     # --- CONFIRMAÇÃO / CANCELAMENTO DE AÇÃO PENDENTE ---
-    if _re_router.match(r'(sim|s|yes|confirma|confirmar|pode apagar|apaga|beleza|bora|ok|t[aá]|isso)[\?\!\.]*$', msg):
+    if _re_router.match(r'(sim|s|yes|confirma|confirmar|pode apagar|apaga|beleza|bora|ok|t[aá]|isso)[\s\?\!\.]*$', msg):
         import json as _json_pr
         import logging as _log_pr
         _logger = _log_pr.getLogger("atlas")
@@ -7155,7 +7163,7 @@ def _pre_route(message: str) -> dict | None:
             _logger.error(f"[PENDING_ACTION] CHECK FAILED: {e}")
             import traceback; traceback.print_exc()
 
-    if _re_router.match(r'(n[aã]o|nao|n|cancela|cancelar|deixa|esquece|desiste)[\?\!\.]*$', msg):
+    if _re_router.match(r'(n[aã]o|nao|n|cancela|cancelar|deixa|esquece|desiste)[\s\?\!\.]*$', msg):
         try:
             conn_pa = _get_conn()
             cur_pa = conn_pa.cursor()
@@ -7173,20 +7181,15 @@ def _pre_route(message: str) -> dict | None:
             pass
 
     # --- PAINEL HTML ---
-    if _re_router.match(r'(painel|dashboard|meu painel|me mostr[ea] o painel|abr[ea] o painel|quero ver o painel|ver painel)[\?\!\.]*$', msg):
+    if _re_router.match(r'(painel|dashboard|meu painel|me mostr[ea] o painel|abr[ea] o painel|quero ver o painel|ver painel)[\s\?\!\.]*$', msg):
         panel_url = get_panel_url(user_phone)
         if panel_url:
             return {"response": f"📊 *Seu painel está pronto!*\n\n👉 {panel_url}\n\n_Link válido por 30 minutos. Lá você pode ver gráficos, editar e apagar transações._"}
         return {"response": "Nenhum dado encontrado. Comece registrando um gasto!"}
 
     # --- RESUMO MENSAL ---
-    if _re_router.match(r'(como t[aá] (?:o )?meu m[eê]s|resumo (?:do |mensal|deste |desse )?m[eê]s|meus gastos(?: do m[eê]s)?|como (?:foi|esta|está|tá|ta|anda|andou)(?: (?:o )?meu| o)? m[eê]s|me d[aá] (?:o )?resumo|resumo geral|vis[aã]o geral|saldo do m[eê]s|saldo mensal|quanto (?:eu )?(?:j[aá] )?gastei (?:esse|este|no) m[eê]s|total do m[eê]s|balan[çc]o do m[eê]s|extrato do m[eê]s|extrato mensal|como (?:est[aá]|tá|ta|anda) (?:minhas? )?finan[çc]as)[\?\!\.]*$', msg):
+    if _re_router.match(r'(como t[aá] (?:o )?meu m[eê]s|resumo (?:do |mensal|deste |desse )?m[eê]s|meus gastos(?: do m[eê]s)?|como (?:foi|esta|está|tá|ta|anda|andou)(?: (?:o )?meu| o)? m[eê]s|me d[aá] (?:o )?resumo|resumo geral|vis[aã]o geral|saldo do m[eê]s|saldo mensal|quanto (?:eu )?(?:j[aá] )?gastei (?:esse|este|no) m[eê]s|total do m[eê]s|balan[çc]o do m[eê]s|extrato do m[eê]s|extrato mensal|como (?:est[aá]|tá|ta|anda) (?:minhas? )?finan[çc]as)[\s\?\!\.]*$', msg):
         summary = _call(get_month_summary, user_phone, current_month, "ALL")
-        print(f"[PRE-ROUTE] Resumo mensal matched for {user_phone}, calling get_panel_url...")
-        panel_url = get_panel_url(user_phone)
-        print(f"[PRE-ROUTE] panel_url = '{panel_url}'")
-        if panel_url:
-            summary += f"\n\n📊 *Ver painel com gráficos:* {panel_url}"
         return {"response": summary}
 
     # Resumo de dois meses: "resumo de março e abril", "gastos de fevereiro e março"
@@ -7215,11 +7218,11 @@ def _pre_route(message: str) -> dict | None:
             return {"response": _call(get_month_summary, user_phone, mo, "ALL")}
 
     # --- RESUMO SEMANAL ---
-    if _re_router.match(r'(como (?:foi|tá|ta|está|anda) (?:minha )?semana|resumo (?:da |desta |dessa |semanal)?semana|minha semana|gastos? (?:da |desta |dessa )?semana|extrato (?:da |desta )?semana|quanto gastei (?:essa|esta|na) semana)[\?\!\.]*$', msg):
+    if _re_router.match(r'(como (?:foi|tá|ta|está|anda) (?:minha )?semana|resumo (?:da |desta |dessa |semanal)?semana|minha semana|gastos? (?:da |desta |dessa )?semana|extrato (?:da |desta )?semana|quanto gastei (?:essa|esta|na) semana)[\s\?\!\.]*$', msg):
         return {"response": _call(get_week_summary, user_phone, "ALL")}
 
     # --- GASTOS DE HOJE ---
-    if _re_router.match(r'(gastos? de hoje|o que (?:eu )?gastei hoje|hoje|quanto (?:eu )?gastei hoje|extrato (?:de )?hoje|saldo (?:de )?hoje|me (?:d[aá]|fala|mostra) (?:o )?(?:saldo|extrato|gastos?)(?: de)? (?:de )?hoje|como (?:tá|ta|está) (?:o )?(?:dia de )?hoje)[\?\!\.]*$', msg):
+    if _re_router.match(r'(gastos? de hoje|o que (?:eu )?gastei hoje|hoje|quanto (?:eu )?gastei hoje|extrato (?:de )?hoje|saldo (?:de )?hoje|me (?:d[aá]|fala|mostra) (?:o )?(?:saldo|extrato|gastos?)(?: de)? (?:de )?hoje|como (?:tá|ta|está) (?:o )?(?:dia de )?hoje)[\s\?\!\.]*$', msg):
         return {"response": _call(get_today_total, user_phone, "EXPENSE", 1)}
 
     # --- COMPROMISSOS / CONTAS A PAGAR ---
@@ -7246,14 +7249,14 @@ def _pre_route(message: str) -> dict | None:
         return months
 
     # Compromissos de mês específico: "compromissos de abril"
-    m_comp_mes = _re_router.match(r'(?:compromissos|contas)(?: (?:a pagar )?)?(?:d[eo]|em|pra) (janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)[\?\!\.]*$', msg)
+    m_comp_mes = _re_router.match(r'(?:compromissos|contas)(?: (?:a pagar )?)?(?:d[eo]|em|pra) (janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)[\s\?\!\.]*$', msg)
     if m_comp_mes:
         mo = _resolve_month(m_comp_mes.group(1))
         if mo:
             return {"response": _call(get_bills, user_phone, mo)}
 
     # Compromissos de dois meses: "compromissos de março e abril"
-    m_comp_2 = _re_router.match(r'(?:compromissos|contas)(?: (?:a pagar )?)?(?:d[eo]|em|pra) (janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro) e (janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)[\?\!\.]*$', msg)
+    m_comp_2 = _re_router.match(r'(?:compromissos|contas)(?: (?:a pagar )?)?(?:d[eo]|em|pra) (janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro) e (janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)[\s\?\!\.]*$', msg)
     if m_comp_2:
         mo1 = _resolve_month(m_comp_2.group(1))
         mo2 = _resolve_month(m_comp_2.group(2))
@@ -7263,7 +7266,7 @@ def _pre_route(message: str) -> dict | None:
             return {"response": f"{r1}\n\n───────────────\n\n{r2}"}
 
     # Compromissos dos próximos N meses: "compromissos dos próximos 2 meses", "contas próximos 3 meses"
-    m_comp_n = _re_router.match(r'(?:compromissos|contas)(?: a pagar)? (?:d?os )?pr[oó]ximos (\d) m[eê]s(?:es)?[\?\!\.]*$', msg)
+    m_comp_n = _re_router.match(r'(?:compromissos|contas)(?: a pagar)? (?:d?os )?pr[oó]ximos (\d) m[eê]s(?:es)?[\s\?\!\.]*$', msg)
     if m_comp_n:
         n = int(m_comp_n.group(1))
         n = min(n, 6)  # máximo 6 meses
@@ -7274,20 +7277,20 @@ def _pre_route(message: str) -> dict | None:
         return {"response": "\n\n───────────────\n\n".join(parts)}
 
     # Compromissos genéricos (mês atual)
-    if _re_router.match(r'(meus compromissos|compromissos(?: (?:do|deste|desse|este|esse) m[eê]s)?|quais (?:s[aã]o )?(?:os )?(?:meus )?compromissos|contas? (?:a |pra )pagar|o que (?:eu )?(?:tenho|vou ter) (?:pra|para) pagar|(?:minhas |ver )?contas(?: do m[eê]s)?|o que falta pagar)[\?\!\.]*$', msg):
+    if _re_router.match(r'(meus compromissos|compromissos(?: (?:do|deste|desse|este|esse) m[eê]s)?|quais (?:s[aã]o )?(?:os )?(?:meus )?compromissos|contas? (?:a |pra )pagar|o que (?:eu )?(?:tenho|vou ter) (?:pra|para) pagar|(?:minhas |ver )?contas(?: do m[eê]s)?|o que falta pagar)[\s\?\!\.]*$', msg):
         return {"response": _call(get_bills, user_phone)}
     # --- GASTOS FIXOS ---
-    if _re_router.match(r'((?:meus |ver |listar )?gastos? fixos|fixos)[\?\!\.]*$', msg):
+    if _re_router.match(r'((?:meus |ver |listar )?gastos? fixos|fixos)[\s\?\!\.]*$', msg):
         return {"response": _call(get_recurring, user_phone)}
 
     # --- APAGAR TODOS de merchant → vai pro LLM (precisa de fluxo 2 etapas com confirmação) ---
 
     # --- CARTÕES ---
-    if _re_router.match(r'(meus cart[õo]es|(?:minhas )?faturas?|ver (?:meus )?cart[õo]es|quais (?:s[aã]o )?(?:os )?(?:meus )?cart[õo]es|lista(?:r)? cart[õo]es)[\?\!\.]*$', msg):
+    if _re_router.match(r'(meus cart[õo]es|(?:minhas )?faturas?|ver (?:meus )?cart[õo]es|quais (?:s[aã]o )?(?:os )?(?:meus )?cart[õo]es|lista(?:r)? cart[õo]es)[\s\?\!\.]*$', msg):
         return {"response": _call(get_cards, user_phone)}
 
     # --- EXTRATO DE CARTÃO ESPECÍFICO ---
-    m_card = _re_router.match(r'(?:extrato|gastos?|como (?:t[aá]|est[aá])|fatura|me mostr[ea]|mostr[ea])(?: d[eo]| (?:no|do) (?:meu )?| (?:meu )?)?(?:cart[aã]o )?(?:d[aeo] )?(\w[\w\s]*?)[\?\!\.]*$', msg)
+    m_card = _re_router.match(r'(?:extrato|gastos?|como (?:t[aá]|est[aá])|fatura|me mostr[ea]|mostr[ea])(?: d[eo]| (?:no|do) (?:meu )?| (?:meu )?)?(?:cart[aã]o )?(?:d[aeo] )?(\w[\w\s]*?)[\s\?\!\.]*$', msg)
     if m_card:
         card_q = m_card.group(1).strip()
         # Evita match genérico (mês, semana, hoje, etc)
@@ -7298,19 +7301,19 @@ def _pre_route(message: str) -> dict | None:
                 return {"response": result}
 
     # --- METAS ---
-    if _re_router.match(r'((?:minhas |ver |listar )?metas|objetivos|(?:minhas |ver )?metas financeiras)[\?\!\.]*$', msg):
+    if _re_router.match(r'((?:minhas |ver |listar )?metas|objetivos|(?:minhas |ver )?metas financeiras)[\s\?\!\.]*$', msg):
         return {"response": _call(get_goals, user_phone)}
 
     # --- GASTOS FIXOS / RECORRENTES ---
-    if _re_router.match(r'((?:meus |ver |listar )?(?:gastos? )?(?:fixos|recorrentes)|assinaturas|despesas? fixas)[\?\!\.]*$', msg):
+    if _re_router.match(r'((?:meus |ver |listar )?(?:gastos? )?(?:fixos|recorrentes)|assinaturas|despesas? fixas)[\s\?\!\.]*$', msg):
         return {"response": _call(get_recurring, user_phone)}
 
     # --- SCORE FINANCEIRO ---
-    if _re_router.match(r'((?:meu )?score|nota financeira|sa[uú]de financeira|como (?:tá|ta|está) (?:minha )?sa[uú]de financeira)[\?\!\.]*$', msg):
+    if _re_router.match(r'((?:meu )?score|nota financeira|sa[uú]de financeira|como (?:tá|ta|está) (?:minha )?sa[uú]de financeira)[\s\?\!\.]*$', msg):
         return {"response": _call(get_financial_score, user_phone)}
 
     # --- PARCELAS ---
-    if _re_router.match(r'((?:minhas |ver )?parcelas|parcelamentos?|compras? parceladas?)[\?\!\.]*$', msg):
+    if _re_router.match(r'((?:minhas |ver )?parcelas|parcelamentos?|compras? parceladas?)[\s\?\!\.]*$', msg):
         return {"response": _call(get_installments_summary, user_phone)}
 
     # --- MUDAR CATEGORIA de merchant ---
@@ -7328,21 +7331,21 @@ def _pre_route(message: str) -> dict | None:
             return {"response": _call(update_merchant_category, user_phone, _merchant, _new_cat)}
 
     # --- CATEGORIAS (breakdown geral) ---
-    if _re_router.match(r'((?:ver )?categorias|gastos? por categoria|breakdown|quanto (?:gastei )?(?:em |por )cada categoria)[\?\!\.]*$', msg):
+    if _re_router.match(r'((?:ver )?categorias|gastos? por categoria|breakdown|quanto (?:gastei )?(?:em |por )cada categoria)[\s\?\!\.]*$', msg):
         return {"response": _call(get_all_categories_breakdown, user_phone, current_month)}
 
     # --- EDITAR CARTÃO (link do painel) ---
-    if _re_router.match(r'(?:editar?|configurar?|alterar?|mudar?)\s+(?:o\s+|meu\s+|meus\s+)?(?:cart[aã]o|cart[oõ]es|dados?\s+do\s+cart[aã]o)(?:\s+.+?)?[\?\!\.]*$', msg):
+    if _re_router.match(r'(?:editar?|configurar?|alterar?|mudar?)\s+(?:o\s+|meu\s+|meus\s+)?(?:cart[aã]o|cart[oõ]es|dados?\s+do\s+cart[aã]o)(?:\s+.+?)?[\s\?\!\.]*$', msg):
         panel_url = get_panel_url(user_phone)
         if panel_url:
             return {"response": f"📊 *Seu painel está pronto!*\n\n👉 {panel_url}\n\nLá você pode editar cartões, ver transações e muito mais.\n_Link válido por 30 minutos._"}
 
     # --- AJUDA ---
-    if _re_router.match(r'(ajuda|help|menu|o que voc[eê] faz|comandos|como (?:te )?(?:uso|usar)|(?:o que|oque) (?:vc|voc[eê]) (?:faz|sabe fazer)|funcionalidades|recursos)[\?\!\.]*$', msg):
+    if _re_router.match(r'(ajuda|help|menu|o que voc[eê] faz|comandos|como (?:te )?(?:uso|usar)|(?:o que|oque) (?:vc|voc[eê]) (?:faz|sabe fazer)|funcionalidades|recursos)[\s\?\!\.]*$', msg):
         return {"response": _HELP_TEXT}
 
     # --- SAUDAÇÕES simples (sem chamar LLM) ---
-    if _re_router.match(r'(oi|ol[aá]|e a[ií]|boa (?:tarde|noite|dia)|fala|eae|eai|salve|bom dia|boa tarde|boa noite)[\?\!\.]*$', msg):
+    if _re_router.match(r'(oi|ol[aá]|e a[ií]|boa (?:tarde|noite|dia)|fala|eae|eai|salve|bom dia|boa tarde|boa noite)[\s\?\!\.]*$', msg):
         # Busca nome do usuário para saudação personalizada
         _uname = ""
         try:
@@ -7397,20 +7400,12 @@ def _keyword_route(user_phone: str, msg: str) -> dict | None:
 
     # --- RESUMO MENSAL ---
     if any(k in n for k in ("resumo", "visao geral", "balanco")) and any(k in n for k in ("mes", "mensal", "geral", "financ")):
-        panel_url = get_panel_url(user_phone)
-        summary = _call(get_month_summary, user_phone, current_month, "ALL")
-        if panel_url:
-            summary += f"\n\n📊 *Ver painel com gráficos:* {panel_url}"
-        return {"response": summary}
+        return {"response": _call(get_month_summary, user_phone, current_month, "ALL")}
 
-    # --- COMO TÁ MEU MÊS (variações) ---
-    if ("como" in n or "mostr" in n) and ("mes" in n or "financ" in n or "gasto" in n):
+    # --- COMO TÁ MEU MÊS / QUANTO GASTEI NO MÊS (variações) ---
+    if ("como" in n or "mostr" in n or "gastei" in n or "quanto" in n) and ("mes" in n or "financ" in n or "gasto" in n):
         if "semana" not in n and "hoje" not in n:
-            panel_url = get_panel_url(user_phone)
-            summary = _call(get_month_summary, user_phone, current_month, "ALL")
-            if panel_url:
-                summary += f"\n\n📊 *Ver painel com gráficos:* {panel_url}"
-            return {"response": summary}
+            return {"response": _call(get_month_summary, user_phone, current_month, "ALL")}
 
     # --- RESUMO SEMANAL ---
     if any(k in n for k in ("semana", "semanal")) and any(k in n for k in ("resumo", "como", "gasto", "extrato")):
