@@ -6196,13 +6196,17 @@ AGENDA / LEMBRETES:
 - "apagar lembrete X" → delete_agenda_event
 - Sempre use alert_minutes_before=-1 para perguntar ao usuário quando avisar
 
-PAGAMENTOS — SEMPRE pay_bill (NUNCA save_transaction):
-"paguei", "pagamento", "transferi", "quitei" → pay_bill
+PAGAMENTOS vs GASTOS — diferencie com cuidado:
+- "paguei a fatura", "paguei o aluguel", "quitei o boleto" → pay_bill (pagar conta/fatura cadastrada)
+- "paguei 30 no mercado", "paguei 50 uber", "paguei 100 reais X pelo Y" → save_transaction (é um GASTO normal!)
+  REGRA: se tem VALOR + ESTABELECIMENTO/PRODUTO → save_transaction (gasto), NUNCA pay_bill
+  "pelo Mercado Pago/Pix/cartão" = método de pagamento, NÃO destino do pagamento
+- "transferi pra fulano" sem contexto de conta → pay_bill
 
 DIFERENCIE:
 - Gasto fixo MENSAL → register_recurring
 - Conta AVULSA / boleto → register_bill
-- Já pagou → pay_bill
+- Pagou fatura/conta JÁ CADASTRADA → pay_bill
 
 APAGAR:
 - "apaga" sozinho → delete_last_transaction
