@@ -734,13 +734,21 @@ def save_transaction(
     if card_id and transaction_type == "EXPENSE":
         total_charged = total_amount_cents if installments > 1 else amount_cents
         try:
+            if DB_TYPE == "postgres":
+                cur._cur.execute("SAVEPOINT card_limit")
             cur.execute("SELECT available_limit_cents FROM credit_cards WHERE id = ?", (card_id,))
             avail_row = cur.fetchone()
             if avail_row and avail_row[0] is not None:
                 new_avail = max(0, avail_row[0] - total_charged)
                 cur.execute("UPDATE credit_cards SET available_limit_cents = ? WHERE id = ?", (new_avail, card_id))
+            if DB_TYPE == "postgres":
+                cur._cur.execute("RELEASE SAVEPOINT card_limit")
         except Exception:
-            pass
+            if DB_TYPE == "postgres":
+                try:
+                    cur._cur.execute("ROLLBACK TO SAVEPOINT card_limit")
+                except Exception:
+                    pass
 
     # --- Auto-aprendizado: salva merchant→categoria + merchant→cartão ---
     if merchant and category and transaction_type == "EXPENSE":
@@ -773,7 +781,13 @@ def save_transaction(
                         pass
                 # não impede a transação principal
 
-    conn.commit()
+    import logging as _log_save
+    _logger_save = _log_save.getLogger("atlas")
+    try:
+        conn.commit()
+        _logger_save.info(f"[SAVE_TX] COMMIT OK tx_id={tx_id} merchant={merchant}")
+    except Exception as _commit_err:
+        _logger_save.error(f"[SAVE_TX] COMMIT FAILED tx_id={tx_id}: {_commit_err}")
     conn.close()
 
     # Monta sufixo do cartão
