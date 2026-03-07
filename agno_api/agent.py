@@ -871,40 +871,20 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     )
     rows = cur.fetchall()
 
-    # Individual transactions — caixa: pelo mês de occurred_at
-    #                           crédito: pelo mês de vencimento da fatura (_compute_due_month)
-    m_year_i, m_month_i = int(month[:4]), int(month[5:7])
-    prev_m_year = m_year_i if m_month_i > 1 else m_year_i - 1
-    prev_m_month = m_month_i - 1 if m_month_i > 1 else 12
-    prev_month_str = f"{prev_m_year}-{prev_m_month:02d}"
-
-    cur.execute(
-        """SELECT t.category, t.merchant, t.amount_cents, t.occurred_at,
-                  t.card_id, t.installments, t.installment_number,
-                  NULL, NULL, NULL, t.total_amount_cents
-           FROM transactions t
-           WHERE t.user_id = ? AND t.type = 'EXPENSE' AND t.card_id IS NULL
-           AND t.occurred_at LIKE ?
-           ORDER BY t.category, t.amount_cents DESC""",
-        (user_id, f"{month}%"),
-    )
-    cash_tx_rows = cur.fetchall()
-
+    # Individual transactions — TODAS pelo mês de occurred_at (caixa + crédito)
+    # Crédito é anotado com 💳 fat. cartão (mês) para o usuário saber quando será cobrado
     cur.execute(
         """SELECT t.category, t.merchant, t.amount_cents, t.occurred_at,
                   t.card_id, t.installments, t.installment_number,
                   c.name, c.closing_day, c.due_day, t.total_amount_cents
            FROM transactions t
            LEFT JOIN credit_cards c ON t.card_id = c.id
-           WHERE t.user_id = ? AND t.type = 'EXPENSE' AND t.card_id IS NOT NULL
-           AND (t.occurred_at LIKE ? OR t.occurred_at LIKE ?)
+           WHERE t.user_id = ? AND t.type = 'EXPENSE'
+           AND t.occurred_at LIKE ?
            ORDER BY t.category, t.amount_cents DESC""",
-        (user_id, f"{month}%", f"{prev_month_str}%"),
+        (user_id, f"{month}%"),
     )
-    tx_rows = cash_tx_rows + [
-        r for r in cur.fetchall()
-        if _compute_due_month(r[3], r[8] or 0, r[9] or 0) == month
-    ]
+    tx_rows = cur.fetchall()
 
     # Date range of the month's transactions
     cur.execute(
