@@ -7377,7 +7377,104 @@ def _pre_route(message: str) -> dict | None:
         greeting = f"Fala, {_uname}! 👋" if _uname else "Fala! 👋"
         return {"response": f"{greeting} Sou o *ATLAS*, seu copiloto financeiro.\n\nMe diz o que precisa — lança um gasto, pede o resumo do mês, ou digita *ajuda* pra ver tudo que eu faço. 🎯"}
 
-    return None  # Fallback ao agente LLM
+    return None  # Fallback ao keyword router
+
+
+def _normalize_br(text: str) -> str:
+    """Remove acentos e normaliza texto brasileiro para matching fuzzy."""
+    import unicodedata
+    nfkd = unicodedata.normalize('NFKD', text.lower())
+    return ''.join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def _keyword_route(user_phone: str, msg: str) -> dict | None:
+    """
+    Matcher por palavras-chave — fallback tolerante a typos.
+    Roda DEPOIS do regex e ANTES do LLM.
+    Checa presença de palavras-chave, não formato exato.
+    """
+    n = _normalize_br(msg)
+    today = _now_br()
+    current_month = today.strftime("%Y-%m")
+
+    def _call(tool_func, *args, **kwargs):
+        fn = getattr(tool_func, 'entrypoint', None) or tool_func
+        return fn(*args, **kwargs)
+
+    # --- COMPROMISSOS / CONTAS ---
+    if any(k in n for k in ("compromisso", "conta a pagar", "conta pra pagar", "falta pagar", "contas do mes")):
+        # Checa se menciona mês específico
+        _month_kw = {"janeiro":"01","fevereiro":"02","marco":"03","abril":"04","maio":"05","junho":"06",
+                     "julho":"07","agosto":"08","setembro":"09","outubro":"10","novembro":"11","dezembro":"12"}
+        found_month = None
+        for name, num in _month_kw.items():
+            if name in n:
+                y = today.year if int(num) >= today.month else today.year + 1
+                found_month = f"{y}-{num}"
+                break
+        return {"response": _call(get_bills, user_phone, found_month or current_month)}
+
+    # --- RESUMO MENSAL ---
+    if any(k in n for k in ("resumo", "visao geral", "balanco")) and any(k in n for k in ("mes", "mensal", "geral", "financ")):
+        panel_url = get_panel_url(user_phone)
+        summary = _call(get_month_summary, user_phone, current_month, "ALL")
+        if panel_url:
+            summary += f"\n\n📊 *Ver painel com gráficos:* {panel_url}"
+        return {"response": summary}
+
+    # --- COMO TÁ MEU MÊS (variações) ---
+    if ("como" in n or "mostr" in n) and ("mes" in n or "financ" in n or "gasto" in n):
+        if "semana" not in n and "hoje" not in n:
+            panel_url = get_panel_url(user_phone)
+            summary = _call(get_month_summary, user_phone, current_month, "ALL")
+            if panel_url:
+                summary += f"\n\n📊 *Ver painel com gráficos:* {panel_url}"
+            return {"response": summary}
+
+    # --- RESUMO SEMANAL ---
+    if any(k in n for k in ("semana", "semanal")) and any(k in n for k in ("resumo", "como", "gasto", "extrato")):
+        return {"response": _call(get_week_summary, user_phone, "ALL")}
+
+    # --- GASTOS DE HOJE ---
+    if "hoje" in n and any(k in n for k in ("gasto", "gastei", "quanto", "extrato", "saldo", "mostr")):
+        return {"response": _call(get_today_total, user_phone, "EXPENSE", 1)}
+
+    # --- CARTÕES ---
+    if any(k in n for k in ("cartao", "cartoes", "fatura")) and not any(k in n for k in ("extrato", "gasto", "limit")):
+        return {"response": _call(get_cards, user_phone)}
+
+    # --- GASTOS FIXOS ---
+    if any(k in n for k in ("gasto fixo", "gastos fixos", "fixos", "recorrente")):
+        return {"response": _call(get_recurring, user_phone)}
+
+    # --- METAS ---
+    if any(k in n for k in ("meta", "metas", "objetivo")) and not any(k in n for k in ("guard", "depos")):
+        return {"response": _call(get_goals, user_phone)}
+
+    # --- SCORE ---
+    if any(k in n for k in ("score", "nota financeira", "saude financeira")):
+        return {"response": _call(get_financial_score, user_phone)}
+
+    # --- PARCELAS ---
+    if any(k in n for k in ("parcela", "parcelamento", "parcelada")):
+        return {"response": _call(get_installments_summary, user_phone)}
+
+    # --- CATEGORIAS ---
+    if any(k in n for k in ("categoria", "breakdown")) and any(k in n for k in ("gasto", "quanto", "ver", "mostr", "por")):
+        return {"response": _call(get_all_categories_breakdown, user_phone, current_month)}
+
+    # --- PAINEL ---
+    if any(k in n for k in ("painel", "dashboard")):
+        panel_url = get_panel_url(user_phone)
+        if panel_url:
+            return {"response": f"📊 *Seu painel está pronto!*\n\n👉 {panel_url}\n\n_Link válido por 30 minutos._"}
+
+    # --- AJUDA ---
+    if any(k in n for k in ("ajuda", "help", "menu", "comando", "o que voce faz", "o que vc faz")):
+        return {"response": _HELP_TEXT}
+
+    return None  # Fallback ao LLM
+
 
 _HELP_TEXT = """📋 *ATLAS — Manual Rápido*
 ─────────────────────
@@ -7516,12 +7613,17 @@ async def chat_endpoint(
     if routed:
         return {"content": routed["response"], "routed": True}
 
-    # 2. Fallback: chama o agente LLM
+    # 2. Keyword matcher — tolerante a typos (sem LLM)
+    body = _extract_body(full_message).strip()
+    kw_routed = _keyword_route(user_phone, body)
+    if kw_routed:
+        return {"content": kw_routed["response"], "routed": True}
+
+    # 3. Fallback: chama o agente LLM
     if not session_id:
         session_id = f"wa_{user_phone.replace('+','')}"
 
     # Loga mensagem não roteada para análise
-    body = _extract_body(full_message).strip()
     if body and len(body) < 200:
         try:
             conn = _get_conn()
