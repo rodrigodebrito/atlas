@@ -6829,6 +6829,8 @@ def panel_page(t: str = "", phone: str = "", month: str = ""):
     try:
         data = _get_panel_data(user_id, month)
         html = _render_panel_html(data, t)
+        del data  # libera memória do dict grande
+        import gc as _gc; _gc.collect()
         return _HTMLResponse(html)
     except Exception as exc:
         import traceback as _tb
@@ -7461,6 +7463,8 @@ async def chat_endpoint(
     )
     content = response.content if hasattr(response, 'content') else str(response)
     content = _strip_trailing_questions(content)
+    del response  # libera memória do response do LLM
+    import gc as _gc; _gc.collect()
     return {"content": content, "routed": False, "session_id": session_id}
 
 
