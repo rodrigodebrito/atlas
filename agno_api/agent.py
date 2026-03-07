@@ -568,7 +568,7 @@ def _generate_inline_alerts(cur, user_id: str, user_phone: str, category: str, a
                     proj_fmt = f"R${projection/100:,.2f}".replace(",", ".")
                     over = projection - income_cents
                     over_fmt = f"R${over/100:,.2f}".replace(",", ".")
-                    alerts.append(f"📊 _No ritmo atual, vai gastar {proj_fmt} — {over_fmt} acima da renda_")
+                    alerts.append(f"📊 _No ritmo atual, vai gastar {proj_fmt} — {over_fmt} acima da renda_\n⚡ _Dica: revise seus gastos no painel ou peça \"como tá meu mês?\"_")
     except Exception:
         pass  # Alertas são best-effort, nunca devem quebrar o save
 
@@ -7376,6 +7376,7 @@ def _strip_trailing_questions(text: str) -> str:
             lines.pop()
             continue
         # Sugestão proativa (padrões que NUNCA devem aparecer)
+        _last_clean = _re_sq.sub(r'^[📊⚠️🔔💡📈📉🚨\s\|]+', '', last.strip()).strip()
         is_proactive = bool(_re_sq.match(
             r'^(quer|gostaria|posso|deseja|precisa|need|want|se precisar|caso queira|'
             r'alguma d[uú]vida|fique [àa] vontade|estou [àa] disposi[çc][aã]o|'
@@ -7385,7 +7386,7 @@ def _strip_trailing_questions(text: str) -> str:
             r'quer organizar|quer ver|quer conferir|quer ajuda|'
             r'como posso|em que posso|o que mais|'
             r'cuidado|aten[çc][aã]o.*quer)',
-            last.lower()
+            _last_clean.lower()
         ))
         # Também detecta frases coladas: "texto. Quer X?"
         if not is_proactive and '?' in last:
