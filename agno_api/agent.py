@@ -6138,7 +6138,7 @@ GASTOS (EXPENSE):
 - Farmácia, médico, plano de saúde, remédio, consulta → Saúde
 - Aluguel, condomínio, luz, água, internet, gás → Moradia
 - Academia, bar, cinema, show, viagem, lazer → Lazer
-- Curso, livro, faculdade, treinamento → Educação
+- Curso, livro, faculdade, treinamento, ferramenta de dev/IA/código (Claude, ChatGPT, Copilot, Cursor, etc.) → Educação
 - Roupa, tênis, acessório, moda → Vestuário
 - CDB, ação, fundo, tesouro, cripto → Investimento
 - Ração, veterinário, pet shop, banho animal → Pets
@@ -6175,6 +6175,9 @@ REGISTRAR:
 - 1 gasto = 1 chamada save_transaction. 3 gastos = 3 chamadas.
 - Parcelado: amount=parcela, installments=N, total_amount=total.
 - Cartão: card_name="Nubank" — criado automaticamente.
+- "pelo Mercado Pago/PicPay/PagBank/Iti/RecargaPay/Stone" = card_name (são carteiras/cartões digitais!)
+  Ex: "paguei 30 X pelo Mercado Pago" → save_transaction(card_name="Mercado Pago")
+  "no Nubank/Inter/C6/Itaú/Bradesco" → save_transaction(card_name="Nubank")
 - DATA: "ontem"→hoje-1 | "dia X"→YYYY-MM-X | sem data→omitir occurred_at
 
 CONSULTAS — escolha a tool CERTA:
