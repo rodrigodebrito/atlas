@@ -6734,7 +6734,7 @@ def panel_page(t: str = "", phone: str = "", month: str = ""):
     except Exception as exc:
         import traceback as _tb
         _err = _tb.format_exc()
-        log.error(f"[PAINEL] Erro ao gerar painel: {_err}")
+        print(f"[PAINEL] Erro ao gerar painel: {_err}")
         return _HTMLResponse(
             _error_page.format(title="Erro temporario", msg="Tente novamente em alguns segundos.<br>Se persistir, peca um novo link no WhatsApp."),
             status_code=200,
@@ -6758,7 +6758,7 @@ def delete_transaction_api(tx_id: str, t: str = ""):
             return _JSONResponse({"ok": True})
         return _JSONResponse({"error": "Transacao nao encontrada"}, status_code=404)
     except Exception as exc:
-        log.error(f"[PAINEL] Erro ao deletar tx {tx_id}: {exc}")
+        print(f"[PAINEL] Erro ao deletar tx {tx_id}: {exc}")
         return _JSONResponse({"error": "Erro interno"}, status_code=500)
 
 
@@ -6797,7 +6797,7 @@ async def edit_transaction_api(tx_id: str, request: _Request, t: str = ""):
             return _JSONResponse({"ok": True})
         return _JSONResponse({"error": "Transacao nao encontrada"}, status_code=404)
     except Exception as exc:
-        log.error(f"[PAINEL] Erro ao editar tx {tx_id}: {exc}")
+        print(f"[PAINEL] Erro ao editar tx {tx_id}: {exc}")
         return _JSONResponse({"error": "Erro interno"}, status_code=500)
 
 
@@ -6836,7 +6836,7 @@ async def edit_card_api(card_id: str, request: _Request, t: str = ""):
             return _JSONResponse({"ok": True})
         return _JSONResponse({"error": "Cartao nao encontrado"}, status_code=404)
     except Exception as exc:
-        log.error(f"[PAINEL] Erro ao editar card {card_id}: {exc}")
+        print(f"[PAINEL] Erro ao editar card {card_id}: {exc}")
         return _JSONResponse({"error": "Erro interno"}, status_code=500)
 
 
@@ -6848,16 +6848,16 @@ def get_panel_url(user_phone: str) -> str:
         cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
         row = cur.fetchone()
         if not row:
-            log.warning(f"[PAINEL] get_panel_url: phone '{user_phone}' nao encontrado na tabela users")
+            print(f"[PAINEL] get_panel_url: phone '{user_phone}' nao encontrado na tabela users")
             conn.close()
             return ""
         conn.close()
         token = _generate_panel_token(row[0])
         url = f"{_PANEL_BASE_URL}/v1/painel?t={token}"
-        log.info(f"[PAINEL] URL gerada para {user_phone}: {url[:60]}...")
+        print(f"[PAINEL] URL gerada para {user_phone}: {url[:60]}...")
         return url
     except Exception as exc:
-        log.error(f"[PAINEL] Erro ao gerar URL para {user_phone}: {exc}")
+        print(f"[PAINEL] Erro ao gerar URL para {user_phone}: {exc}")
         return ""
 
 
