@@ -7129,10 +7129,13 @@ def _pre_route(message: str) -> dict | None:
     today = _now_br()
     current_month = today.strftime("%Y-%m")
 
-    # Helper: chama a função real dentro do wrapper @tool
+    # Helper: chama a função real dentro do wrapper @tool e limpa metadata interna
     def _call(tool_func, *args, **kwargs):
         fn = getattr(tool_func, 'entrypoint', None) or tool_func
-        return fn(*args, **kwargs)
+        result = fn(*args, **kwargs)
+        if isinstance(result, str):
+            result = "\n".join(l for l in result.split("\n") if not l.startswith("__"))
+        return result
 
     # --- CONFIRMAÇÃO / CANCELAMENTO DE AÇÃO PENDENTE ---
     if _re_router.match(r'(sim|s|yes|confirma|confirmar|pode apagar|apaga|beleza|bora|ok|t[aá]|isso)[\s\?\!\.]*$', msg):
@@ -7399,7 +7402,10 @@ def _keyword_route(user_phone: str, msg: str) -> dict | None:
 
     def _call(tool_func, *args, **kwargs):
         fn = getattr(tool_func, 'entrypoint', None) or tool_func
-        return fn(*args, **kwargs)
+        result = fn(*args, **kwargs)
+        if isinstance(result, str):
+            result = "\n".join(l for l in result.split("\n") if not l.startswith("__"))
+        return result
 
     # --- COMPROMISSOS / CONTAS ---
     if any(k in n for k in ("compromisso", "conta a pagar", "conta pra pagar", "falta pagar", "contas do mes")):
