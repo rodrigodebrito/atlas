@@ -3873,15 +3873,18 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     user_id, user_name = row
 
     # Usa LIKE para cada dia (mesmo padrão que get_today_total — funciona em SQLite e PostgreSQL)
-    date_conditions = " OR ".join(["occurred_at LIKE ?" for _ in week_dates])
+    date_conditions = " OR ".join(["t.occurred_at LIKE ?" for _ in week_dates])
     date_params = tuple(f"{d}%" for d in week_dates)
 
-    type_filter = "" if filter_type == "ALL" else f"AND type = '{filter_type}'"
+    type_filter = "" if filter_type == "ALL" else f"AND t.type = '{filter_type}'"
     cur.execute(
-        f"""SELECT type, category, merchant, amount_cents, occurred_at
-           FROM transactions
-           WHERE user_id = ? {type_filter} AND ({date_conditions})
-           ORDER BY occurred_at, amount_cents DESC""",
+        f"""SELECT t.type, t.category, t.merchant, t.amount_cents, t.occurred_at,
+                   t.card_id, t.installments, t.installment_number,
+                   c.name as card_name, c.closing_day, c.due_day, t.total_amount_cents
+           FROM transactions t
+           LEFT JOIN credit_cards c ON t.card_id = c.id
+           WHERE t.user_id = ? {type_filter} AND ({date_conditions})
+           ORDER BY t.occurred_at, t.amount_cents DESC""",
         (user_id,) + date_params,
     )
     tx_rows = cur.fetchall()
@@ -3913,8 +3916,8 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
         "Pets": "🐾", "Outros": "📦", "Indefinido": "❓",
     }
 
-    # type, category, merchant, amount_cents, occurred_at
-    exp_rows = [(r[1], r[2], r[3], r[4]) for r in tx_rows if r[0] == "EXPENSE"]
+    # type, category, merchant, amount_cents, occurred_at, card_id, installments, installment_number, card_name, closing_day, due_day, total_amount_cents
+    exp_rows = [r for r in tx_rows if r[0] == "EXPENSE"]
     inc_rows = [(r[1], r[2], r[3], r[4]) for r in tx_rows if r[0] == "INCOME"]
 
     filter_label = {"EXPENSE": " — apenas gastos", "INCOME": " — apenas receitas", "ALL": ""}.get(filter_type, "")
@@ -3936,29 +3939,35 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
         except Exception:
             return ""
 
-    def add_cat_block(rows_list, ref_total):
+    def add_exp_block(rows_list, ref_total):
+        """Processa linhas de EXPENSE com info de cartão."""
         cat_totals: dict = defaultdict(int)
         cat_txs: dict = defaultdict(list)
-        for cat, merchant, amount, occurred in rows_list:
+        credit_total = 0
+        cash_total = 0
+        for r in rows_list:
+            cat, merchant, amount, occurred = r[1], r[2], r[3], r[4]
+            card_id, card_name = r[5], r[8]
             cat_totals[cat] += amount
             label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
+            if card_id and card_name:
+                label += f" 💳{card_name}"
+                credit_total += amount
+            else:
+                cash_total += amount
             dt_lbl = _date_label(occurred)
             cat_txs[cat].append((occurred, dt_lbl, label, amount))
-            # Rastreia para insights
-            if rows_list is exp_rows_ref:
-                day_totals[occurred[:10]] += amount
-                if merchant and merchant.strip():
-                    merchant_freq[merchant.strip()] += 1
+            day_totals[occurred[:10]] += amount
+            if merchant and merchant.strip():
+                merchant_freq[merchant.strip()] += 1
         for cat, total_cat in sorted(cat_totals.items(), key=lambda x: -x[1]):
             pct = total_cat / ref_total * 100 if ref_total else 0
             emoji = cat_emoji.get(cat, "💸")
             lines.append(f"{emoji} *{cat}* — R${total_cat/100:,.2f} ({pct:.0f}%)".replace(",", "."))
-            # Ordena por data, depois por valor desc
             sorted_txs = sorted(cat_txs[cat], key=lambda x: (x[0], -x[3]))
             for occurred, dt_lbl, label, amt in sorted_txs:
                 lines.append(f"  • {dt_lbl} — {label}: R${amt/100:,.2f}".replace(",", "."))
             lines.append("")
-            # Alerta só se houver histórico do mês anterior para comparar
             prev_val = prev_month_totals.get(cat, 0)
             if prev_val > 0 and days_elapsed > 0:
                 daily_pace = total_cat / days_elapsed
@@ -3966,13 +3975,35 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
                 if daily_pace > prev_daily_avg * 1.4:
                     proj = daily_pace * 30
                     alertas.append(f"⚠️ {cat}: ritmo R${proj/100:.0f}/mês vs R${prev_val/100:.0f} em {prev_month_dt.strftime('%b')}")
+        # Resumo cartão vs dinheiro
+        if credit_total > 0 and cash_total > 0:
+            lines.append(f"💳 Cartão: R${credit_total/100:,.2f}  •  💵 Outros: R${cash_total/100:,.2f}".replace(",", "."))
+        elif credit_total > 0:
+            lines.append(f"💳 Tudo no cartão: R${credit_total/100:,.2f}".replace(",", "."))
         return cat_totals
 
-    exp_rows_ref = exp_rows  # referência para add_cat_block saber quais são expenses
+    def add_inc_block(rows_list, ref_total):
+        """Processa linhas de INCOME (formato simples)."""
+        cat_totals: dict = defaultdict(int)
+        cat_txs: dict = defaultdict(list)
+        for cat, merchant, amount, occurred in rows_list:
+            cat_totals[cat] += amount
+            label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
+            dt_lbl = _date_label(occurred)
+            cat_txs[cat].append((occurred, dt_lbl, label, amount))
+        for cat, total_cat in sorted(cat_totals.items(), key=lambda x: -x[1]):
+            pct = total_cat / ref_total * 100 if ref_total else 0
+            emoji = cat_emoji.get(cat, "💸")
+            lines.append(f"{emoji} *{cat}* — R${total_cat/100:,.2f} ({pct:.0f}%)".replace(",", "."))
+            sorted_txs = sorted(cat_txs[cat], key=lambda x: (x[0], -x[3]))
+            for occurred, dt_lbl, label, amt in sorted_txs:
+                lines.append(f"  • {dt_lbl} — {label}: R${amt/100:,.2f}".replace(",", "."))
+            lines.append("")
+        return cat_totals
 
     if filter_type in ("ALL", "EXPENSE") and exp_rows:
-        total_exp = sum(r[2] for r in exp_rows)
-        ct = add_cat_block(exp_rows, total_exp)
+        total_exp = sum(r[3] for r in exp_rows)
+        ct = add_exp_block(exp_rows, total_exp)
         lines.append(f"💸 *Total gastos: R${total_exp/100:,.2f}*".replace(",", "."))
         if ct:
             tc = max(ct, key=lambda x: ct[x])
@@ -3981,7 +4012,7 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     if filter_type in ("ALL", "INCOME") and inc_rows:
         total_inc = sum(r[2] for r in inc_rows)
         lines.append("")
-        ct = add_cat_block(inc_rows, total_inc)
+        ct = add_inc_block(inc_rows, total_inc)
         lines.append(f"💰 *Total recebido: R${total_inc/100:,.2f}*".replace(",", "."))
         if filter_type == "INCOME" and ct:
             tc = max(ct, key=lambda x: ct[x])
