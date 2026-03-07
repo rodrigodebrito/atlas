@@ -6451,23 +6451,26 @@ function updateDashboard() {{
 
 let customFrom = '', customTo = '';
 
+function localDate(d) {{
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}}
+
 function getFilteredByPeriod(txs) {{
   if (currentPeriod === 'month') return txs;
   const today = new Date();
-  const todayStr = today.toISOString().slice(0,10);
+  const todayStr = localDate(today);
   if (currentPeriod === 'today') return txs.filter(t => t.date === todayStr);
   if (currentPeriod === 'week') {{
     const d = new Date(); d.setDate(d.getDate() - d.getDay());
-    const weekStart = d.toISOString().slice(0,10);
-    return txs.filter(t => t.date >= weekStart);
+    return txs.filter(t => t.date >= localDate(d));
   }}
   if (currentPeriod === '7d') {{
     const d = new Date(); d.setDate(d.getDate() - 7);
-    return txs.filter(t => t.date >= d.toISOString().slice(0,10));
+    return txs.filter(t => t.date >= localDate(d));
   }}
   if (currentPeriod === '15d') {{
     const d = new Date(); d.setDate(d.getDate() - 15);
-    return txs.filter(t => t.date >= d.toISOString().slice(0,10));
+    return txs.filter(t => t.date >= localDate(d));
   }}
   if (currentPeriod === 'custom' && customFrom && customTo) {{
     return txs.filter(t => t.date >= customFrom && t.date <= customTo);
