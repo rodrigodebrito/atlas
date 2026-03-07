@@ -2994,9 +2994,13 @@ def get_bills(user_phone: str, month: str = "") -> str:
     try:
         return _get_bills_impl(user_phone, month)
     except Exception as e:
-        _logger.error(f"[GET_BILLS] ERROR for {user_phone} month={month}: {e}")
-        import traceback; traceback.print_exc()
-        return f"Erro ao buscar compromissos: {str(e)}"
+        import traceback
+        tb = traceback.format_exc()
+        _logger.error(f"[GET_BILLS] ERROR for {user_phone} month={month}:\n{tb}")
+        # Inclui linha do erro para diagnóstico remoto
+        tb_lines = [l for l in tb.strip().split('\n') if 'agent.py' in l]
+        loc = tb_lines[-1].strip() if tb_lines else "?"
+        return f"Erro ao buscar compromissos: {str(e)} [{loc}]"
 
 def _get_bills_impl(user_phone: str, month: str = "") -> str:
     conn = _get_conn()
