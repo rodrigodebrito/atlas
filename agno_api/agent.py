@@ -5410,7 +5410,7 @@ def create_agenda_event(
 
         return "\n".join(lines)
     finally:
-        _safe_close(conn)
+        conn.close()
 
 
 @tool
@@ -5512,7 +5512,7 @@ def list_agenda_events(
 
         return "\n".join(lines)
     finally:
-        _safe_close(conn)
+        conn.close()
 
 
 @tool
@@ -5581,7 +5581,7 @@ def complete_agenda_event(
             conn.commit()
             return f"✅ *{title}* — feito! Próximo: {new_event_at.replace('-', '/').replace(' ', ' às ')}"
     finally:
-        _safe_close(conn)
+        conn.close()
 
 
 @tool
@@ -5631,7 +5631,7 @@ def delete_agenda_event(
 
         return f"🗑️ Apagar *{title}*{rec_label}?\n_Responda *sim* para confirmar ou *não* para cancelar._"
     finally:
-        _safe_close(conn)
+        conn.close()
 
 
 # ============================================================
@@ -8459,10 +8459,11 @@ def _pre_route(message: str) -> dict | None:
                     ev_id = data.get("event_id", "")
                     title = data.get("title", "evento")
                     try:
-                        conn2, cur2 = _db()
+                        conn2 = _get_conn()
+                        cur2 = conn2.cursor()
                         cur2.execute("DELETE FROM agenda_events WHERE id = ?", (ev_id,))
                         conn2.commit()
-                        _safe_close(conn2)
+                        conn2.close()
                     except Exception:
                         pass
                     return {"response": f"🗑️ *{title}* removido da sua agenda!"}
@@ -8598,8 +8599,8 @@ def _pre_route(message: str) -> dict | None:
             )
             return {"response": result}
 
-    # --- AGENDA: listar ---
-    if _re_router.match(r'(?:(?:mostr[ae]|ver|abr[aei]|exib[aei]|me (?:mostr[ae]|d[aá]))\s+)?(?:minha\s+)?agenda|(?:(?:mostr[ae]|ver|quais)\s+)?(?:meus\s+)?(?:lembrete|evento|compromisso)s?(?:\s+(?:da\s+semana|de\s+hoje|de\s+amanh[aã]|do\s+m[eê]s|pr[oó]ximos))?[\s\?\!\.]*$', msg):
+    # --- AGENDA: listar (SEM "compromisso" — "meus compromissos" = financeiro) ---
+    if _re_router.match(r'(?:(?:mostr[ae]|ver|abr[aei]|exib[aei]|me (?:mostr[ae]|d[aá]))\s+)?(?:minha\s+)?agenda|(?:(?:mostr[ae]|ver|quais)\s+)?(?:meus\s+)?(?:lembrete|evento)s?(?:\s+(?:da\s+semana|de\s+hoje|de\s+amanh[aã]|do\s+m[eê]s|pr[oó]ximos))?[\s\?\!\.]*$', msg):
         return {"response": _call(list_agenda_events, user_phone)}
 
     # --- AGENDA: feito/concluído (verifica se tem evento notificado recente) ---
@@ -8871,6 +8872,41 @@ def _pre_route(message: str) -> dict | None:
             pass
         greeting = f"Fala, {_uname}! 👋" if _uname else "Fala! 👋"
         return {"response": f"{greeting} Sou o *ATLAS*, seu copiloto financeiro.\n\nMe diz o que precisa — lança um gasto, pede o resumo do mês, ou digita *ajuda* pra ver tudo que eu faço. 🎯"}
+
+    # ── DETECÇÃO DE PAGAMENTO DE FATURA / COMPROMISSO ───────────────
+    # "pagamento cartão caixa 4867", "paguei fatura nubank", "paguei o aluguel 1500"
+    # Deve chamar pay_bill / close_bill, NÃO registrar como gasto novo.
+    _pay_m = _re_router.match(
+        r'(?:pagamento|paguei|pago|quitei|pagar)\s+'
+        r'(?:d[aeo]\s+)?'
+        r'(?:fatura\s+(?:d[aeo]\s+)?)?'
+        r'(?:(?:cart[aã]o|cartao)\s+(?:d[aeo]\s+)?)?'
+        r'(.+?)(?:\s+(\d+(?:[.,]\d{1,2})?))?'
+        r'[\s\?\!\.]*$',
+        msg
+    )
+    if _pay_m:
+        _pay_name = _pay_m.group(1).strip()
+        _pay_val_str = _pay_m.group(2)
+        _pay_val = float(_pay_val_str.replace(",", ".")) if _pay_val_str else 0
+        # Remove noise words do nome
+        _pay_name_clean = _re_router.sub(r'\b(?:do|da|de|no|na|o|a|meu|minha|pelo|pela|cart[aã]o|cartao|fatura)\b', '', _pay_name).strip()
+        if _pay_name_clean:
+            # Verifica se é cartão de crédito (close_bill) ou conta genérica (pay_bill)
+            _pay_conn = _get_conn()
+            _pay_cur = _pay_conn.cursor()
+            _pay_uid = _get_user_id(_pay_cur, user_phone)
+            _is_card = False
+            if _pay_uid:
+                _pay_card = _find_card(_pay_cur, _pay_uid, _pay_name_clean)
+                if _pay_card:
+                    _is_card = True
+            _pay_conn.close()
+
+            if _is_card:
+                return {"response": _call(close_bill, user_phone, _pay_name_clean)}
+            else:
+                return {"response": _call(pay_bill, user_phone, _pay_name_clean, _pay_val)}
 
     # ── EXTRATOR INTELIGENTE DE GASTOS ──────────────────────────────
     # Independente de ordem: acha VALOR, CARTÃO (DB), MERCHANT (resto).
