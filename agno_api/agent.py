@@ -957,7 +957,9 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         return f"Nenhuma transação em {month}."
 
     income = sum(r[2] for r in rows if r[0] == "INCOME")
-    expenses = sum(r[2] for r in rows if r[0] == "EXPENSE")
+    # "Pagamento Fatura" é saída real mas os gastos do cartão já estão contados individualmente — excluir pra não duplicar
+    expenses = sum(r[2] for r in rows if r[0] == "EXPENSE" and r[1] != "Pagamento Fatura")
+    bill_payment_total = sum(r[2] for r in rows if r[0] == "EXPENSE" and r[1] == "Pagamento Fatura")
 
     # Separa gastos em caixa (débito/PIX/dinheiro) e crédito (cartão)
     # card_id IS NULL → caixa (sai do banco agora)
@@ -994,7 +996,13 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     cat_totals_display: dict = defaultdict(int)
     day_totals: dict = defaultdict(int)  # para insight: dia mais gastador
     merchant_freq: Counter = Counter()   # para insight: merchant mais frequente
+    bill_payment_lines = []
     for cat, merchant, amount, occurred, card_id, inst_total, inst_num, card_name, closing_day, due_day, total_amt in tx_rows:
+        # Pagamento de fatura: mostrar separado, não somar nos gastos
+        if cat == "Pagamento Fatura":
+            dt_lbl = f"{occurred[8:10]}/{occurred[5:7]}" if occurred and len(occurred) >= 10 else ""
+            bill_payment_lines.append(f"• {dt_lbl} — {merchant}: R${amount/100:,.2f}".replace(",", "."))
+            continue
         label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
         dt_lbl = f"{occurred[8:10]}/{occurred[5:7]}" if occurred and len(occurred) >= 10 else ""
         day_totals[occurred[:10]] += amount
@@ -1055,6 +1063,13 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
             )
         else:
             lines.append(f"💸 *Total gasto: R${total_expenses/100:,.2f}*".replace(",", "."))
+
+    # Pagamentos de fatura (saída real, mas não duplica nos gastos)
+    if bill_payment_lines:
+        lines.append("")
+        lines.append(f"💳 *Pagamentos de fatura: R${bill_payment_total/100:,.2f}*".replace(",", "."))
+        for bpl in bill_payment_lines:
+            lines.append(f"  {bpl}")
 
     if filter_type in ("ALL", "INCOME") and income_rows_detail:
         lines.append("")
@@ -2006,17 +2021,31 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     top_cat_name, top_pct_val = "", 0.0
 
     if filter_type in ("ALL", "EXPENSE") and exp_rows:
-        total_exp = sum(r[3] for r in exp_rows)
-        cat_totals_exp, exp_block, cash_tot, credit_tot = build_exp_block(exp_rows, total_exp)
-        lines.extend(exp_block)
-        if credit_tot > 0:
-            lines.append(
-                f"💸 *Total gastos: R${total_exp/100:,.2f}*"
-                f"  (R${cash_tot/100:,.2f} à vista · R${credit_tot/100:,.2f} 💳 crédito)".replace(",", ".")
-            )
+        # Separa pagamentos de fatura (não duplicar nos gastos)
+        _bill_pay_rows = [r for r in exp_rows if r[1] == "Pagamento Fatura"]
+        _real_exp_rows = [r for r in exp_rows if r[1] != "Pagamento Fatura"]
+        total_exp = sum(r[3] for r in _real_exp_rows)
+        if _real_exp_rows:
+            cat_totals_exp, exp_block, cash_tot, credit_tot = build_exp_block(_real_exp_rows, total_exp)
+            lines.extend(exp_block)
+            if credit_tot > 0:
+                lines.append(
+                    f"💸 *Total gastos: R${total_exp/100:,.2f}*"
+                    f"  (R${cash_tot/100:,.2f} à vista · R${credit_tot/100:,.2f} 💳 crédito)".replace(",", ".")
+                )
+            else:
+                lines.append(f"💸 *Total gastos: R${total_exp/100:,.2f}*".replace(",", "."))
         else:
-            lines.append(f"💸 *Total gastos: R${total_exp/100:,.2f}*".replace(",", "."))
-        if cat_totals_exp:
+            cat_totals_exp = {}
+        # Pagamentos de fatura separados
+        if _bill_pay_rows:
+            _bp_total = sum(r[3] for r in _bill_pay_rows)
+            lines.append("")
+            lines.append(f"💳 *Pagamentos de fatura: R${_bp_total/100:,.2f}*".replace(",", "."))
+            for _bpr in _bill_pay_rows:
+                _bp_merchant = _bpr[2].strip() if _bpr[2] else "Fatura"
+                lines.append(f"  • {_bp_merchant}: R${_bpr[3]/100:,.2f}".replace(",", "."))
+        if cat_totals_exp and total_exp > 0:
             tc = max(cat_totals_exp, key=lambda x: cat_totals_exp[x])
             top_cat_name, top_pct_val = tc, cat_totals_exp[tc] / total_exp * 100
 
@@ -2755,9 +2784,20 @@ def close_bill(user_phone: str, card_name: str) -> str:
         (today_str, user_id, card_bill_ref),
     )
 
+    # Registra saída como transação (aparece nos gastos do dia)
+    # Categoria "Pagamento Fatura" — excluída do total de gastos no resumo pra não duplicar
+    if fatura_total > 0:
+        import uuid as _uuid_cb
+        tx_id = str(_uuid_cb.uuid4())
+        cur.execute(
+            "INSERT INTO transactions (id, user_id, type, amount_cents, category, merchant, occurred_at, card_id, description) "
+            "VALUES (?, ?, 'EXPENSE', ?, 'Pagamento Fatura', ?, ?, NULL, ?)",
+            (tx_id, user_id, fatura_total, f"Fatura {card[1]}", today_str, f"Pagamento fatura {card[1]}"),
+        )
+
     conn.commit()
     conn.close()
-    return f"✅ Fatura do *{card[1]}* paga (R${fatura_total/100:,.2f})! Ciclo zerado.".replace(",", ".")
+    return f"✅ Fatura do *{card[1]}* paga (R${fatura_total/100:,.2f})! Ciclo zerado.\n💰 Saída registrada — R${fatura_total/100:,.2f} via conta.".replace(",", ".")
 
 
 @tool
