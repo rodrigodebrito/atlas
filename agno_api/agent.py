@@ -590,10 +590,13 @@ def _generate_inline_alerts(cur, user_id: str, user_phone: str, category: str, a
         )
         cat_last_month = cur.fetchone()[0]
 
-        if cat_last_month > 0 and cat_this_month > cat_last_month * 1.3:
+        # Só alerta se mês anterior teve gasto relevante (> R$50 na categoria)
+        # Evita alertas inúteis no 1º mês de uso
+        if cat_last_month >= 5000 and cat_this_month > cat_last_month * 1.3:
             pct = round((cat_this_month / cat_last_month - 1) * 100)
-            cat_fmt = f"R${cat_this_month/100:,.2f}".replace(",", ".")
-            alerts.append(f"⚠️ _{category} já em {cat_fmt} — {pct}% acima do mês passado_")
+            if pct <= 500:  # Ignora % absurdos (>500% = dados insuficientes)
+                cat_fmt = f"R${cat_this_month/100:,.2f}".replace(",", ".")
+                alerts.append(f"⚠️ _{category} já em {cat_fmt} — {pct}% acima do mês passado_")
 
         # 2. ALERTA: Ritmo de gastos acelerado (projeção > renda)
         cur.execute(
@@ -603,19 +606,21 @@ def _generate_inline_alerts(cur, user_id: str, user_phone: str, category: str, a
         if income_row and income_row[0] and income_row[0] > 0:
             income_cents = income_row[0]
             day_of_month = today.day
-            if day_of_month >= 5:  # Só alerta após 5 dias (dados suficientes)
+            # Só alerta após dia 8 e com gasto mínimo (evita projeções com poucos dados)
+            if day_of_month >= 8:
                 cur.execute(
                     "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
                     (user_id, f"{current_month}%"),
                 )
                 total_spent = cur.fetchone()[0]
-                days_in_month = calendar.monthrange(today.year, today.month)[1]
-                projection = round(total_spent * days_in_month / day_of_month)
-                if projection > income_cents * 1.1:
-                    proj_fmt = f"R${projection/100:,.2f}".replace(",", ".")
-                    over = projection - income_cents
-                    over_fmt = f"R${over/100:,.2f}".replace(",", ".")
-                    alerts.append(f"📊 _No ritmo atual, vai gastar {proj_fmt} — {over_fmt} acima da renda_\n⚡ _Dica: revise seus gastos no painel ou peça \"como tá meu mês?\"_")
+                if total_spent >= 10000:  # Mínimo R$100 gasto pra projetar
+                    days_in_month = calendar.monthrange(today.year, today.month)[1]
+                    projection = round(total_spent * days_in_month / day_of_month)
+                    if projection > income_cents * 1.2:  # 20% acima da renda
+                        proj_fmt = f"R${projection/100:,.2f}".replace(",", ".")
+                        over = projection - income_cents
+                        over_fmt = f"R${over/100:,.2f}".replace(",", ".")
+                        alerts.append(f"📊 _No ritmo atual, vai gastar {proj_fmt} — {over_fmt} acima da renda_")
     except Exception:
         pass  # Alertas são best-effort, nunca devem quebrar o save
 
@@ -885,7 +890,7 @@ def save_transaction(
             alerts = _generate_inline_alerts(_alert_cur, user_id, user_phone, category, amount_cents)
             _alert_conn.close()
             if alerts:
-                result += "\n\n" + "\n".join(alerts)
+                result += "\n" + "\n".join(alerts)
         except Exception:
             pass
 
