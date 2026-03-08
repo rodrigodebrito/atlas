@@ -8024,8 +8024,11 @@ def _smart_expense_extract(user_phone: str, msg: str) -> dict | None:
         merchant = ""
 
     try:
-        result = _call(save_transaction, user_phone, "EXPENSE",
-                       value, category, merchant, "", "", 1, 0, card_found, "")
+        fn = getattr(save_transaction, 'entrypoint', None) or save_transaction
+        result = fn(user_phone, "EXPENSE",
+                    value, category, merchant, "", "", 1, 0, card_found, "")
+        if isinstance(result, str):
+            result = "\n".join(l for l in result.split("\n") if not l.startswith("__"))
     except Exception:
         return None  # fallback ao LLM
     return {"response": result}
