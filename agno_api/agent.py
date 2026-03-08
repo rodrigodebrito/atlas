@@ -8260,7 +8260,7 @@ def _pre_route(message: str) -> dict | None:
     ]
     # Padrão: "gastei/paguei/comprei X reais [em/no MERCHANT] [pelo/no CARTÃO]"
     _expense_pattern = _re_router.match(
-        r'(?:gastei|paguei|comprei|torrei|saiu|foram?)\s+'
+        r'(?:gastei|paguei|pagamento|comprei|torrei|saiu|foram?)\s+'
         r'(?:r\$\s?)?(\d+(?:[.,]\d{1,2})?)\s*(?:reais?|conto|pila|real)?'  # valor
         r'(?:\s+(?:reais?|conto|pila|real))?'
         r'(?:\s+(?:n[oa]s?|(?:d[eoa]|em|com))\s+(.+?))?'  # merchant
@@ -8297,13 +8297,46 @@ def _pre_route(message: str) -> dict | None:
             return None  # fallback ao LLM
         return {"response": result}
 
-    # --- GASTO SEM VERBO: "Gasolina 32 no cartão Mercado pago", "Uber 15", "iFood 45 no Nubank" ---
+    # --- GASTO COM VERBO + MERCHANT ANTES DO VALOR: "pagamento gasolina 130 mercado pago" ---
+    _expense_verb_merch = _re_router.match(
+        r'(?:gastei|paguei|pagamento|comprei|torrei|saiu|foram?)\s+'
+        r'(?:d[eoa]\s+|n[oa]s?\s+|em\s+)?'
+        r'([A-Za-zÀ-ú][\w\s]*?)\s+'
+        r'(?:r\$\s?)?(\d+(?:[.,]\d{1,2})?)\s*(?:reais?|conto|pila|real)?'
+        r'(?:\s+(?:reais?|conto|pila|real))?'
+        r'(?:\s+(.+?))?'
+        r'[\s\?\!\.]*$',
+        msg
+    )
+    if _expense_verb_merch:
+        _vm_merchant = _expense_verb_merch.group(1).strip()
+        _vm_val = float(_expense_verb_merch.group(2).replace(",", "."))
+        _vm_rest = (_expense_verb_merch.group(3) or "").strip()
+        _vm_card = ""
+        if _vm_rest:
+            # Remove prefixos de cartão: "no cartão X" → "X", "pelo X" → "X"
+            _vm_c = _re_router.match(r'(?:(?:n[oa]s?|pel[oa]s?|via|com)\s+)?(?:(?:o\s+)?cart[aã]o\s+)?(.+)', _vm_rest)
+            if _vm_c:
+                _vm_card = _vm_c.group(1).strip()
+        if len(_vm_merchant) >= 2 and not _vm_merchant.replace(" ", "").isdigit():
+            _vm_cat = "Outros"
+            _vm_lower = _vm_merchant.lower()
+            for keywords, cat_name in _cat_rules:
+                if any(k in _vm_lower for k in keywords):
+                    _vm_cat = cat_name
+                    break
+            try:
+                result = _call(save_transaction, user_phone, "EXPENSE", _vm_val, _vm_cat, _vm_merchant, "", "", 1, 0, _vm_card, "")
+            except Exception:
+                return None
+            return {"response": result}
+
+    # --- GASTO SEM VERBO: "Gasolina 32 no cartão Mercado pago", "Uber 15", "iFood 45 Nubank" ---
     _expense_noverb = _re_router.match(
         r'([A-Za-zÀ-ú][\w\s]*?)\s+'
         r'(?:r\$\s?)?(\d+(?:[.,]\d{1,2})?)\s*(?:reais?|conto|pila|real)?'
         r'(?:\s+(?:reais?|conto|pila|real))?'
-        r'(?:\s+(?:n[oa]s?|(?:d[eoa]|em|com))\s+(.+?))?'
-        r'(?:\s+(?:pel[oa]s?|n[oa]s?|via|(?:no |pelo |com (?:o )?)cart[aã]o)\s+(.+?))?'
+        r'(?:\s+(.+?))?'
         r'[\s\?\!\.]*$',
         msg
     )
@@ -8311,35 +8344,34 @@ def _pre_route(message: str) -> dict | None:
         _nv_merchant = _expense_noverb.group(1).strip()
         _nv_val_str = _expense_noverb.group(2).replace(",", ".")
         _nv_val = float(_nv_val_str)
-        _nv_extra_merchant = (_expense_noverb.group(3) or "").strip()
-        _nv_card = (_expense_noverb.group(4) or "").strip()
-        # Se grupo 3 capturou algo mas não tem grupo 4, pode ser o cartão
-        if _nv_extra_merchant and not _nv_card:
-            # "cartão Mercado pago" → cartão = "Mercado pago"
-            _nv_cart_m = _re_router.match(r'cart[aã]o\s+(.+)', _nv_extra_merchant)
-            if _nv_cart_m:
-                _nv_card = _nv_cart_m.group(1).strip()
-                _nv_extra_merchant = ""
-            else:
-                _nv_pelo = _re_router.search(r'\s+(?:pel[oa]s?|n[oa]s?|via|(?:no |pelo |com (?:o )?)cart[aã]o)\s+(.+)', _nv_extra_merchant)
-                if _nv_pelo:
-                    _nv_card = _nv_pelo.group(1).strip()
-                    _nv_extra_merchant = _nv_extra_merchant[:_nv_pelo.start()].strip()
-        # Se merchant é muito genérico (1-2 chars) ou parece número, pula
+        _nv_rest = (_expense_noverb.group(3) or "").strip()
+        _nv_card = ""
+        if _nv_rest:
+            # Remove prefixos: "no cartão X" → "X", "pelo X" → "X", "no X" → "X", ou plain "X"
+            _nv_c = _re_router.match(r'(?:(?:n[oa]s?|pel[oa]s?|via|com)\s+)?(?:(?:o\s+)?cart[aã]o\s+)?(.+)', _nv_rest)
+            if _nv_c:
+                _nv_card = _nv_c.group(1).strip()
+        # Validação: merchant precisa ser reconhecível OU ter um cartão (indica intenção de gasto)
         if len(_nv_merchant) < 2 or _nv_merchant.replace(" ", "").isdigit():
             pass  # fall through to LLM
         else:
             _nv_cat = "Outros"
             _nv_lower = _nv_merchant.lower()
+            _nv_known = False
             for keywords, cat_name in _cat_rules:
                 if any(k in _nv_lower for k in keywords):
                     _nv_cat = cat_name
+                    _nv_known = True
                     break
-            try:
-                result = _call(save_transaction, user_phone, "EXPENSE", _nv_val, _nv_cat, _nv_merchant, "", "", 1, 0, _nv_card, "")
-            except Exception:
-                return None
-            return {"response": result}
+            # Sem verbo + sem categoria conhecida + sem cartão → ambíguo, deixa pro LLM
+            if not _nv_known and not _nv_card:
+                pass  # fall through to LLM
+            else:
+                try:
+                    result = _call(save_transaction, user_phone, "EXPENSE", _nv_val, _nv_cat, _nv_merchant, "", "", 1, 0, _nv_card, "")
+                except Exception:
+                    return None
+                return {"response": result}
 
     return None  # Fallback ao keyword router
 
