@@ -5330,7 +5330,8 @@ def create_agenda_event(
     alert_minutes_before: -1 = perguntar ao usuário.
     category: 'geral', 'saude', 'trabalho', 'pessoal', 'financeiro'."""
     import uuid
-    conn, cur = _db()
+    conn = _get_conn()
+    cur = conn.cursor()
     try:
         cur.execute("SELECT id, name FROM users WHERE phone = ?", (user_phone,))
         row = cur.fetchone()
@@ -5421,7 +5422,8 @@ def list_agenda_events(
     """Lista os próximos eventos da agenda do usuário.
     Use quando o usuário pedir 'minha agenda', 'meus lembretes', 'próximos eventos'.
     days: quantos dias à frente (padrão 7). category: filtrar por categoria."""
-    conn, cur = _db()
+    conn = _get_conn()
+    cur = conn.cursor()
     try:
         cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
         row = cur.fetchone()
@@ -5521,7 +5523,8 @@ def complete_agenda_event(
     """Marca um evento da agenda como concluído.
     Use quando o usuário disser 'feito', 'pronto', 'concluído' referente a um lembrete.
     event_query: título parcial para buscar, ou 'last' para o mais recente notificado."""
-    conn, cur = _db()
+    conn = _get_conn()
+    cur = conn.cursor()
     try:
         cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
         row = cur.fetchone()
@@ -5590,7 +5593,8 @@ def delete_agenda_event(
     Use quando o usuário pedir para apagar/remover/cancelar um lembrete ou evento.
     event_query: título parcial para buscar."""
     import json as _j
-    conn, cur = _db()
+    conn = _get_conn()
+    cur = conn.cursor()
     try:
         cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
         row = cur.fetchone()
