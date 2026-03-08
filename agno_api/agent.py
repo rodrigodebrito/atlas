@@ -8836,9 +8836,9 @@ def _pre_route(message: str) -> dict | None:
         return {"response": _call(get_all_categories_breakdown, user_phone, current_month)}
 
     # --- MÉDIAS (keyword fallback) ---
-    if ("media" in n or "média" in n) and any(k in n for k in ("gasto", "consumo", "despesa", "diaria", "semanal", "mensal", "por dia", "por semana")):
+    if ("media" in msg or "média" in msg) and any(k in msg for k in ("gasto", "consumo", "despesa", "diaria", "semanal", "mensal", "por dia", "por semana")):
         return {"response": _call(get_spending_averages, user_phone, "", current_month)}
-    if "quanto" in n and "gasto" in n and ("por dia" in n or "por semana" in n or "em media" in n or "em média" in n):
+    if "quanto" in msg and "gasto" in msg and ("por dia" in msg or "por semana" in msg or "em media" in msg or "em média" in msg):
         return {"response": _call(get_spending_averages, user_phone, "", current_month)}
 
     # --- EDITAR CARTÃO (link do painel) ---
