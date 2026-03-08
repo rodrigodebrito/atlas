@@ -6658,7 +6658,7 @@ def _get_panel_data_inner(conn, user_id: str, month: str) -> dict:
         cards.append({
             "id": c_id, "name": c_name, "closing_day": c_close or 0, "due_day": c_due or 0,
             "limit": c_limit or 0, "available": c_avail,
-            "bill": c_spent + (c_opening or 0), "tx_count": c_tx_count,
+            "bill": c_spent + (c_opening or 0), "opening": c_opening or 0, "tx_count": c_tx_count,
         })
 
     # Score (simplified)
@@ -7119,7 +7119,7 @@ body{{
 </div>
 
 <div class="section" id="cardsSection">
-  <div class="section-title">Cartoes</div>
+  <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">Cartoes <button onclick="addCard()" style="background:var(--green);color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:.85rem;cursor:pointer">+ Adicionar</button></div>
   <div id="cardsList"></div>
 </div>
 
@@ -7152,8 +7152,14 @@ body{{
 <!-- Card Edit Modal -->
 <div class="modal-overlay" id="cardEditModal" onclick="if(event.target===this)closeCardModal()">
   <div class="modal">
-    <h3>💳 Editar cartao</h3>
+    <h3 id="cardEditTitle">💳 Editar cartao</h3>
     <input type="hidden" id="cardEditId">
+    <div id="cardEditNameWrap" style="display:none">
+      <label>Nome do cartao</label>
+      <input type="text" id="cardEditName" placeholder="Ex: Nubank, Inter...">
+    </div>
+    <label>Valor da fatura atual (R$)</label>
+    <input type="number" id="cardBill" step="0.01" inputmode="decimal" placeholder="Valor total da fatura">
     <label>Dia de fechamento</label>
     <input type="number" id="cardClose" min="1" max="31" inputmode="numeric">
     <label>Dia de vencimento</label>
@@ -7164,6 +7170,7 @@ body{{
     <input type="number" id="cardAvail" step="0.01" inputmode="decimal">
     <div class="modal-btns">
       <button class="btn-cancel" onclick="closeCardModal()">Cancelar</button>
+      <button class="btn-delete" id="cardDeleteBtn" onclick="deleteCard()" style="background:#e74c3c;color:#fff;display:none">Excluir</button>
       <button class="btn-save" onclick="saveCard()">Salvar</button>
     </div>
   </div>
@@ -7461,7 +7468,7 @@ function renderCards() {{
       </div>
       <div class="card-detail" id="cardDetail-${{card.id}}">
         <div class="card-detail-inner">
-          <button class="tx-filter-btn" onclick="editCard('${{card.id}}', ${{card.closing_day}}, ${{card.due_day}}, ${{card.limit}}, ${{card.available || 0}})" style="margin-bottom:10px">⚙️ Editar cartao</button>
+          <button class="tx-filter-btn" onclick="editCard('${{card.id}}', ${{card.closing_day}}, ${{card.due_day}}, ${{card.limit}}, ${{card.available || 0}}, ${{card.opening || 0}}, '${{card.name}}')" style="margin-bottom:10px">⚙️ Editar cartao</button>
           <button class="tx-filter-btn" onclick="filterByCard('${{card.id}}')" style="margin-bottom:10px">📋 Ver transacoes</button>
         </div>
       </div>
@@ -7476,12 +7483,17 @@ function toggleCard(cardId) {{
 }}
 
 // ==================== CARD EDIT ====================
-function editCard(id, close, due, limit, avail) {{
+function editCard(id, close, due, limit, avail, bill, name) {{
   document.getElementById('cardEditId').value = id;
+  document.getElementById('cardEditTitle').textContent = '💳 Editar cartao';
+  document.getElementById('cardEditNameWrap').style.display = 'none';
+  document.getElementById('cardEditName').value = name || '';
+  document.getElementById('cardBill').value = bill ? (bill/100).toFixed(2) : '';
   document.getElementById('cardClose').value = close || '';
   document.getElementById('cardDue').value = due || '';
   document.getElementById('cardLimit').value = limit ? (limit/100).toFixed(2) : '';
   document.getElementById('cardAvail').value = avail ? (avail/100).toFixed(2) : '';
+  document.getElementById('cardDeleteBtn').style.display = 'inline-block';
   document.getElementById('cardEditModal').classList.add('active');
 }}
 
@@ -7491,25 +7503,62 @@ function closeCardModal() {{
 
 async function saveCard() {{
   const id = document.getElementById('cardEditId').value;
+  const isNew = !id;
   const body = {{}};
+  const name = document.getElementById('cardEditName').value.trim();
+  const bill = document.getElementById('cardBill').value;
   const close = document.getElementById('cardClose').value;
   const due = document.getElementById('cardDue').value;
   const limit = document.getElementById('cardLimit').value;
   const avail = document.getElementById('cardAvail').value;
+  if (isNew) {{
+    if (!name) {{ showToast('Informe o nome do cartao', true); return; }}
+    body.name = name;
+  }}
+  if (bill !== '') body.current_bill_opening_cents = Math.round(parseFloat(bill) * 100);
   if (close) body.closing_day = parseInt(close);
   if (due) body.due_day = parseInt(due);
   if (limit) body.limit_cents = Math.round(parseFloat(limit) * 100);
   if (avail) body.available_limit_cents = Math.round(parseFloat(avail) * 100);
   try {{
-    const r = await fetch(API + '/v1/api/card/' + id + '?t=' + TOKEN, {{
-      method: 'PUT', headers: {{'Content-Type':'application/json'}}, body: JSON.stringify(body)
+    const url = isNew ? API + '/v1/api/card?t=' + TOKEN : API + '/v1/api/card/' + id + '?t=' + TOKEN;
+    const method = isNew ? 'POST' : 'PUT';
+    const r = await fetch(url, {{
+      method, headers: {{'Content-Type':'application/json'}}, body: JSON.stringify(body)
     }});
     if (r.ok) {{
-      showToast('Cartao atualizado');
+      showToast(isNew ? 'Cartao criado' : 'Cartao atualizado');
       closeCardModal();
       setTimeout(() => location.reload(), 800);
-    }} else {{ showToast('Erro ao salvar', true); }}
+    }} else {{ const d = await r.json().catch(()=>({{}})); showToast(d.error || 'Erro ao salvar', true); }}
   }} catch(e) {{ showToast('Erro de conexao', true); }}
+}}
+
+async function deleteCard() {{
+  const id = document.getElementById('cardEditId').value;
+  if (!confirm('Excluir este cartao? As transacoes vinculadas nao serao apagadas.')) return;
+  try {{
+    const r = await fetch(API + '/v1/api/card/' + id + '?t=' + TOKEN, {{method:'DELETE'}});
+    if (r.ok) {{
+      showToast('Cartao excluido');
+      closeCardModal();
+      setTimeout(() => location.reload(), 800);
+    }} else {{ showToast('Erro ao excluir', true); }}
+  }} catch(e) {{ showToast('Erro de conexao', true); }}
+}}
+
+function addCard() {{
+  document.getElementById('cardEditId').value = '';
+  document.getElementById('cardEditTitle').textContent = '💳 Novo cartao';
+  document.getElementById('cardEditNameWrap').style.display = 'block';
+  document.getElementById('cardEditName').value = '';
+  document.getElementById('cardBill').value = '';
+  document.getElementById('cardClose').value = '';
+  document.getElementById('cardDue').value = '';
+  document.getElementById('cardLimit').value = '';
+  document.getElementById('cardAvail').value = '';
+  document.getElementById('cardDeleteBtn').style.display = 'none';
+  document.getElementById('cardEditModal').classList.add('active');
 }}
 
 // ==================== TX CRUD ====================
@@ -7741,6 +7790,9 @@ async def edit_card_api(card_id: str, request: _Request, t: str = ""):
         if "available_limit_cents" in body:
             updates.append("available_limit_cents = ?")
             params.append(int(body["available_limit_cents"]))
+        if "current_bill_opening_cents" in body:
+            updates.append("current_bill_opening_cents = ?")
+            params.append(int(body["current_bill_opening_cents"]))
         if not updates:
             return _JSONResponse({"error": "Nada para atualizar"}, status_code=400)
         params.extend([card_id, user_id])
@@ -7755,6 +7807,61 @@ async def edit_card_api(card_id: str, request: _Request, t: str = ""):
         return _JSONResponse({"error": "Cartao nao encontrado"}, status_code=404)
     except Exception as exc:
         print(f"[PAINEL] Erro ao editar card {card_id}: {exc}")
+        return _JSONResponse({"error": "Erro interno"}, status_code=500)
+
+
+@app.delete("/v1/api/card/{card_id}")
+async def delete_card_api(card_id: str, t: str = ""):
+    """Exclui um cartao via API do painel."""
+    user_id = _validate_panel_token(t)
+    if not user_id:
+        return _JSONResponse({"error": "Token invalido ou expirado"}, status_code=401)
+    try:
+        conn = _get_conn()
+        cur = conn.cursor()
+        # Desvincular transacoes do cartao (nao apaga)
+        cur.execute("UPDATE transactions SET card_id = NULL WHERE card_id = ? AND user_id = ?", (card_id, user_id))
+        cur.execute("DELETE FROM credit_cards WHERE id = ? AND user_id = ?", (card_id, user_id))
+        affected = cur.rowcount
+        conn.commit()
+        conn.close()
+        if affected:
+            return _JSONResponse({"ok": True})
+        return _JSONResponse({"error": "Cartao nao encontrado"}, status_code=404)
+    except Exception as exc:
+        print(f"[PAINEL] Erro ao excluir card {card_id}: {exc}")
+        return _JSONResponse({"error": "Erro interno"}, status_code=500)
+
+
+@app.post("/v1/api/card")
+async def create_card_api(request: _Request, t: str = ""):
+    """Cria um novo cartao via API do painel."""
+    user_id = _validate_panel_token(t)
+    if not user_id:
+        return _JSONResponse({"error": "Token invalido ou expirado"}, status_code=401)
+    try:
+        body = await request.json()
+        name = (body.get("name") or "").strip()
+        if not name:
+            return _JSONResponse({"error": "Nome do cartao e obrigatorio"}, status_code=400)
+        import uuid as _uuid_card
+        card_id = str(_uuid_card.uuid4())
+        closing_day = int(body.get("closing_day", 0))
+        due_day = int(body.get("due_day", 0))
+        limit_cents = int(body.get("limit_cents", 0))
+        available = int(body.get("available_limit_cents", 0))
+        bill_opening = int(body.get("current_bill_opening_cents", 0))
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO credit_cards (id, user_id, name, closing_day, due_day, limit_cents, available_limit_cents, current_bill_opening_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (card_id, user_id, name, closing_day, due_day, limit_cents, available, bill_opening),
+        )
+        conn.commit()
+        conn.close()
+        return _JSONResponse({"ok": True, "id": card_id})
+    except Exception as exc:
+        print(f"[PAINEL] Erro ao criar card: {exc}")
         return _JSONResponse({"error": "Erro interno"}, status_code=500)
 
 
