@@ -9561,17 +9561,59 @@ def debug_today(user_phone: str):
 
 @app.get("/v1/debug/extract")
 def debug_extract(user_phone: str, msg: str):
-    """Debug: testa o extrator inteligente de gastos."""
+    """Debug: testa o extrator inteligente de gastos com detalhes de cada etapa."""
+    import re as _re_dbg
     user_phone = user_phone.strip()
     if not user_phone.startswith("+"):
         user_phone = "+" + user_phone
     msg_norm = " ".join(msg.lower().split())
+    msg_lower = msg_norm
+
+    steps = {}
+
+    # Step 1: value
+    val_m = (_re_dbg.search(r'r\$\s?(\d+(?:[.,]\d{1,2})?)', msg_lower) or
+             _re_dbg.search(r'\b(\d+(?:[.,]\d{1,2})?)\s*(?:reais?|conto|pila|real)\b', msg_lower) or
+             _re_dbg.search(r'(?:^|\s)(\d+(?:[.,]\d{1,2})?)(?=\s|[.!?]*$)', msg_lower))
+    steps["1_value_match"] = val_m.group(0) if val_m else None
+    steps["1_value"] = float(val_m.group(1).replace(",", ".")) if val_m else None
+
+    # Step 2: signals
+    tokens = set(_re_dbg.findall(r'[a-záéíóúàâêôãõç]+', msg_lower))
+    steps["2_tokens"] = sorted(tokens)
+    steps["2_has_verb"] = bool(tokens & _EXPENSE_VERBS)
+    steps["2_verb_matches"] = sorted(tokens & _EXPENSE_VERBS)
+    steps["2_has_merchant"] = bool(tokens & _EXPENSE_MERCHANT_SIGNALS)
+    steps["2_merchant_matches"] = sorted(tokens & _EXPENSE_MERCHANT_SIGNALS)
+    steps["2_has_card_word"] = "cartão" in msg_lower or "cartao" in msg_lower
+
+    # Step 3: card lookup
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    user_cards = []
+    if user_id:
+        cur.execute("SELECT name FROM credit_cards WHERE user_id = ?", (user_id,))
+        user_cards = [r[0] for r in cur.fetchall()]
+    conn.close()
+    steps["3_user_cards"] = user_cards
+    card_found = ""
+    for cn in sorted(user_cards, key=len, reverse=True):
+        if cn.lower() in msg_lower:
+            card_found = cn
+            break
+    steps["3_card_found"] = card_found
+
+    # Step 4: call extractor
     try:
         result = _smart_expense_extract(user_phone, msg_norm)
-        return {"input": msg, "normalized": msg_norm, "result": result}
+        steps["4_result"] = result
     except Exception as e:
         import traceback
-        return {"input": msg, "normalized": msg_norm, "error": str(e), "traceback": traceback.format_exc()}
+        steps["4_error"] = str(e)
+        steps["4_traceback"] = traceback.format_exc()
+
+    return {"input": msg, "normalized": msg_norm, "steps": steps}
 
 
 @app.get("/v1/debug/transactions")
