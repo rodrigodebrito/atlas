@@ -5802,7 +5802,9 @@ CERTO: copiar o retorno da tool diretamente.
 
 ⛔ REGRA — ZERO FOLLOW-UP APÓS CONSULTAS (SEM EXCEÇÕES):
 Após retornar o resultado de get_transactions_by_merchant, get_category_breakdown,
-get_month_summary, get_week_summary, get_today_total, get_transactions: PARE. Zero linhas extras.
+get_month_summary, get_week_summary, get_today_total, get_spending_averages, get_transactions,
+create_agenda_event, list_agenda_events, complete_agenda_event: PARE. Zero linhas extras.
+IMPORTANTE: create_agenda_event retorna mensagem com pergunta de alerta (⏰). Copie INTEGRALMENTE, não reformule, não resuma, não adicione "Tá tudo anotado!".
 PROIBIDO (lista atualizada com exemplos reais):
 - "Quer que eu detalhe outros gastos do mês?"
 - "Quer ver o resumo detalhado de despesas por categoria?"
@@ -6836,6 +6838,27 @@ def _get_panel_data_inner(conn, user_id: str, month: str) -> dict:
     daily_labels = [f"{d:02d}" for d in range(1, days_in_month + 1)]
     daily_values = [daily_totals.get(f"{month}-{d:02d}", 0) / 100 for d in range(1, days_in_month + 1)]
 
+    # Agenda events (próximos 30 dias)
+    agenda_events = []
+    try:
+        now_str = today.strftime("%Y-%m-%d %H:%M")
+        end_agenda = (today + timedelta(days=30)).strftime("%Y-%m-%d 23:59")
+        cur.execute(
+            """SELECT id, title, event_at, all_day, recurrence_type, recurrence_rule,
+                      category, alert_minutes_before, status
+               FROM agenda_events WHERE user_id = ? AND status = 'active' AND event_at <= ?
+               ORDER BY event_at ASC""",
+            (user_id, end_agenda),
+        )
+        for ev in cur.fetchall():
+            agenda_events.append({
+                "id": ev[0], "title": ev[1], "event_at": ev[2], "all_day": ev[3],
+                "recurrence_type": ev[4], "recurrence_rule": ev[5] or "",
+                "category": ev[6] or "geral", "alert_minutes_before": ev[7], "status": ev[8],
+            })
+    except Exception:
+        pass  # tabela pode não existir ainda
+
     return {
         "user_name": user_name, "month": month, "month_label": month_label,
         "income": income_total, "expenses": expense_total,
@@ -6845,6 +6868,7 @@ def _get_panel_data_inner(conn, user_id: str, month: str) -> dict:
         "categories": [{"name": c, "amount": a, "pct": a / expense_total * 100 if expense_total else 0} for c, a in sorted_cats],
         "daily_labels": daily_labels, "daily_values": daily_values,
         "cards": cards,
+        "agenda": agenda_events,
         "score": score, "grade": grade, "savings_rate": savings_rate,
         "insights": insights,
         "prev_total": prev_total,
@@ -6880,6 +6904,7 @@ def _render_panel_html(data: dict, token: str) -> str:
         return _json.dumps(obj, ensure_ascii=False).replace("</", "<\\/")
     tx_json = _safe_json(data["transactions"])
     cards_json = _safe_json(data["cards"])
+    agenda_json = _safe_json(data.get("agenda", []))
     cat_labels = _safe_json([c["name"] for c in data["categories"]])
     cat_values = _json.dumps([c["amount"] / 100 for c in data["categories"]])
     cat_colors_json = _json.dumps(cat_colors[:max(len(data["categories"]), 1)])
@@ -7252,6 +7277,11 @@ body{{
   <div id="cardsList"></div>
 </div>
 
+<div class="section" id="agendaSection">
+  <div class="section-title">📅 Agenda</div>
+  <div id="agendaList"></div>
+</div>
+
 <div class="footer">
   ATLAS — Seu assistente financeiro · Link valido por 30 min
 </div>
@@ -7313,6 +7343,7 @@ const API = window.location.origin;
 const MONTH = "{data['month']}";
 const ALL_TX = {tx_json};
 const ALL_CARDS = {cards_json};
+const ALL_AGENDA = {agenda_json};
 const CAT_COLORS = {cat_colors_json};
 const CAT_DATA = {cats_data_json};
 const CAT_EMOJI = {_json.dumps(cat_emoji, ensure_ascii=False)};
@@ -7690,6 +7721,64 @@ function addCard() {{
   document.getElementById('cardEditModal').classList.add('active');
 }}
 
+// ==================== AGENDA ====================
+const AGENDA_CAT_EMOJI = {{"geral":"🔵","saude":"💊","trabalho":"💼","pessoal":"👤","financeiro":"💰"}};
+const WEEKDAYS_BR = ["dom","seg","ter","qua","qui","sex","sab"];
+
+function renderAgenda() {{
+  if (!ALL_AGENDA.length) {{
+    document.getElementById('agendaSection').style.display = 'none';
+    return;
+  }}
+  // Agrupa por data
+  const byDate = {{}};
+  const now = new Date();
+  for (const ev of ALL_AGENDA) {{
+    const dt = ev.event_at.substring(0, 10);
+    if (!byDate[dt]) byDate[dt] = [];
+    byDate[dt].push(ev);
+  }}
+  let html = '';
+  const dates = Object.keys(byDate).sort();
+  for (const dt of dates) {{
+    const d = new Date(dt + 'T12:00:00');
+    const today = new Date(); today.setHours(0,0,0,0);
+    const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate()+1);
+    let label;
+    if (d.toDateString() === today.toDateString()) label = 'Hoje';
+    else if (d.toDateString() === tomorrow.toDateString()) label = 'Amanha';
+    else label = dt.substring(8,10) + '/' + dt.substring(5,7) + ' (' + WEEKDAYS_BR[d.getDay()] + ')';
+    html += `<div style="font-weight:700;margin:12px 0 4px;color:var(--text)">${{label}}</div>`;
+    for (const ev of byDate[dt]) {{
+      const emoji = AGENDA_CAT_EMOJI[ev.category] || '🔵';
+      const time = ev.all_day ? 'Dia todo' : (ev.event_at.split(' ')[1] || '').substring(0,5);
+      const rec = ev.recurrence_type !== 'once' ? ' 🔄' : '';
+      const alertBadge = ev.alert_minutes_before > 0 ? ` · ⏰${{ev.alert_minutes_before >= 60 ? (ev.alert_minutes_before/60)+'h' : ev.alert_minutes_before+'min'}}` : '';
+      html += `<div class="card-item" style="padding:10px 14px;margin:4px 0;display:flex;justify-content:space-between;align-items:center;cursor:default">
+        <div>
+          <span>${{emoji}} <b>${{time}}</b> — ${{ev.title}}${{rec}}</span>
+          <span style="color:#888;font-size:.8rem">${{alertBadge}}</span>
+        </div>
+        <button onclick="deleteAgendaEvent('${{ev.id}}','${{ev.title.replace(/'/g,"\\'")}}')" style="background:none;border:none;color:var(--red);font-size:1.1rem;cursor:pointer" title="Excluir">🗑️</button>
+      </div>`;
+    }}
+  }}
+  document.getElementById('agendaList').innerHTML = html;
+}}
+
+async function deleteAgendaEvent(id, title) {{
+  if (!confirm('Excluir evento "' + title + '"?')) return;
+  try {{
+    const r = await fetch(API + '/v1/api/agenda/' + id + '?t=' + TOKEN, {{method:'DELETE'}});
+    if (r.ok) {{
+      const idx = ALL_AGENDA.findIndex(e => e.id === id);
+      if (idx >= 0) ALL_AGENDA.splice(idx, 1);
+      renderAgenda();
+      showToast('Evento excluido');
+    }} else {{ showToast('Erro ao excluir', true); }}
+  }} catch(e) {{ showToast('Erro de conexao', true); }}
+}}
+
 // ==================== TX CRUD ====================
 async function deleteTx(id) {{
   if (!confirm('Apagar esta transacao?')) return;
@@ -7743,6 +7832,7 @@ document.addEventListener('DOMContentLoaded', () => {{
   renderTxList();
   renderCatBreakdown();
   renderCards();
+  renderAgenda();
 
   pieChart = new Chart(document.getElementById('pieChart'), {{
     type: 'doughnut',
@@ -7991,6 +8081,27 @@ async def create_card_api(request: _Request, t: str = ""):
         return _JSONResponse({"ok": True, "id": card_id})
     except Exception as exc:
         print(f"[PAINEL] Erro ao criar card: {exc}")
+        return _JSONResponse({"error": "Erro interno"}, status_code=500)
+
+
+@app.delete("/v1/api/agenda/{event_id}")
+async def delete_agenda_event_api(event_id: str, t: str = ""):
+    """Exclui um evento da agenda via API do painel."""
+    user_id = _validate_panel_token(t)
+    if not user_id:
+        return _JSONResponse({"error": "Token invalido ou expirado"}, status_code=401)
+    try:
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM agenda_events WHERE id = ? AND user_id = ?", (event_id, user_id))
+        affected = cur.rowcount
+        conn.commit()
+        conn.close()
+        if affected:
+            return _JSONResponse({"ok": True})
+        return _JSONResponse({"error": "Evento nao encontrado"}, status_code=404)
+    except Exception as exc:
+        print(f"[PAINEL] Erro ao excluir evento {event_id}: {exc}")
         return _JSONResponse({"error": "Erro interno"}, status_code=500)
 
 
@@ -8484,7 +8595,7 @@ def _pre_route(message: str) -> dict | None:
             return {"response": result}
 
     # --- AGENDA: listar ---
-    if _re_router.match(r'(?:minha\s+)?agenda|(?:meus\s+)?(?:lembrete|evento|compromisso)s?\s+(?:da\s+semana|de\s+hoje|de\s+amanh[aã]|do\s+m[eê]s|pr[oó]ximos)[\s\?\!\.]*$', msg):
+    if _re_router.match(r'(?:(?:mostr[ae]|ver|abr[aei]|exib[aei]|me (?:mostr[ae]|d[aá]))\s+)?(?:minha\s+)?agenda|(?:(?:mostr[ae]|ver|quais)\s+)?(?:meus\s+)?(?:lembrete|evento|compromisso)s?(?:\s+(?:da\s+semana|de\s+hoje|de\s+amanh[aã]|do\s+m[eê]s|pr[oó]ximos))?[\s\?\!\.]*$', msg):
         return {"response": _call(list_agenda_events, user_phone)}
 
     # --- AGENDA: feito/concluído (verifica se tem evento notificado recente) ---
