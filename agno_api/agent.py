@@ -8374,6 +8374,43 @@ def _pre_route(message: str) -> dict | None:
             return {"response": f"📊 *Seu painel está pronto!*\n\n👉 {panel_url}\n\n_Link válido por 30 minutos. Lá você pode ver gráficos, editar e apagar transações._"}
         return {"response": "Nenhum dado encontrado. Comece registrando um gasto!"}
 
+    # --- FILTRO POR CATEGORIA OU MERCHANT ---
+    # "quanto gastei de alimentação", "quanto gastei no ifood", "gastos com uber este mês"
+    _CATEGORY_MAP = {
+        "alimentacao": "Alimentação", "alimentação": "Alimentação", "comida": "Alimentação", "restaurante": "Alimentação", "refeicao": "Alimentação", "refeição": "Alimentação",
+        "transporte": "Transporte", "uber": "Transporte", "gasolina": "Transporte", "combustivel": "Transporte", "combustível": "Transporte",
+        "moradia": "Moradia", "aluguel": "Moradia", "casa": "Moradia",
+        "saude": "Saúde", "saúde": "Saúde", "farmacia": "Saúde", "farmácia": "Saúde", "remedio": "Saúde", "remédio": "Saúde",
+        "lazer": "Lazer", "diversao": "Lazer", "diversão": "Lazer", "entretenimento": "Lazer",
+        "educacao": "Educação", "educação": "Educação", "escola": "Educação", "curso": "Educação", "faculdade": "Educação",
+        "assinatura": "Assinaturas", "assinaturas": "Assinaturas", "streaming": "Assinaturas",
+        "vestuario": "Vestuário", "vestuário": "Vestuário", "roupa": "Vestuário", "roupas": "Vestuário",
+        "investimento": "Investimento", "investimentos": "Investimentos",
+        "pets": "Pets", "pet": "Pets", "animal": "Pets",
+        "cartao": "Cartão", "cartão": "Cartão",
+        "outros": "Outros",
+        "salario": "Salário", "salário": "Salário",
+    }
+    _filter_m = _re_router.match(
+        r'(?:quanto (?:eu )?(?:j[aá] )?gastei (?:de |em |no |na |com |n[oa]s? )|gastos? (?:de |em |no |na |com |n[oa]s? )|(?:me )?mostr[ae]? (?:(?:os |meus )?gastos? )?(?:de |em |no |na |com |n[oa]s? )|(?:qual |quais )?(?:(?:os |meus )?gastos? )(?:de |em |no |na |com |n[oa]s? ))'
+        r'(.+?)(?:\s+(?:est[ea]|ess[ea]|neste|nesse|no|do|deste|desse)\s+m[eê]s|\s+(?:esta|essa|nesta|nessa|na|da|desta|dessa)\s+semana|\s+hoje)?[\s\?\!\.\,]*$',
+        msg
+    )
+    if _filter_m:
+        _filter_query = _filter_m.group(1).strip().rstrip("?!. ")
+        # Remove preposições soltas no final
+        _filter_query = _re_router.sub(r'\s+(?:de|em|no|na|do|da|com|este|esse|este|essa|neste|nesse)$', '', _filter_query).strip()
+        # Ignora queries genéricas que são tempo, não filtro
+        _generic_time = {"mes", "mês", "semana", "hoje", "dia", "ano", "este mes", "esse mes", "este mês", "esse mês"}
+        if _filter_query and _filter_query.lower() not in _generic_time:
+            _filter_norm = _filter_query.lower().replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").replace("ã", "a").replace("õ", "o").replace("ç", "c")
+            _matched_cat = _CATEGORY_MAP.get(_filter_norm)
+            if _matched_cat:
+                return {"response": _call(get_category_breakdown, user_phone, _matched_cat, current_month)}
+            else:
+                # Busca como merchant (ifood, deville, mercado, etc)
+                return {"response": _call(get_transactions_by_merchant, user_phone, _filter_query, current_month)}
+
     # --- RESUMO MENSAL ---
     if _re_router.match(r'(como t[aá] (?:o )?meu m[eê]s|resumo (?:do |mensal|deste |desse )?m[eê]s|meus gastos(?: do m[eê]s)?|como (?:foi|esta|está|tá|ta|anda|andou)(?: (?:o )?meu| o)? m[eê]s|me d[aá] (?:o )?resumo|resumo geral|vis[aã]o geral|saldo do m[eê]s|saldo mensal|quanto (?:eu )?(?:j[aá] )?gastei (?:esse|este|no) m[eê]s|total do m[eê]s|balan[çc]o do m[eê]s|extrato do m[eê]s|extrato mensal|como (?:est[aá]|tá|ta|anda) (?:minhas? )?finan[çc]as)[\s\?\!\.]*$', msg):
         summary = _call(get_month_summary, user_phone, current_month, "ALL")
@@ -8604,8 +8641,10 @@ def _keyword_route(user_phone: str, msg: str) -> dict | None:
         return {"response": _call(get_month_summary, user_phone, current_month, "ALL")}
 
     # --- COMO TÁ MEU MÊS / QUANTO GASTEI NO MÊS (variações) ---
+    # Só roteia para resumo geral se NÃO tiver qualificador de categoria/merchant
+    _has_specific_filter = _re_router.search(r'gastei (?:de |em |no |na |com |n[oa]s? )\w', n) and not _re_router.search(r'gastei (?:esse|este|no|nesse|neste) mes', n)
     if ("como" in n or "mostr" in n or "gastei" in n or "quanto" in n) and ("mes" in n or "financ" in n or "gasto" in n):
-        if "semana" not in n and "hoje" not in n:
+        if "semana" not in n and "hoje" not in n and not _has_specific_filter:
             return {"response": _call(get_month_summary, user_phone, current_month, "ALL")}
 
     # --- RESUMO SEMANAL ---
