@@ -956,10 +956,11 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     if not rows:
         return f"Nenhuma transação em {month}."
 
+    _BILL_PAY_CATS = {"Pagamento Fatura", "Pagamento Conta"}
     income = sum(r[2] for r in rows if r[0] == "INCOME")
-    # "Pagamento Fatura" é saída real mas os gastos do cartão já estão contados individualmente — excluir pra não duplicar
-    expenses = sum(r[2] for r in rows if r[0] == "EXPENSE" and r[1] != "Pagamento Fatura")
-    bill_payment_total = sum(r[2] for r in rows if r[0] == "EXPENSE" and r[1] == "Pagamento Fatura")
+    # Pagamentos de fatura/conta: saída real mas não duplicar nos gastos
+    expenses = sum(r[2] for r in rows if r[0] == "EXPENSE" and r[1] not in _BILL_PAY_CATS)
+    bill_payment_total = sum(r[2] for r in rows if r[0] == "EXPENSE" and r[1] in _BILL_PAY_CATS)
 
     # Separa gastos em caixa (débito/PIX/dinheiro) e crédito (cartão)
     # card_id IS NULL → caixa (sai do banco agora)
@@ -998,8 +999,8 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     merchant_freq: Counter = Counter()   # para insight: merchant mais frequente
     bill_payment_lines = []
     for cat, merchant, amount, occurred, card_id, inst_total, inst_num, card_name, closing_day, due_day, total_amt in tx_rows:
-        # Pagamento de fatura: mostrar separado, não somar nos gastos
-        if cat == "Pagamento Fatura":
+        # Pagamento de fatura/conta: mostrar separado, não somar nos gastos
+        if cat in _BILL_PAY_CATS:
             dt_lbl = f"{occurred[8:10]}/{occurred[5:7]}" if occurred and len(occurred) >= 10 else ""
             bill_payment_lines.append(f"• {dt_lbl} — {merchant}: R${amount/100:,.2f}".replace(",", "."))
             continue
@@ -1067,7 +1068,7 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     # Pagamentos de fatura (saída real, mas não duplica nos gastos)
     if bill_payment_lines:
         lines.append("")
-        lines.append(f"💳 *Pagamentos de fatura: R${bill_payment_total/100:,.2f}*".replace(",", "."))
+        lines.append(f"💳 *Pagamentos (faturas/contas): R${bill_payment_total/100:,.2f}*".replace(",", "."))
         for bpl in bill_payment_lines:
             lines.append(f"  {bpl}")
 
@@ -2021,9 +2022,10 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     top_cat_name, top_pct_val = "", 0.0
 
     if filter_type in ("ALL", "EXPENSE") and exp_rows:
-        # Separa pagamentos de fatura (não duplicar nos gastos)
-        _bill_pay_rows = [r for r in exp_rows if r[1] == "Pagamento Fatura"]
-        _real_exp_rows = [r for r in exp_rows if r[1] != "Pagamento Fatura"]
+        # Separa pagamentos de fatura/conta (não duplicar nos gastos)
+        _BILL_PAY_CATS_D = {"Pagamento Fatura", "Pagamento Conta"}
+        _bill_pay_rows = [r for r in exp_rows if r[1] in _BILL_PAY_CATS_D]
+        _real_exp_rows = [r for r in exp_rows if r[1] not in _BILL_PAY_CATS_D]
         total_exp = sum(r[3] for r in _real_exp_rows)
         if _real_exp_rows:
             cat_totals_exp, exp_block, cash_tot, credit_tot = build_exp_block(_real_exp_rows, total_exp)
@@ -2041,7 +2043,7 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
         if _bill_pay_rows:
             _bp_total = sum(r[3] for r in _bill_pay_rows)
             lines.append("")
-            lines.append(f"💳 *Pagamentos de fatura: R${_bp_total/100:,.2f}*".replace(",", "."))
+            lines.append(f"💳 *Pagamentos (faturas/contas): R${_bp_total/100:,.2f}*".replace(",", "."))
             for _bpr in _bill_pay_rows:
                 _bp_merchant = _bpr[2].strip() if _bpr[2] else "Fatura"
                 lines.append(f"  • {_bp_merchant}: R${_bpr[3]/100:,.2f}".replace(",", "."))
@@ -3154,9 +3156,10 @@ def pay_bill(
         if amount_cents == 0:
             amount_cents = b_amt
         if not category:
-            category = b_cat
+            # Pagamento de compromisso: usa categoria especial pra não duplicar nos gastos
+            category = "Pagamento Conta"
     if not category:
-        category = "Outros"
+        category = "Pagamento Conta"
     if amount_cents == 0:
         conn.close()
         return f"Quanto foi o pagamento de {name}? Me diz o valor."
