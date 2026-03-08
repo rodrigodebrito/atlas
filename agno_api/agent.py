@@ -7844,6 +7844,185 @@ def _onboard_if_new(user_phone: str, message: str) -> dict | None:
     )
     return {"response": welcome}
 
+# ── EXTRATOR INTELIGENTE DE GASTOS ──────────────────────────────────
+# Independente de ordem: acha VALOR, CARTÃO (do DB do usuário), MERCHANT (resto).
+# Funciona com: "gastei 50 no ifood pelo nubank", "abasteci 32 de gasolina no posto
+# shell no cartão mercado pago", "uber 15", "pagamento gasolina 130 mercado pago"
+
+_EXPENSE_VERBS = frozenset({
+    "gastei", "paguei", "pagamento", "comprei", "torrei", "saiu", "foram",
+    "abasteci", "almocei", "jantei", "lancei", "pedi", "tomei", "comi",
+    "bebi", "assinei", "renovei", "carreguei", "recarreguei", "coloquei",
+    "botei", "deixei", "dei", "meti", "larguei", "fiz",
+    "gasto", "despesa", "parcela", "prestação", "prestacao", "conta",
+})
+
+_EXPENSE_MERCHANT_SIGNALS = frozenset({
+    "ifood", "rappi", "uber", "99", "gasolina", "posto", "mercado",
+    "farmácia", "farmacia", "netflix", "spotify", "amazon", "aluguel",
+    "condomínio", "condominio", "academia", "restaurante", "padaria",
+    "supermercado", "bar", "cinema", "pizza", "burger", "combustível",
+    "combustivel", "estacionamento", "pedágio", "pedagio", "drogaria",
+    "veterinário", "veterinario", "loja", "shopping", "sushi", "lanche",
+    "açougue", "acougue", "marmita", "marmitex", "comida",
+    "uber eats", "zé delivery", "ze delivery",
+    "luz", "água", "agua", "internet", "gás", "gas",
+    "netflix", "spotify", "disney", "hbo", "youtube", "prime",
+    "curso", "livro", "faculdade", "escola", "claude", "chatgpt",
+    "roupa", "tênis", "tenis", "sapato", "ração", "racao", "pet",
+    "remédio", "remedio", "consulta", "exame",
+})
+
+_CAT_RULES = [
+    (("ifood", "rappi", "restaurante", "lanche", "mercado", "almo", "pizza",
+      "burger", "sushi", "padaria", "açougue", "acougue", "marmit", "comida",
+      "supermercado", "feira", "hortifruti"), "Alimentação"),
+    (("uber", "99", "gasolina", "pedágio", "pedagio", "onibus", "ônibus",
+      "metro", "metrô", "táxi", "taxi", "combustível", "combustivel",
+      "posto", "estacionamento", "passagem"), "Transporte"),
+    (("netflix", "spotify", "amazon", "disney", "hbo", "youtube",
+      "assinatura", "prime", "globoplay", "deezer"), "Assinaturas"),
+    (("farmácia", "farmacia", "médico", "medico", "remédio", "remedio",
+      "consulta", "plano de saúde", "drogaria", "exame", "hospital"), "Saúde"),
+    (("aluguel", "condomínio", "condominio", "luz", "água", "agua",
+      "internet", "gás", "gas", "iptu", "energia", "celpe", "compesa"), "Moradia"),
+    (("academia", "bar", "cinema", "show", "viagem", "lazer",
+      "ingresso", "festa", "boate", "parque"), "Lazer"),
+    (("curso", "livro", "faculdade", "escola", "claude", "chatgpt",
+      "copilot", "cursor", "udemy", "alura"), "Educação"),
+    (("roupa", "tênis", "tenis", "sapato", "acessório", "acessorio",
+      "moda", "camisa", "calça", "calca", "blusa"), "Vestuário"),
+    (("ração", "racao", "veterinário", "veterinario", "pet",
+      "banho", "petshop"), "Pets"),
+]
+
+_NOISE_WORDS = frozenset({
+    "de", "do", "da", "dos", "das", "no", "na", "nos", "nas",
+    "em", "com", "para", "pra", "pro", "pela", "pelo", "pelas", "pelos",
+    "via", "um", "uma", "uns", "umas", "o", "a", "os", "as", "ao",
+    "cartão", "cartao", "crédito", "credito", "débito", "debito",
+    "reais", "real", "conto", "pila", "r$",
+    "hoje", "agora", "ontem", "aqui",
+}) | _EXPENSE_VERBS
+
+
+def _smart_expense_extract(user_phone: str, msg: str) -> dict | None:
+    """
+    Extrator inteligente de gastos — independente de ordem das palavras.
+
+    1. Acha o VALOR (qualquer número no texto)
+    2. Detecta INTENÇÃO de gasto (verbos + merchants conhecidos)
+    3. Acha o CARTÃO (compara com cartões reais do usuário no DB)
+    4. Extrai MERCHANT (o que sobra depois de remover valor, cartão, ruído)
+    5. Auto-categoriza
+
+    Retorna {"response": str} se é gasto, ou None para cair no LLM.
+    """
+    import re as _re
+
+    msg_clean = msg.strip()
+    msg_lower = msg_clean.lower()
+
+    # ── 1. Achar valor ──
+    val_m = (_re.search(r'r\$\s?(\d+(?:[.,]\d{1,2})?)', msg_lower) or
+             _re.search(r'\b(\d+(?:[.,]\d{1,2})?)\s*(?:reais?|conto|pila|real)\b', msg_lower) or
+             _re.search(r'(?:^|\s)(\d+(?:[.,]\d{1,2})?)(?=\s|[.!?]*$)', msg_lower))
+    if not val_m:
+        return None
+    value = float(val_m.group(1).replace(",", "."))
+    if value <= 0 or value > 999999:
+        return None
+
+    # ── 2. Sinais de intenção de gasto ──
+    tokens = set(_re.findall(r'[a-záéíóúàâêôãõç]+', msg_lower))
+    has_verb = bool(tokens & _EXPENSE_VERBS)
+    has_merchant = bool(tokens & _EXPENSE_MERCHANT_SIGNALS)
+    has_card_word = "cartão" in msg_lower or "cartao" in msg_lower
+
+    # Sem nenhum sinal → não é gasto (ex: "meu saldo", "meta 500")
+    if not has_verb and not has_merchant and not has_card_word:
+        return None
+
+    # ── 3. Achar cartão (compara com cartões reais do usuário) ──
+    card_found = ""
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    user_cards = []
+    if user_id:
+        cur.execute("SELECT name FROM credit_cards WHERE user_id = ?", (user_id,))
+        user_cards = [r[0] for r in cur.fetchall()]
+    conn.close()
+
+    # Tenta longest match nos nomes reais do banco
+    for cn in sorted(user_cards, key=len, reverse=True):
+        if cn.lower() in msg_lower:
+            card_found = cn
+            break
+
+    # Se não achou por nome, tenta padrão "cartão X" ou "pelo X"
+    if not card_found:
+        cart_m = _re.search(
+            r'(?:(?:no|na|pel[oa]|com)\s+)?(?:(?:o\s+)?cart[aã]o\s+)([\w][\w\s]*?)(?:\s+(?:no|na|de|do|em|com|pel[oa])\s|[.!?]*$)',
+            msg_lower
+        )
+        if cart_m:
+            card_found = cart_m.group(1).strip()
+
+    # ── 4. Extrair merchant (o que sobra) ──
+    text = msg_clean
+
+    # Remove o trecho do valor
+    text = text[:val_m.start()] + " " + text[val_m.end():]
+
+    # Remove o nome do cartão encontrado
+    if card_found:
+        # Case-insensitive replace
+        pat = _re.compile(_re.escape(card_found), _re.IGNORECASE)
+        text = pat.sub(" ", text, count=1)
+
+    # Remove noise words (preposições, verbos de gasto, etc)
+    text = _re.sub(
+        r'\b(?:' + '|'.join(_re.escape(w) for w in _NOISE_WORDS) + r')\b',
+        ' ', text, flags=_re.IGNORECASE
+    )
+    # Remove "r$", pontuação isolada, espaços extras
+    text = _re.sub(r'r\$', ' ', text, flags=_re.IGNORECASE)
+    text = _re.sub(r'[.,!?\-]+', ' ', text)
+    text = _re.sub(r'\b\d+(?:[.,]\d{1,2})?\b', ' ', text)  # remove números residuais
+    text = _re.sub(r'\s+', ' ', text).strip()
+
+    merchant = text.strip()
+
+    # ── 5. Auto-categorizar ──
+    category = "Outros"
+    m_lower = merchant.lower()
+    for keywords, cat_name in _CAT_RULES:
+        if any(k in m_lower for k in keywords):
+            category = cat_name
+            break
+
+    # ── 6. Decisão final ──
+    # Com verbo de gasto → sempre salva (mesmo sem merchant: "gastei 50")
+    # Sem verbo mas com merchant conhecido ou cartão → salva
+    # Sem verbo, sem merchant conhecido, sem cartão → ambíguo, cai pro LLM
+    if not has_verb:
+        known_cat = category != "Outros"
+        if not known_cat and not card_found:
+            return None  # ambíguo
+
+    # Se merchant ficou vazio, usa "Sem descrição"
+    if not merchant:
+        merchant = ""
+
+    try:
+        result = _call(save_transaction, user_phone, "EXPENSE",
+                       value, category, merchant, "", "", 1, 0, card_found, "")
+    except Exception:
+        return None  # fallback ao LLM
+    return {"response": result}
+
+
 def _pre_route(message: str) -> dict | None:
     """
     Tenta rotear mensagens comuns sem chamar o LLM.
@@ -8246,132 +8425,12 @@ def _pre_route(message: str) -> dict | None:
         greeting = f"Fala, {_uname}! 👋" if _uname else "Fala! 👋"
         return {"response": f"{greeting} Sou o *ATLAS*, seu copiloto financeiro.\n\nMe diz o que precisa — lança um gasto, pede o resumo do mês, ou digita *ajuda* pra ver tudo que eu faço. 🎯"}
 
-    # --- GASTO SIMPLES (save_transaction via pré-roteador) ---
-    _cat_rules = [
-        (("ifood", "rappi", "restaurante", "lanche", "mercado", "almo", "pizza", "burger", "sushi", "padaria", "açougue", "marmit", "comida"), "Alimentação"),
-        (("uber", "99", "gasolina", "pedágio", "onibus", "metro", "táxi", "combustível", "posto", "estacionamento"), "Transporte"),
-        (("netflix", "spotify", "amazon", "disney", "hbo", "youtube", "assinatura", "prime"), "Assinaturas"),
-        (("farmácia", "farmacia", "médico", "remédio", "remedio", "consulta", "plano de saúde", "drogaria"), "Saúde"),
-        (("aluguel", "condomínio", "condominio", "luz", "água", "agua", "internet", "gás", "gas", "iptu"), "Moradia"),
-        (("academia", "bar", "cinema", "show", "viagem", "lazer", "ingresso", "festa"), "Lazer"),
-        (("curso", "livro", "faculdade", "escola", "claude", "chatgpt", "copilot", "cursor"), "Educação"),
-        (("roupa", "tênis", "tenis", "sapato", "acessório", "acessorio", "moda", "camisa"), "Vestuário"),
-        (("ração", "racao", "veterinário", "veterinario", "pet", "banho"), "Pets"),
-    ]
-    # Padrão: "gastei/paguei/comprei X reais [em/no MERCHANT] [pelo/no CARTÃO]"
-    _expense_pattern = _re_router.match(
-        r'(?:gastei|paguei|pagamento|comprei|torrei|saiu|foram?)\s+'
-        r'(?:r\$\s?)?(\d+(?:[.,]\d{1,2})?)\s*(?:reais?|conto|pila|real)?'  # valor
-        r'(?:\s+(?:reais?|conto|pila|real))?'
-        r'(?:\s+(?:n[oa]s?|(?:d[eoa]|em|com))\s+(.+?))?'  # merchant
-        r'(?:\s+(?:pel[oa]s?|n[oa]s?|via|com (?:o )?cart[aã]o)\s+(.+?))?'  # cartão
-        r'[\s\?\!\.]*$',
-        msg
-    )
-    if _expense_pattern:
-        _val_str = _expense_pattern.group(1).replace(",", ".")
-        _val = float(_val_str)
-        _merchant_raw = (_expense_pattern.group(2) or "").strip()
-        _card_raw = (_expense_pattern.group(3) or "").strip()
-        # Se merchant capturou "cartão X" ou "pelo X" (cartão), separa
-        if not _card_raw and _merchant_raw:
-            _cart_m = _re_router.match(r'cart[aã]o\s+(.+)', _merchant_raw)
-            if _cart_m:
-                _card_raw = _cart_m.group(1).strip()
-                _merchant_raw = ""
-            else:
-                _pelo_m = _re_router.search(r'\s+(?:pel[oa]s?|n[oa]s?|via|com (?:o )?cart[aã]o)\s+(.+)', _merchant_raw)
-                if _pelo_m:
-                    _card_raw = _pelo_m.group(1).strip()
-                    _merchant_raw = _merchant_raw[:_pelo_m.start()].strip()
-        # Auto-categorização simples
-        _cat = "Outros"
-        _m_lower = _merchant_raw.lower() if _merchant_raw else ""
-        for keywords, cat_name in _cat_rules:
-            if any(k in _m_lower for k in keywords):
-                _cat = cat_name
-                break
-        try:
-            result = _call(save_transaction, user_phone, "EXPENSE", _val, _cat, _merchant_raw, "", "", 1, 0, _card_raw, "")
-        except Exception:
-            return None  # fallback ao LLM
-        return {"response": result}
-
-    # --- GASTO COM VERBO + MERCHANT ANTES DO VALOR: "pagamento gasolina 130 mercado pago" ---
-    _expense_verb_merch = _re_router.match(
-        r'(?:gastei|paguei|pagamento|comprei|torrei|saiu|foram?)\s+'
-        r'(?:d[eoa]\s+|n[oa]s?\s+|em\s+)?'
-        r'([A-Za-zÀ-ú][\w\s]*?)\s+'
-        r'(?:r\$\s?)?(\d+(?:[.,]\d{1,2})?)\s*(?:reais?|conto|pila|real)?'
-        r'(?:\s+(?:reais?|conto|pila|real))?'
-        r'(?:\s+(.+?))?'
-        r'[\s\?\!\.]*$',
-        msg
-    )
-    if _expense_verb_merch:
-        _vm_merchant = _expense_verb_merch.group(1).strip()
-        _vm_val = float(_expense_verb_merch.group(2).replace(",", "."))
-        _vm_rest = (_expense_verb_merch.group(3) or "").strip()
-        _vm_card = ""
-        if _vm_rest:
-            # Remove prefixos de cartão: "no cartão X" → "X", "pelo X" → "X"
-            _vm_c = _re_router.match(r'(?:(?:n[oa]s?|pel[oa]s?|via|com)\s+)?(?:(?:o\s+)?cart[aã]o\s+)?(.+)', _vm_rest)
-            if _vm_c:
-                _vm_card = _vm_c.group(1).strip()
-        if len(_vm_merchant) >= 2 and not _vm_merchant.replace(" ", "").isdigit():
-            _vm_cat = "Outros"
-            _vm_lower = _vm_merchant.lower()
-            for keywords, cat_name in _cat_rules:
-                if any(k in _vm_lower for k in keywords):
-                    _vm_cat = cat_name
-                    break
-            try:
-                result = _call(save_transaction, user_phone, "EXPENSE", _vm_val, _vm_cat, _vm_merchant, "", "", 1, 0, _vm_card, "")
-            except Exception:
-                return None
-            return {"response": result}
-
-    # --- GASTO SEM VERBO: "Gasolina 32 no cartão Mercado pago", "Uber 15", "iFood 45 Nubank" ---
-    _expense_noverb = _re_router.match(
-        r'([A-Za-zÀ-ú][\w\s]*?)\s+'
-        r'(?:r\$\s?)?(\d+(?:[.,]\d{1,2})?)\s*(?:reais?|conto|pila|real)?'
-        r'(?:\s+(?:reais?|conto|pila|real))?'
-        r'(?:\s+(.+?))?'
-        r'[\s\?\!\.]*$',
-        msg
-    )
-    if _expense_noverb:
-        _nv_merchant = _expense_noverb.group(1).strip()
-        _nv_val_str = _expense_noverb.group(2).replace(",", ".")
-        _nv_val = float(_nv_val_str)
-        _nv_rest = (_expense_noverb.group(3) or "").strip()
-        _nv_card = ""
-        if _nv_rest:
-            # Remove prefixos: "no cartão X" → "X", "pelo X" → "X", "no X" → "X", ou plain "X"
-            _nv_c = _re_router.match(r'(?:(?:n[oa]s?|pel[oa]s?|via|com)\s+)?(?:(?:o\s+)?cart[aã]o\s+)?(.+)', _nv_rest)
-            if _nv_c:
-                _nv_card = _nv_c.group(1).strip()
-        # Validação: merchant precisa ser reconhecível OU ter um cartão (indica intenção de gasto)
-        if len(_nv_merchant) < 2 or _nv_merchant.replace(" ", "").isdigit():
-            pass  # fall through to LLM
-        else:
-            _nv_cat = "Outros"
-            _nv_lower = _nv_merchant.lower()
-            _nv_known = False
-            for keywords, cat_name in _cat_rules:
-                if any(k in _nv_lower for k in keywords):
-                    _nv_cat = cat_name
-                    _nv_known = True
-                    break
-            # Sem verbo + sem categoria conhecida + sem cartão → ambíguo, deixa pro LLM
-            if not _nv_known and not _nv_card:
-                pass  # fall through to LLM
-            else:
-                try:
-                    result = _call(save_transaction, user_phone, "EXPENSE", _nv_val, _nv_cat, _nv_merchant, "", "", 1, 0, _nv_card, "")
-                except Exception:
-                    return None
-                return {"response": result}
+    # ── EXTRATOR INTELIGENTE DE GASTOS ──────────────────────────────
+    # Independente de ordem: acha VALOR, CARTÃO (DB), MERCHANT (resto).
+    # Funciona com qualquer estrutura de frase.
+    _smart = _smart_expense_extract(user_phone, msg)
+    if _smart:
+        return _smart
 
     return None  # Fallback ao keyword router
 
