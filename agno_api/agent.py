@@ -2543,11 +2543,15 @@ def get_cards(user_phone: str) -> str:
             limit_line = ""
             avail_line = ""
 
+        due_str = f"dia {due_day}" if due_day and due_day > 0 else "⚠️ não configurado"
+        config_hint = ""
+        if not due_day or due_day <= 0 or not closing_day or closing_day <= 0:
+            config_hint = f"\n   _Diga: \"fecha dia X vence dia Y\" para configurar_"
         lines.append(
             f"\n💳 *{name}*\n"
             f"   *Fatura:* R${bill_total/100:.2f}{close_str}\n"
-            f"   *Vencimento:* dia {due_day}"
-            f"{limit_line}{avail_line}"
+            f"   *Vencimento:* {due_str}"
+            f"{limit_line}{avail_line}{config_hint}"
         )
 
     lines.append("")
@@ -8243,6 +8247,17 @@ def _pre_route(message: str) -> dict | None:
         return {"response": f"{greeting} Sou o *ATLAS*, seu copiloto financeiro.\n\nMe diz o que precisa — lança um gasto, pede o resumo do mês, ou digita *ajuda* pra ver tudo que eu faço. 🎯"}
 
     # --- GASTO SIMPLES (save_transaction via pré-roteador) ---
+    _cat_rules = [
+        (("ifood", "rappi", "restaurante", "lanche", "mercado", "almo", "pizza", "burger", "sushi", "padaria", "açougue", "marmit", "comida"), "Alimentação"),
+        (("uber", "99", "gasolina", "pedágio", "onibus", "metro", "táxi", "combustível", "posto", "estacionamento"), "Transporte"),
+        (("netflix", "spotify", "amazon", "disney", "hbo", "youtube", "assinatura", "prime"), "Assinaturas"),
+        (("farmácia", "farmacia", "médico", "remédio", "remedio", "consulta", "plano de saúde", "drogaria"), "Saúde"),
+        (("aluguel", "condomínio", "condominio", "luz", "água", "agua", "internet", "gás", "gas", "iptu"), "Moradia"),
+        (("academia", "bar", "cinema", "show", "viagem", "lazer", "ingresso", "festa"), "Lazer"),
+        (("curso", "livro", "faculdade", "escola", "claude", "chatgpt", "copilot", "cursor"), "Educação"),
+        (("roupa", "tênis", "tenis", "sapato", "acessório", "acessorio", "moda", "camisa"), "Vestuário"),
+        (("ração", "racao", "veterinário", "veterinario", "pet", "banho"), "Pets"),
+    ]
     # Padrão: "gastei/paguei/comprei X reais [em/no MERCHANT] [pelo/no CARTÃO]"
     _expense_pattern = _re_router.match(
         r'(?:gastei|paguei|comprei|torrei|saiu|foram?)\s+'
@@ -8258,26 +8273,20 @@ def _pre_route(message: str) -> dict | None:
         _val = float(_val_str)
         _merchant_raw = (_expense_pattern.group(2) or "").strip()
         _card_raw = (_expense_pattern.group(3) or "").strip()
-        # Se merchant capturou "pelo X" (cartão), separa
+        # Se merchant capturou "cartão X" ou "pelo X" (cartão), separa
         if not _card_raw and _merchant_raw:
-            _pelo_m = _re_router.search(r'\s+(?:pel[oa]s?|n[oa]s?|via|com (?:o )?cart[aã]o)\s+(.+)', _merchant_raw)
-            if _pelo_m:
-                _card_raw = _pelo_m.group(1).strip()
-                _merchant_raw = _merchant_raw[:_pelo_m.start()].strip()
+            _cart_m = _re_router.match(r'cart[aã]o\s+(.+)', _merchant_raw)
+            if _cart_m:
+                _card_raw = _cart_m.group(1).strip()
+                _merchant_raw = ""
+            else:
+                _pelo_m = _re_router.search(r'\s+(?:pel[oa]s?|n[oa]s?|via|com (?:o )?cart[aã]o)\s+(.+)', _merchant_raw)
+                if _pelo_m:
+                    _card_raw = _pelo_m.group(1).strip()
+                    _merchant_raw = _merchant_raw[:_pelo_m.start()].strip()
         # Auto-categorização simples
         _cat = "Outros"
         _m_lower = _merchant_raw.lower() if _merchant_raw else ""
-        _cat_rules = [
-            (("ifood", "rappi", "restaurante", "lanche", "mercado", "almo", "pizza", "burger", "sushi", "padaria", "açougue", "marmit", "comida"), "Alimentação"),
-            (("uber", "99", "gasolina", "pedágio", "onibus", "metro", "táxi", "combustível", "posto", "estacionamento"), "Transporte"),
-            (("netflix", "spotify", "amazon", "disney", "hbo", "youtube", "assinatura", "prime"), "Assinaturas"),
-            (("farmácia", "farmacia", "médico", "remédio", "remedio", "consulta", "plano de saúde", "drogaria"), "Saúde"),
-            (("aluguel", "condomínio", "condominio", "luz", "água", "agua", "internet", "gás", "gas", "iptu"), "Moradia"),
-            (("academia", "bar", "cinema", "show", "viagem", "lazer", "ingresso", "festa"), "Lazer"),
-            (("curso", "livro", "faculdade", "escola", "claude", "chatgpt", "copilot", "cursor"), "Educação"),
-            (("roupa", "tênis", "tenis", "sapato", "acessório", "acessorio", "moda", "camisa"), "Vestuário"),
-            (("ração", "racao", "veterinário", "veterinario", "pet", "banho"), "Pets"),
-        ]
         for keywords, cat_name in _cat_rules:
             if any(k in _m_lower for k in keywords):
                 _cat = cat_name
@@ -8287,6 +8296,50 @@ def _pre_route(message: str) -> dict | None:
         except Exception:
             return None  # fallback ao LLM
         return {"response": result}
+
+    # --- GASTO SEM VERBO: "Gasolina 32 no cartão Mercado pago", "Uber 15", "iFood 45 no Nubank" ---
+    _expense_noverb = _re_router.match(
+        r'([A-Za-zÀ-ú][\w\s]*?)\s+'
+        r'(?:r\$\s?)?(\d+(?:[.,]\d{1,2})?)\s*(?:reais?|conto|pila|real)?'
+        r'(?:\s+(?:reais?|conto|pila|real))?'
+        r'(?:\s+(?:n[oa]s?|(?:d[eoa]|em|com))\s+(.+?))?'
+        r'(?:\s+(?:pel[oa]s?|n[oa]s?|via|(?:no |pelo |com (?:o )?)cart[aã]o)\s+(.+?))?'
+        r'[\s\?\!\.]*$',
+        msg
+    )
+    if _expense_noverb:
+        _nv_merchant = _expense_noverb.group(1).strip()
+        _nv_val_str = _expense_noverb.group(2).replace(",", ".")
+        _nv_val = float(_nv_val_str)
+        _nv_extra_merchant = (_expense_noverb.group(3) or "").strip()
+        _nv_card = (_expense_noverb.group(4) or "").strip()
+        # Se grupo 3 capturou algo mas não tem grupo 4, pode ser o cartão
+        if _nv_extra_merchant and not _nv_card:
+            # "cartão Mercado pago" → cartão = "Mercado pago"
+            _nv_cart_m = _re_router.match(r'cart[aã]o\s+(.+)', _nv_extra_merchant)
+            if _nv_cart_m:
+                _nv_card = _nv_cart_m.group(1).strip()
+                _nv_extra_merchant = ""
+            else:
+                _nv_pelo = _re_router.search(r'\s+(?:pel[oa]s?|n[oa]s?|via|(?:no |pelo |com (?:o )?)cart[aã]o)\s+(.+)', _nv_extra_merchant)
+                if _nv_pelo:
+                    _nv_card = _nv_pelo.group(1).strip()
+                    _nv_extra_merchant = _nv_extra_merchant[:_nv_pelo.start()].strip()
+        # Se merchant é muito genérico (1-2 chars) ou parece número, pula
+        if len(_nv_merchant) < 2 or _nv_merchant.replace(" ", "").isdigit():
+            pass  # fall through to LLM
+        else:
+            _nv_cat = "Outros"
+            _nv_lower = _nv_merchant.lower()
+            for keywords, cat_name in _cat_rules:
+                if any(k in _nv_lower for k in keywords):
+                    _nv_cat = cat_name
+                    break
+            try:
+                result = _call(save_transaction, user_phone, "EXPENSE", _nv_val, _nv_cat, _nv_merchant, "", "", 1, 0, _nv_card, "")
+            except Exception:
+                return None
+            return {"response": result}
 
     return None  # Fallback ao keyword router
 
