@@ -6405,6 +6405,9 @@ AGENDA / LEMBRETES:
 - "feito" (após lembrete) → complete_agenda_event
 - "apagar lembrete X" → delete_agenda_event
 - Sempre use alert_minutes_before=-1 para perguntar ao usuário quando avisar
+- ⚠️ HORÁRIO: use SEMPRE o horário de Brasília (BRT) informado no [CONTEXTO] da mensagem.
+  "daqui 2 minutos" = hora_atual_BRT + 2min. "daqui 1 hora" = hora_atual_BRT + 1h.
+  NUNCA use UTC. O campo event_at deve refletir horário BRT.
 
 PAGAMENTOS vs GASTOS — diferencie com cuidado:
 - "paguei a fatura", "paguei o aluguel", "quitei o boleto" → pay_bill (pagar conta/fatura cadastrada)
@@ -9270,8 +9273,11 @@ async def chat_endpoint(
         except Exception:
             pass
 
+    # Injeta hora BRT no contexto pra o LLM saber o horário correto
+    _now_ctx = _now_br()
+    _time_ctx = f"[CONTEXTO: Agora são {_now_ctx.strftime('%H:%M')} do dia {_now_ctx.strftime('%d/%m/%Y')} (horário de Brasília). Use SEMPRE este horário como referência.]"
     response = await atlas_agent.arun(
-        input=full_message,
+        input=f"{_time_ctx}\n\n{full_message}",
         session_id=session_id,
     )
     content = response.content if hasattr(response, 'content') else str(response)
