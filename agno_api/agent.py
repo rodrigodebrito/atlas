@@ -5202,8 +5202,8 @@ def _parse_agenda_message(msg: str) -> dict | None:
                 time_tokens.append(m_dia.group(0))
                 confidence = max(confidence, 0.8)
 
-        # "daqui a N dias/horas/minutos" / "em N horas"
-        m_rel = _re_ag.search(r'(?:daqui\s+a|em)\s+(\d+)\s+(minuto|hora|dia)', norm)
+        # "daqui a N dias/horas/minutos" / "em N horas" / "daqui N minutos"
+        m_rel = _re_ag.search(r'(?:daqui(?:\s+a)?|em)\s+(\d+)\s+(minuto|hora|dia)', norm)
         if m_rel and parsed_date is None:
             n = int(m_rel.group(1))
             unit = m_rel.group(2)
@@ -8950,6 +8950,11 @@ def _pre_route(message: str) -> dict | None:
                 return {"response": _call(close_bill, user_phone, _pay_name_clean)}
             else:
                 return {"response": _call(pay_bill, user_phone, _pay_name_clean, _pay_val)}
+
+    # ── GUARD: mensagens de agenda/lembrete NUNCA devem cair no smart extractor ──
+    # Se chegou aqui com trigger de agenda, deixa o LLM processar (não é gasto)
+    if _re_router.match(r'(?:me\s+)?(?:lembr[aeo]r?|avisa[r]?)\s+', msg):
+        return None  # Vai pro LLM que tem as tools de agenda
 
     # ── EXTRATOR INTELIGENTE DE GASTOS ──────────────────────────────
     # Independente de ordem: acha VALOR, CARTÃO (DB), MERCHANT (resto).
