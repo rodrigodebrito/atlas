@@ -2220,6 +2220,134 @@ def get_all_categories_breakdown(user_phone: str, month: str = "") -> str:
     return "\n".join(lines)
 
 
+@tool(description="Calcula médias de gasto: diária, semanal e por categoria. Responde 'qual minha média diária?', 'média de alimentação', 'quanto gasto por dia?'. category=opcional, filtra uma categoria. month=YYYY-MM opcional.")
+def get_spending_averages(user_phone: str, category: str = "", month: str = "") -> str:
+    """Calcula médias de gasto diária/semanal e por categoria."""
+    if not month:
+        month = _now_br().strftime("%Y-%m")
+
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id, name FROM users WHERE phone = ?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return "Nenhuma transação encontrada."
+    user_id, user_name = row
+
+    # Dias decorridos no mês
+    today = _now_br()
+    try:
+        y, m_num = map(int, month.split("-"))
+        if y == today.year and m_num == today.month:
+            days_elapsed = max(today.day, 1)
+        else:
+            import calendar as _cal_avg
+            days_elapsed = _cal_avg.monthrange(y, m_num)[1]
+    except Exception:
+        days_elapsed = max(today.day, 1)
+
+    months_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+                 "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+    try:
+        month_label = f"{months_pt[m_num]}/{y}"
+    except Exception:
+        month_label = month
+
+    weeks_elapsed = max(days_elapsed / 7, 1)
+
+    if category:
+        # Média de uma categoria específica
+        cur.execute(
+            "SELECT SUM(amount_cents), COUNT(*) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND category = ? AND occurred_at LIKE ?",
+            (user_id, category, f"{month}%"),
+        )
+        row = cur.fetchone()
+        total = row[0] or 0
+        count = row[1] or 0
+        conn.close()
+
+        if not total:
+            return f"Nenhum gasto em *{category}* em {month_label}."
+
+        daily_avg = total / days_elapsed
+        weekly_avg = total / weeks_elapsed
+        per_tx = total / count if count else 0
+
+        lines = [
+            f"📊 *Média de {category}* — {month_label}",
+            f"─────────────────────",
+            f"💰 Total: *R${total/100:,.2f}* ({count} transações)".replace(",", "."),
+            f"📅 Média diária: *R${daily_avg/100:,.2f}*".replace(",", "."),
+            f"📆 Média semanal: *R${weekly_avg/100:,.2f}*".replace(",", "."),
+            f"🧾 Média por transação: *R${per_tx/100:,.2f}*".replace(",", "."),
+        ]
+
+        # Dias restantes no mês
+        if y == today.year and m_num == today.month:
+            import calendar as _cal_avg2
+            days_in_month = _cal_avg2.monthrange(y, m_num)[1]
+            days_left = days_in_month - today.day
+            if days_left > 0:
+                projected = total + (daily_avg * days_left)
+                lines.append(f"📈 Projeção no mês: *R${projected/100:,.2f}*".replace(",", "."))
+
+        return "\n".join(lines)
+    else:
+        # Média geral de gastos
+        cur.execute(
+            "SELECT SUM(amount_cents), COUNT(*) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+            (user_id, f"{month}%"),
+        )
+        row = cur.fetchone()
+        total = row[0] or 0
+        count = row[1] or 0
+
+        # Top categorias por média diária
+        cur.execute(
+            """SELECT category, SUM(amount_cents) as cat_total, COUNT(*) as cnt
+               FROM transactions
+               WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?
+               GROUP BY category ORDER BY cat_total DESC LIMIT 5""",
+            (user_id, f"{month}%"),
+        )
+        top_cats = cur.fetchall()
+        conn.close()
+
+        if not total:
+            return f"Nenhum gasto registrado em {month_label}."
+
+        daily_avg = total / days_elapsed
+        weekly_avg = total / weeks_elapsed
+
+        lines = [
+            f"📊 *Suas médias de gasto* — {month_label} ({days_elapsed} dias)",
+            f"─────────────────────",
+            f"💰 Total gasto: *R${total/100:,.2f}* ({count} transações)".replace(",", "."),
+            f"📅 Média diária: *R${daily_avg/100:,.2f}*".replace(",", "."),
+            f"📆 Média semanal: *R${weekly_avg/100:,.2f}*".replace(",", "."),
+        ]
+
+        # Projeção
+        if y == today.year and m_num == today.month:
+            import calendar as _cal_avg3
+            days_in_month = _cal_avg3.monthrange(y, m_num)[1]
+            days_left = days_in_month - today.day
+            if days_left > 0:
+                projected = total + (daily_avg * days_left)
+                lines.append(f"📈 Projeção até fim do mês: *R${projected/100:,.2f}*".replace(",", "."))
+
+        if top_cats:
+            lines.append(f"\n*Média diária por categoria:*")
+            for cat, cat_total, cnt in top_cats:
+                cat_daily = cat_total / days_elapsed
+                lines.append(f"  • {cat or 'Sem categoria'}: R${cat_daily/100:,.2f}/dia (R${cat_total/100:,.2f} total)".replace(",", "."))
+
+        lines.append(f"\n_\"média de Alimentação\" para detalhar uma categoria_")
+        return "\n".join(lines)
+
+
 @tool(description="Filtra transações por nome de loja/app/serviço. Use quando o usuário mencionar um nome próprio. merchant_query=busca parcial, case-insensitive. month=YYYY-MM opcional.")
 def get_transactions_by_merchant(
     user_phone: str,
@@ -5705,7 +5833,7 @@ Atende pessoas físicas (CLT, autônomos) e MEI/freelancers.
 ## REGRAS GLOBAIS DE FORMATO
 - UMA mensagem por resposta — nunca divida em múltiplas.
 - Máximo 4 linhas para ações simples, 10 para resumos/análises.
-- EXCEÇÃO: get_month_summary, get_week_summary, get_today_total, get_transactions_by_merchant, get_category_breakdown, get_transactions — SEM limite de linhas. Copie o retorno da tool INTEGRALMENTE, preservando cada quebra de linha exatamente como está. NUNCA comprima itens numa única linha. NUNCA reformule, NUNCA resuma em prosa.
+- EXCEÇÃO: get_month_summary, get_week_summary, get_today_total, get_transactions_by_merchant, get_category_breakdown, get_spending_averages, get_transactions — SEM limite de linhas. Copie o retorno da tool INTEGRALMENTE, preservando cada quebra de linha exatamente como está. NUNCA comprima itens numa única linha. NUNCA reformule, NUNCA resuma em prosa.
 - NUNCA mostre JSON, dados técnicos ou campos internos.
 - NUNCA mencione forma de pagamento se o usuário não informou.
 - NUNCA adicione link de plataforma ou site no final das mensagens.
@@ -6200,6 +6328,7 @@ CONSULTAS — escolha a tool CERTA:
 - HOJE/N DIAS → get_today_total com days=N
 - NOME de loja/app → get_transactions_by_merchant (NUNCA get_today_total)
 - CATEGORIA específica → get_category_breakdown
+- MÉDIA/CONSUMO MÉDIO → get_spending_averages (category=opcional)
 - EXTRATO CARTÃO → get_card_statement
 - LISTA DETALHADA (só se pedir "transações"/"lista") → get_transactions
 
@@ -8374,6 +8503,43 @@ def _pre_route(message: str) -> dict | None:
             return {"response": f"📊 *Seu painel está pronto!*\n\n👉 {panel_url}\n\n_Link válido por 30 minutos. Lá você pode ver gráficos, editar e apagar transações._"}
         return {"response": "Nenhum dado encontrado. Comece registrando um gasto!"}
 
+    # --- MÉDIAS DE CONSUMO ---
+    # "qual minha média diária", "média de alimentação", "quanto gasto por dia", "média semanal"
+    _AVG_CATEGORY_MAP = {
+        "alimentacao": "Alimentação", "alimentação": "Alimentação", "comida": "Alimentação",
+        "transporte": "Transporte", "moradia": "Moradia",
+        "saude": "Saúde", "saúde": "Saúde", "lazer": "Lazer",
+        "educacao": "Educação", "educação": "Educação",
+        "assinatura": "Assinaturas", "assinaturas": "Assinaturas",
+        "vestuario": "Vestuário", "vestuário": "Vestuário",
+        "pets": "Pets", "outros": "Outros",
+    }
+    _avg_m = _re_router.match(
+        r'(?:qual (?:[eé] )?(?:a )?)?(?:minha |meu )?'
+        r'm[eé]dia (?:di[aá]ria|semanal|mensal|de (?:gastos?|consumo|despesas?))'
+        r'(?:\s+(?:de |em |com |por )?(.+?))?'
+        r'(?:\s+(?:est[ea]|ess[ea]|neste|nesse|no|do) m[eê]s)?[\s\?\!\.]*$',
+        msg
+    )
+    if not _avg_m:
+        _avg_m = _re_router.match(
+            r'(?:quanto (?:eu )?gasto (?:por dia|por semana|em m[eé]dia))'
+            r'(?:\s+(?:de |em |com )?(.+?))?'
+            r'(?:\s+(?:est[ea]|ess[ea]|neste|nesse|no|do) m[eê]s)?[\s\?\!\.]*$',
+            msg
+        )
+    if not _avg_m:
+        _avg_m = _re_router.match(
+            r'm[eé]dia (?:de |em |com )(.+?)(?:\s+(?:est[ea]|ess[ea]|neste|nesse|no|do) m[eê]s)?[\s\?\!\.]*$',
+            msg
+        )
+    if _avg_m:
+        _avg_cat_raw = (_avg_m.group(1) or "").strip().rstrip("?!. ")
+        _avg_cat_raw = _re_router.sub(r'\s+(?:de|em|no|na|do|da|com|por)$', '', _avg_cat_raw).strip()
+        _avg_cat_norm = _avg_cat_raw.lower().replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").replace("ã", "a").replace("õ", "o").replace("ç", "c")
+        _avg_category = _AVG_CATEGORY_MAP.get(_avg_cat_norm, "")
+        return {"response": _call(get_spending_averages, user_phone, _avg_category, current_month)}
+
     # --- FILTRO POR CATEGORIA OU MERCHANT ---
     # "quanto gastei de alimentação", "quanto gastei no ifood", "gastos com uber este mês"
     _CATEGORY_MAP = {
@@ -8557,6 +8723,12 @@ def _pre_route(message: str) -> dict | None:
     # --- CATEGORIAS (breakdown geral) ---
     if _re_router.match(r'((?:ver )?categorias|gastos? por categoria|breakdown|quanto (?:gastei )?(?:em |por )cada categoria)[\s\?\!\.]*$', msg):
         return {"response": _call(get_all_categories_breakdown, user_phone, current_month)}
+
+    # --- MÉDIAS (keyword fallback) ---
+    if ("media" in n or "média" in n) and any(k in n for k in ("gasto", "consumo", "despesa", "diaria", "semanal", "mensal", "por dia", "por semana")):
+        return {"response": _call(get_spending_averages, user_phone, "", current_month)}
+    if "quanto" in n and "gasto" in n and ("por dia" in n or "por semana" in n or "em media" in n or "em média" in n):
+        return {"response": _call(get_spending_averages, user_phone, "", current_month)}
 
     # --- EDITAR CARTÃO (link do painel) ---
     if _re_router.match(r'(?:editar?|configurar?|alterar?|mudar?)\s+(?:o\s+|meu\s+|meus\s+)?(?:cart[aã]o|cart[oõ]es|dados?\s+do\s+cart[aã]o)(?:\s+.+?)?[\s\?\!\.]*$', msg):
