@@ -42,6 +42,9 @@ Sem app para baixar. Sem planilha para abrir. Sem fricção.
 | Gerenciar cartões pelo painel (criar, editar fatura, excluir) | ✅ |
 | Contas a pagar (bills) — fixos + faturas + boletos com status pago/pendente | ✅ |
 | Pagamento de contas com fuzzy matching (pay_bill) | ✅ |
+| Pagamento de fatura de cartão (close_bill) — zera fatura + registra saída | ✅ |
+| Detecção inteligente de pagamento vs gasto ("pagamento cartão caixa 4867") | ✅ |
+| Pagamentos separados no resumo (não duplicam gastos do cartão) | ✅ |
 | "Posso comprar?" com 4 veredictos (✅ / ⚠️ / ⏳ / 🚫) | ✅ |
 | "Vai sobrar?" com 3 cenários | ✅ |
 | Score de saúde financeira (A+ a F) | ✅ |
@@ -50,6 +53,8 @@ Sem app para baixar. Sem planilha para abrir. Sem fricção.
 | Lembretes proativos de gastos fixos e faturas (cron) | ✅ |
 | Alertas inline (categoria estourou, ritmo acelerado) | ✅ |
 | Agenda inteligente (eventos, lembretes recorrentes, intervalos) | ✅ |
+| Notificações de agenda via WhatsApp (n8n workflow a cada 1min) | ✅ |
+| Guard anti-gasto em lembretes ("me lembra" nunca vira transação) | ✅ |
 | Pré-roteador regex (~70% sem LLM) + keyword router fallback | ✅ |
 | Painel HTML visual com gráficos, filtros, CRUD de transações e cartões | ✅ |
 | Seção de agenda no painel (eventos agrupados por data) | ✅ |
@@ -67,7 +72,8 @@ WhatsApp (usuário)
 Chatwoot            ← recebe e envia mensagens WhatsApp
     ↓
 n8n                 ← orquestração (texto/áudio → /v1/chat)
-    ↓
+    ↓                  + workflow "Agenda Check" (1min) → envia lembretes
+    ↓                  + workflow "Lembretes Diários" → avisa sobre contas
 ATLAS API           ← pré-roteador + agente LLM + tools (Render)
     ↓
 PostgreSQL          ← usuários, transações, cartões, fixos, metas, agenda
@@ -78,9 +84,11 @@ PostgreSQL          ← usuários, transações, cartões, fixos, metas, agenda
 ```
 Mensagem chega → _pre_route() tenta resolver com regex
     ├─ Match encontrado → resposta imediata (sem custo LLM)
+    ├─ Pagamento de fatura/conta detectado → pay_bill / close_bill
+    ├─ Guard de agenda → "me lembra..." bypass o extrator de gastos
     ├─ Smart expense extract → detecta gastos em qualquer formato
     └─ Sem match → _keyword_route() tenta keywords fuzzy
-        └─ Sem match → agente LLM (gpt-4.1) com tools
+        └─ Sem match → agente LLM (gpt-4.1) com tools + hora BRT no contexto
 ```
 
 O pré-roteador resolve ~70% das mensagens (resumos, saldos, compromissos, gastos, confirmações, ajuda) sem chamar o LLM, reduzindo custo e latência.
@@ -95,6 +103,19 @@ Extrator inteligente de gastos independente de ordem. Funciona com qualquer estr
 - Auto-categoriza com regras de keyword
 
 Exemplos que funcionam: "abasteci 32 de gasolina no posto shell no cartão mercado pago", "uber 15", "pagamento gasolina 130 mercado pago", "paguei R$53,80 na padaria".
+
+**Importante**: mensagens com "me lembra"/"lembrete"/"avisa" são bloqueadas do smart extractor via guard — nunca viram gasto por engano.
+
+### Detecção de pagamento de fatura/conta
+
+ANTES do smart extractor, o pré-roteador detecta padrões de pagamento:
+- "pagamento cartão caixa 4867" → `close_bill` (zera fatura do cartão)
+- "paguei fatura nubank" → `close_bill`
+- "paguei aluguel 1500" → `pay_bill` (marca compromisso como pago)
+
+Diferencia de gastos: "pagamento/paguei + nome" = pagamento de conta. "50 no mercado" = gasto.
+
+Pagamentos registram transação com categoria especial ("Pagamento Fatura" / "Pagamento Conta") que aparece **separada** no resumo — não duplica os gastos individuais do cartão.
 
 ### Roteamento inteligente de consultas
 
@@ -136,7 +157,7 @@ Categorias conhecidas (alimentação, transporte, saúde, etc.) são mapeadas au
 | `get_cards` | Lista cartões com faturas |
 | `get_card_statement` | Extrato detalhado por cartão |
 | `update_card_limit` | Atualiza limite do cartão |
-| `close_bill` | Registra pagamento de fatura de cartão |
+| `close_bill` | Paga fatura de cartão (zera ciclo + registra saída separada) |
 | `set_card_bill` | Define valor de fatura atual |
 | `get_next_bill` | Estima próxima fatura |
 | `get_installments_summary` | Parcelas ativas e compromisso total |
@@ -144,7 +165,7 @@ Categorias conhecidas (alimentação, transporte, saúde, etc.) são mapeadas au
 | `get_recurring` | Lista gastos fixos |
 | `deactivate_recurring` | Desativa gasto fixo |
 | `register_bill` | Registra conta a pagar |
-| `pay_bill` | Paga conta com fuzzy matching |
+| `pay_bill` | Paga conta com fuzzy matching (categoria "Pagamento Conta", separado no resumo) |
 | `get_bills` | Lista contas do mês com status pago/pendente |
 | `get_upcoming_commitments` | Compromissos futuros (próximos N dias) |
 | `create_goal` | Cria meta financeira |
@@ -167,7 +188,11 @@ Sistema completo de lembretes e eventos via WhatsApp:
 - **Semanal**: "toda segunda reunião 9h"
 - **Intervalo**: "tomar água de 4 em 4 horas" (respeita horário ativo 8h-22h)
 - **Alertas configuráveis**: após criar, pergunta "quanto tempo antes quer que eu avise?"
-- **Endpoint de check**: `GET /v1/reminders/check` — chamado pelo n8n a cada 15min
+- **Tempos relativos**: "daqui 30 minutos", "daqui 1 hora", "em 2 horas"
+- **Horário BRT**: todo cálculo usa `_now_br()` (UTC-3). LLM recebe hora BRT injetada no contexto
+- **Endpoint de check**: `GET /v1/reminders/check` — chamado pelo n8n a cada 1min
+- **Notificação via Chatwoot**: workflow n8n busca conversa aberta e envia mensagem
+- **Guard anti-gasto**: mensagens com "me lembra"/"lembrete" NUNCA caem no smart extractor
 - **Integrado ao painel**: seção de agenda com visualização e exclusão
 
 ### Tabela `agenda_events`
@@ -252,8 +277,19 @@ Feito 100% no pré-roteador (sem LLM):
 - **Agno** — framework de agentes LLM com AgentOS (FastAPI)
 - **OpenAI GPT-4.1** — modelo principal
 - **SQLite** (local) / **PostgreSQL** (produção no Render)
-- **Chatwoot** — inbox WhatsApp
-- **n8n** — orquestração do pipeline (texto e áudio)
+- **Chatwoot** — inbox WhatsApp (`chatwood.rodrigobrito.cloud`)
+- **n8n** — orquestração do pipeline (`n8n.rodrigobrito.cloud`)
+
+### Workflows n8n
+
+| Workflow | ID | Frequência | Função |
+|---|---|---|---|
+| Atlas | `yjYojxfTCjKGjsJ6` | Webhook | Pipeline principal: Chatwoot → ATLAS API → resposta |
+| ATLAS - Agenda Check | `Qb5fqOZdC3ckFGAt` | 1 min | Busca lembretes pendentes e envia via Chatwoot |
+| ATLAS - Lembretes Diários | `ZksJVEHbOQE7hLan` | Cron | Avisa sobre contas e faturas próximas do vencimento |
+| Quebrar e enviar mensagens | `mg6tDNh4dYdxg2Pi` | Sub-workflow | Quebra respostas longas em múltiplas mensagens |
+
+**Agenda Check workflow**: Schedule (1min) → GET `/v1/reminders/check` → IF count>0 → Dividir → Pegar Conversa (busca no Chatwoot por phone) → Enviar Mensagem
 
 ---
 
@@ -262,7 +298,7 @@ Feito 100% no pré-roteador (sem LLM):
 ```
 Atlas/
 ├── agno_api/
-│   ├── agent.py          ← Arquivo principal (~10.000 linhas): API, tools, roteadores, painel
+│   ├── agent.py          ← Arquivo principal (~10.700 linhas): API, tools, roteadores, painel
 │   └── static/
 │       └── manual.html   ← Manual mobile-friendly
 ├── pyproject.toml        ← Dependências e config
@@ -279,18 +315,22 @@ O arquivo é monolítico por design (single-file deploy no Render). Seções pri
 | 1-500 | Imports, config, DB init (SQLite + PostgreSQL), tabelas |
 | 500-900 | `save_transaction`, alertas inline, helpers financeiros |
 | 900-2200 | Tools de consulta: resumo, semana, hoje, categorias, merchant |
-| 2200-3500 | Tools de cartão: register, statement, limit, bill, next_bill |
+| 2200-3500 | Tools de cartão: register, statement, limit, bill, next_bill, pay_bill |
 | 3500-5000 | Tools avançados: can_i_buy, will_i_have_leftover, score, goals |
-| 5000-5700 | Agenda: create/list/complete/delete events, helpers de recorrência |
-| 5700-6500 | ATLAS_INSTRUCTIONS (prompt do sistema para o LLM) |
-| 6500-6900 | Painel: `_get_panel_data`, `_render_panel_html` (dados) |
-| 6900-7800 | Painel: HTML template, CSS, JavaScript (renderização, CRUD) |
-| 7800-8100 | API endpoints do painel (PUT/DELETE/POST para transações, cartões, agenda) |
-| 8100-8400 | Pré-roteador: `_extract_*`, `_onboard_if_new`, `_pre_route` início |
-| 8400-8900 | Pré-roteador: smart extractor, keyword router, rotas de consulta |
-| 8900-9200 | Chat endpoint, cron de lembretes diários e agenda check |
-| 9200-9700 | Import de faturas, endpoints de debug |
-| 9700-10100 | Manual endpoint, middleware, AgentOS config |
+| 5000-5300 | Parser de agenda: `_parse_agenda_message` (NLP brasileiro, tempos relativos) |
+| 5300-5700 | Agenda tools: create/list/complete/delete events, helpers de recorrência |
+| 5700-6200 | ATLAS_INSTRUCTIONS (prompt do sistema para o LLM, regras de horário BRT) |
+| 6200-6700 | Agent config, painel: `_get_panel_data` |
+| 6700-7800 | Painel: HTML template, CSS, JavaScript (renderização, CRUD, agenda) |
+| 7800-8300 | API endpoints do painel (PUT/DELETE/POST para transações, cartões, agenda) |
+| 8300-8500 | Smart expense extractor: `_smart_expense_extract` |
+| 8500-8700 | Pré-roteador: pending actions, agenda routes, confirmações |
+| 8700-8900 | Pré-roteador: pagamento de fatura/conta, guard de agenda, smart extractor |
+| 8900-9100 | Keyword router: `_keyword_route` (fallback tolerante a typos) |
+| 9100-9300 | Chat endpoint (`/v1/chat`), hora BRT injetada no contexto do LLM |
+| 9300-9500 | Cron: lembretes diários e agenda check (`/v1/reminders/*`) |
+| 9500-10000 | Import de faturas, endpoints de debug |
+| 10000-10700 | Manual HTML, middleware, AgentOS config |
 
 ---
 
@@ -377,10 +417,14 @@ unrouted_messages        — mensagens que não foram roteadas (para análise)
 | `/v1/chat` | POST | Chat principal (form-data: message, user_phone, session_id) |
 | `/v1/painel` | GET | Painel HTML com token |
 | `/v1/reminders/daily` | GET | Cron de lembretes diários (fixos + faturas) |
-| `/v1/reminders/check` | GET | Check de lembretes da agenda (cada 15min) |
+| `/v1/reminders/check` | GET | Check de lembretes da agenda (cada 1min via n8n) |
 | `/manual` | GET | Manual mobile-friendly |
 | `/health` | GET | Health check |
 | `/v1/debug/extract` | GET | Debug do extrator inteligente |
+| `/v1/debug/agenda` | GET | Debug de eventos da agenda (next_alert_at, status) |
+| `/v1/debug/pending-actions` | GET | Debug de ações pendentes |
+| `/v1/debug/users` | GET | Debug de usuários |
+| `/v1/debug/today` | GET | Debug de transações de hoje |
 
 ---
 
@@ -404,7 +448,7 @@ Nota 0-100, graus A+ / A / B+ / B / C / D / F.
 - Deploy simples no Render free tier
 - Todas as tools e rotas no mesmo namespace — sem import circular
 - Search/replace fácil com IDE
-- Trade-off aceito: file grande (~10k linhas) mas tudo num lugar só
+- Trade-off aceito: file grande (~10.7k linhas) mas tudo num lugar só
 
 ### Por que pré-roteador + keyword router + LLM?
 - Pré-roteador (regex): rápido, previsível, ~70% das mensagens
@@ -425,6 +469,25 @@ Nota 0-100, graus A+ / A / B+ / B / C / D / F.
 - Cartões auto-criados têm `closing_day=0, due_day=0`
 - `today.replace(day=0)` crashava com ValueError
 - Guard aplicado em 5+ locais: retorna início do mês ou pula o cartão
+
+### Horário BRT no LLM
+- `_now_br()` retorna UTC-3 (valor correto mas tzinfo=UTC)
+- O parser local (`_parse_agenda_message`) funciona bem com `_now_br()`
+- Quando cai no LLM, ele não sabe o fuso — calculava +3h
+- Solução: injetar `[CONTEXTO: Agora são HH:MM BRT]` no input de toda chamada ao LLM
+- Instrução explícita no ATLAS_INSTRUCTIONS: "NUNCA use UTC"
+
+### Pagamento vs gasto — desambiguação
+- "pagamento cartão caixa 4867" = pagamento de fatura (close_bill), NÃO gasto novo
+- "50 no mercado pelo cartão caixa" = gasto (save_transaction)
+- Detector de pagamento roda ANTES do smart extractor no pré-roteador
+- Categorias especiais "Pagamento Fatura" e "Pagamento Conta" — excluídas do total de gastos no resumo para evitar duplicação
+
+### "Meus compromissos" vs "Minha agenda"
+- "Meus compromissos" = financeiro (contas a pagar, bills) — roteado para `get_bills`
+- "Minha agenda" / "Meus lembretes" = calendário (agenda_events) — roteado para `list_agenda_events`
+- Separação deliberada: dados em tabelas diferentes, visões diferentes
+- Palavra "compromisso" removida do regex da agenda para evitar conflito
 
 ---
 
@@ -495,3 +558,10 @@ Nota 0-100, graus A+ / A / B+ / B / C / D / F.
 - **`_PGCursor`**: faz `sql.replace("%", "%%").replace("?", "%s")` — cuidado com `%s` em SQL
 - **Variável `n` vs `msg`**: `n` só existe em `_keyword_route`, `msg` em `_pre_route`
 - **`@tool` wrapper**: funções são `agno.tools.function.Function`, não callables diretos
+- **`_db()` é context manager**: usar `with _db() as (conn, cur):` OU `conn = _get_conn(); cur = conn.cursor()`. NUNCA `conn, cur = _db()` — retorna generator, não tuple
+- **`_safe_close` não existe**: usar `conn.close()` direto
+- **Horário BRT**: `_now_br()` retorna valor correto mas com `tzinfo=UTC`. Usar `_now_br().strftime()` é seguro. Não confiar em `.tzinfo` para conversões
+- **Guard de agenda no pré-roteador**: mensagens com "me lembra"/"lembrete" têm guard ANTES do smart extractor — impede que virem gasto
+- **Ordem no pré-roteador**: pagamento de fatura → guard de agenda → smart extractor. A ordem importa!
+- **Categorias especiais**: "Pagamento Fatura" e "Pagamento Conta" são excluídas do total de gastos em `get_month_summary` e `get_today_total`
+- **n8n workflow JS**: cuidado ao exportar/importar workflows — `!` pode ser escapado como `\!` que causa SyntaxError
