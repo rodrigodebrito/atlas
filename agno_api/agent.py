@@ -6229,7 +6229,10 @@ CORRIGIR:
 - "errei"/"na verdade"/"era dia X" → update_last_transaction (NUNCA nova transação)
 - Merchant pertence a categoria → update_merchant_category (atualiza tudo + memoriza)
 
-CARTÕES:
+CARTÕES / card_name em save_transaction:
+- Quando o usuário mencionar cartão, banco ou carteira digital, SEMPRE passe card_name.
+  Exemplos: "no Mercado Pago" → card_name="Mercado Pago", "pelo Nubank" → card_name="Nubank",
+  "no Itaú" → card_name="Itaú", "cartão Caixa" → card_name="Caixa"
 - "limite 6100 disponível 2023" → 2 chamadas: update_card_limit(limit=6100) + update_card_limit(limit=2023, is_available=True)
 - "paguei o Nubank" → close_bill
 - Fatura futura → set_future_bill
