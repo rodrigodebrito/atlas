@@ -5257,9 +5257,24 @@ def _parse_agenda_message(msg: str) -> dict | None:
         r'(?:marcar?|agendar?)\s+(?:um\s+)?(?:compromisso|evento|reuniao|reunião)?\s*',
     ]:
         title_raw = _re_ag.sub(pattern, '', title_raw, count=1, flags=_re_ag.IGNORECASE)
-    # Remove time tokens
-    for tok in time_tokens:
-        title_raw = title_raw.replace(tok, '')
+    # Remove time tokens via regex (case-insensitive, para funcionar com texto original)
+    _time_patterns = [
+        r'daqui(?:\s+a)?\s+\d+\s+(?:minutos?|horas?|dias?)',
+        r'em\s+\d+\s+(?:minutos?|horas?|dias?)',
+        r'amanh[aã](?:\s+[aà]s?\s+\d{1,2}(?:[:h]\d{0,2})?(?:\s*(?:h(?:oras?)?)?)?)?',
+        r'hoje(?:\s+[aà]s?\s+\d{1,2}(?:[:h]\d{0,2})?(?:\s*(?:h(?:oras?)?)?)?)?',
+        r'depois\s+de\s+amanh[aã]',
+        r'(?:[aà]s?\s+)?\d{1,2}\s*(?::(\d{2})|h(\d{2})?)\s*(?:h(?:oras?)?)?',
+        r'dia\s+\d{1,2}(?:\s+(?:de\s+)?\w+)?',
+        r'tod[ao]s?\s+(?:os?\s+)?dia',
+        r'toda\s+(?:segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)',
+        r'de\s+\d+\s+em\s+\d+\s+horas?',
+        r'a\s+cada\s+\d+\s+horas?',
+        r'meio[- ]dia',
+        r'meia[- ]noite',
+    ]
+    for tp in _time_patterns:
+        title_raw = _re_ag.sub(tp, '', title_raw, flags=_re_ag.IGNORECASE)
     # Remove preposições soltas e limpa
     title_raw = _re_ag.sub(r'\b(as|às|no|na|de|do|da|em|pra|para)\b\s*$', '', title_raw.strip(), flags=_re_ag.IGNORECASE)
     title_raw = _re_ag.sub(r'^\s*(de|que|para|pra)\s+', '', title_raw.strip(), flags=_re_ag.IGNORECASE)
@@ -10232,6 +10247,39 @@ def debug_pending_actions(phone: str = ""):
     return {
         "count": len(rows),
         "rows": [{"id": r[0], "phone": r[1], "type": r[2], "data": r[3], "created_at": r[4]} for r in rows],
+    }
+
+
+@app.get("/v1/debug/agenda")
+def debug_agenda(phone: str = ""):
+    """Debug: lista eventos da agenda."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    try:
+        if phone:
+            uid = _get_user_id(cur, phone)
+            cur.execute(
+                "SELECT id, title, event_at, next_alert_at, alert_minutes_before, status, recurrence_type, category, last_notified_at FROM agenda_events WHERE user_id = ? ORDER BY event_at DESC LIMIT 20",
+                (uid,),
+            )
+        else:
+            cur.execute(
+                "SELECT id, title, event_at, next_alert_at, alert_minutes_before, status, recurrence_type, category, last_notified_at FROM agenda_events ORDER BY event_at DESC LIMIT 20"
+            )
+        rows = cur.fetchall()
+    except Exception as e:
+        conn.close()
+        return {"error": str(e), "rows": []}
+    conn.close()
+    now = _now_br().strftime("%Y-%m-%d %H:%M")
+    return {
+        "now_brt": now,
+        "count": len(rows),
+        "rows": [
+            {"id": r[0], "title": r[1], "event_at": r[2], "next_alert_at": r[3],
+             "alert_min": r[4], "status": r[5], "rec_type": r[6], "category": r[7], "last_notified": r[8]}
+            for r in rows
+        ],
     }
 
 
