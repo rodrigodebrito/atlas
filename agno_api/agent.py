@@ -48,7 +48,7 @@ else:
 print(f"[ATLAS] Banco: {DB_TYPE}")
 
 def _now_br() -> datetime:
-    """Retorna datetime atual no fuso de Brasília (UTC-3)."""  # v2
+    """Retorna datetime atual no fuso de Brasília (UTC-3)."""
     return datetime.now(timezone.utc) - timedelta(hours=3)
 
 # ============================================================
@@ -2357,8 +2357,7 @@ def _bill_period_start(closing_day: int) -> str:
     """Calcula a data de início do período de fatura atual."""
     import calendar as _cal_bp
     today = _now_br()
-    if closing_day <= 0:
-        # Cartão sem fechamento configurado: assume início do mês
+    if not closing_day or closing_day <= 0:
         return today.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
     safe_day = min(closing_day, _cal_bp.monthrange(today.year, today.month)[1])
     if today.day >= closing_day:
@@ -2506,6 +2505,8 @@ def get_cards(user_phone: str) -> str:
         available_cents = card_row[7] if len(card_row) > 7 else None
 
         # Calcula período da fatura atual
+        if not closing_day or closing_day <= 0:
+            closing_day = 1
         period_start = _bill_period_start(closing_day)
         if last_paid and last_paid > period_start:
             period_start = last_paid
@@ -3288,9 +3289,9 @@ def get_next_bill(user_phone: str, card_name: str) -> str:
 
     card_id, name, closing_day, due_day, limit_cents, opening_cents, last_paid = card[:7]
 
-    if not closing_day or not due_day:
+    if not closing_day or closing_day <= 0 or not due_day or due_day <= 0:
         conn.close()
-        return f"⚠️ O cartão *{name}* não tem fechamento/vencimento configurado.\nDiga: _\"fecha 25 vence 10\"_ para configurar."
+        return f"⚠️ O cartão *{name}* não tem fechamento/vencimento configurado.\nDiga: _\"fecha dia 25 vence dia 10\"_ para configurar."
 
     today = _now_br()
 
@@ -9345,25 +9346,6 @@ def get_pending_import(user_phone: str):
     row = cur.fetchone()
     conn.close()
     return {"import_id": row[0] if row else None}
-
-
-@app.get("/v1/debug/traceback")
-def debug_traceback(user_phone: str, func: str = "get_cards"):
-    """Debug: chama uma função e retorna traceback se der erro."""
-    import traceback as _tb
-    user_phone = user_phone.strip()
-    if not user_phone.startswith("+"):
-        user_phone = "+" + user_phone
-    fn_map = {"get_cards": get_cards, "get_upcoming_commitments": get_upcoming_commitments}
-    tool_fn = fn_map.get(func)
-    if not tool_fn:
-        return {"error": f"func '{func}' not found"}
-    fn = getattr(tool_fn, 'entrypoint', None) or tool_fn
-    try:
-        result = fn(user_phone)
-        return {"result": result[:500] if result else "None"}
-    except Exception as e:
-        return {"error": str(e), "traceback": _tb.format_exc()}
 
 
 @app.get("/v1/debug/users")
