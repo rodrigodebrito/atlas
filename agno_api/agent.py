@@ -8433,9 +8433,13 @@ def _pre_route(message: str) -> dict | None:
     # ── EXTRATOR INTELIGENTE DE GASTOS ──────────────────────────────
     # Independente de ordem: acha VALOR, CARTÃO (DB), MERCHANT (resto).
     # Funciona com qualquer estrutura de frase.
-    _smart = _smart_expense_extract(user_phone, msg)
-    if _smart:
-        return _smart
+    try:
+        _smart = _smart_expense_extract(user_phone, msg)
+        if _smart:
+            return _smart
+    except Exception as _smart_err:
+        import logging as _log_smart
+        _log_smart.getLogger("atlas").error(f"Smart expense extract error: {_smart_err}", exc_info=True)
 
     return None  # Fallback ao keyword router
 
@@ -9550,6 +9554,21 @@ def debug_today(user_phone: str):
         "transactions_today": [{"id": t[0], "type": t[1], "amount": t[2], "merchant": t[3], "occurred_at": t[4], "card_id": t[5], "category": t[6]} for t in txs],
         "recent_transactions": [{"id": t[0], "type": t[1], "amount": t[2], "merchant": t[3], "occurred_at": t[4], "card_id": t[5], "category": t[6]} for t in recent],
     }
+
+
+@app.get("/v1/debug/extract")
+def debug_extract(user_phone: str, msg: str):
+    """Debug: testa o extrator inteligente de gastos."""
+    user_phone = user_phone.strip()
+    if not user_phone.startswith("+"):
+        user_phone = "+" + user_phone
+    msg_norm = " ".join(msg.lower().split())
+    try:
+        result = _smart_expense_extract(user_phone, msg_norm)
+        return {"input": msg, "normalized": msg_norm, "result": result}
+    except Exception as e:
+        import traceback
+        return {"input": msg, "normalized": msg_norm, "error": str(e), "traceback": traceback.format_exc()}
 
 
 @app.get("/v1/debug/transactions")
