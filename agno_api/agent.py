@@ -7903,6 +7903,11 @@ _NOISE_WORDS = frozenset({
     "cartão", "cartao", "crédito", "credito", "débito", "debito",
     "reais", "real", "conto", "pila", "r$",
     "hoje", "agora", "ontem", "aqui",
+    # Verbos/palavras contextuais que não são merchant
+    "peguei", "usei", "passei", "fui", "tive", "tava", "estava",
+    "que", "porque", "pois", "quando", "onde", "como",
+    "meu", "minha", "meus", "minhas", "esse", "essa", "este", "esta",
+    "já", "ja", "ai", "aí", "lá", "la", "só", "so",
 }) | _EXPENSE_VERBS
 
 
@@ -8490,7 +8495,12 @@ def _keyword_route(user_phone: str, msg: str) -> dict | None:
         return {"response": _call(get_today_total, user_phone, "EXPENSE", 1)}
 
     # --- CARTÕES ---
-    if any(k in n for k in ("cartao", "cartoes", "fatura")) and not any(k in n for k in ("extrato", "gasto", "limit")):
+    _expense_kw = ("gastei", "paguei", "pagamento", "comprei", "abasteci", "almocei",
+                    "jantei", "pedi", "tomei", "comi", "bebi", "torrei", "saiu",
+                    "lancei", "assinei", "carreguei", "coloquei", "botei", "foram",
+                    "peguei", "meti", "larguei", "deixei", "dei", "renovei",
+                    "posto", "mercado", "uber", "ifood", "gasolina", "restaurante")
+    if any(k in n for k in ("cartao", "cartoes", "fatura")) and not any(k in n for k in ("extrato", "gasto", "limit") + _expense_kw):
         return {"response": _call(get_cards, user_phone)}
 
     # --- GASTOS FIXOS ---
