@@ -9426,7 +9426,21 @@ def _pre_route(message: str) -> dict | None:
         if panel_url:
             return {"response": f"📊 *Seu painel está pronto!*\n\n👉 {panel_url}\n\nLá você pode editar cartões, ver transações e muito mais.\n_Link válido por 30 minutos._"}
 
-    # --- AJUDA ---
+    # --- AJUDA INTERATIVA (tema específico) ---
+    _help_topic_m = _re_router.match(
+        r'(?:como (?:eu )?(?:fa[çc]o|lan[çc]o|registro|uso|funciona|vejo|configuro)|'
+        r'me (?:explica|ensina|mostra como)|'
+        r'ajuda (?:com|sobre|pra)|'
+        r'o que [eé]|como (?:que )?(?:funciona|faz))\s*'
+        r'(?:pra |para |a |o |os |as )?(.+?)[\s\?\!\.]*$',
+        msg
+    )
+    if _help_topic_m:
+        _topic_text = _get_help_topic(_help_topic_m.group(1))
+        if _topic_text:
+            return {"response": _topic_text}
+
+    # --- AJUDA GERAL ---
     if _re_router.match(r'(ajuda|help|menu|o que voc[eê] faz|comandos|como (?:te )?(?:uso|usar)|(?:o que|oque) (?:vc|voc[eê]) (?:faz|sabe fazer)|funcionalidades|recursos)[\s\?\!\.]*$', msg):
         return {"response": _HELP_TEXT}
 
@@ -9658,6 +9672,12 @@ def _keyword_route(user_phone: str, msg: str) -> dict | None:
         if _rn:
             return {"response": _call(resume_agenda_event, user_phone, _rn)}
 
+    # --- AJUDA INTERATIVA (keyword) ---
+    if any(k in n for k in ("como faço", "como faco", "como funciona", "me explica", "me ensina", "ajuda com", "ajuda sobre")):
+        _topic_resp = _get_help_topic(msg)
+        if _topic_resp:
+            return {"response": _topic_resp}
+
     # --- AJUDA ---
     if any(k in n for k in ("ajuda", "help", "menu", "comando", "o que voce faz", "o que você faz", "o que vc faz")):
         return {"response": _HELP_TEXT}
@@ -9726,7 +9746,144 @@ _HELP_TEXT = """📋 *ATLAS — Manual Rápido*
   • _"painel"_ — gráficos + edição
 
 ─────────────────────
+⏸️ *Agenda:*
+  • _"pausar lembrete água"_ — pausa notificações
+  • _"retomar lembrete água"_ — reativa
+  • _"editar reunião pra 15h"_ — muda horário
+  • _"adia 30 min"_ — adia lembrete recente
+
+─────────────────────
+💡 Dica: digite *"como faço pra..."* pra ajuda detalhada sobre um tema.
 👉 Manual completo: https://atlas-m3wb.onrender.com/manual"""
+
+# ── HELP INTERATIVO — responde dúvidas específicas ──
+_HELP_TOPICS = {
+    "gasto": (
+        "💸 *Como lançar gastos*\n\n"
+        "Basta digitar naturalmente:\n"
+        "• _\"gastei 45 no iFood\"_\n"
+        "• _\"mercado 120\"_\n"
+        "• _\"uber 18 ontem\"_\n"
+        "• _\"almocei 35\"_\n\n"
+        "No cartão:\n"
+        "• _\"tênis 300 no Nubank\"_\n"
+        "• _\"notebook 3000 em 6x no Inter\"_\n\n"
+        "Eu detecto automaticamente o valor, local e cartão. Não precisa de formato especial!"
+    ),
+    "receita": (
+        "💰 *Como lançar receitas*\n\n"
+        "• _\"recebi 4500 de salário\"_\n"
+        "• _\"entrou 1200 de freela\"_\n"
+        "• _\"recebi 39.42 do uber\"_\n"
+        "• _\"depositaram 500\"_\n\n"
+        "Palavras-chave: recebi, entrou, ganhei, depositaram, salário, freela"
+    ),
+    "resumo": (
+        "📊 *Como ver seus resumos*\n\n"
+        "• _\"como tá meu mês?\"_ — resumo completo com score\n"
+        "• _\"como foi minha semana?\"_ — resumo semanal\n"
+        "• _\"gastos de hoje\"_ — só o dia\n"
+        "• _\"movimentações de hoje\"_ — entradas + saídas\n"
+        "• _\"extrato de março\"_ — mês específico\n\n"
+        "Filtros inteligentes:\n"
+        "• _\"quanto gastei no iFood\"_ — por estabelecimento\n"
+        "• _\"quanto gastei de alimentação\"_ — por categoria\n"
+        "• _\"média diária\"_ — média de consumo"
+    ),
+    "cartao": (
+        "💳 *Como usar cartões*\n\n"
+        "O cartão é criado automaticamente quando você lança um gasto:\n"
+        "• _\"gastei 200 no Nubank\"_ → cria o cartão Nubank\n\n"
+        "Configure:\n"
+        "• _\"Nubank fecha dia 3 vence dia 10\"_\n"
+        "• _\"limite do Nubank é 5000\"_\n\n"
+        "Consultas:\n"
+        "• _\"meus cartões\"_ — lista com faturas\n"
+        "• _\"extrato do Nubank\"_\n"
+        "• _\"minhas parcelas\"_\n"
+        "• _\"paguei a fatura do Nubank\"_"
+    ),
+    "compromisso": (
+        "📌 *Contas a pagar / Gastos fixos*\n\n"
+        "Cadastre seus fixos:\n"
+        "• _\"aluguel 1500 todo dia 5\"_\n"
+        "• _\"internet 120 todo dia 15\"_\n"
+        "• _\"academia 90 todo dia 10\"_\n\n"
+        "Consulte:\n"
+        "• _\"meus compromissos\"_ — lista o que vem pela frente\n"
+        "• _\"compromissos dos próximos 3 meses\"_\n"
+        "• _\"paguei o aluguel\"_ — registra pagamento\n\n"
+        "Eu aviso automaticamente quando uma conta estiver perto do vencimento!"
+    ),
+    "agenda": (
+        "📅 *Agenda e Lembretes*\n\n"
+        "Criar:\n"
+        "• _\"me lembra amanhã às 14h reunião\"_\n"
+        "• _\"lembrete tomar remédio todo dia 8h\"_\n"
+        "• _\"tomar água de 4 em 4 horas\"_\n\n"
+        "Gerenciar:\n"
+        "• _\"minha agenda\"_ — ver próximos\n"
+        "• _\"feito\"_ — marcar como concluído\n"
+        "• _\"pausar lembrete água\"_ — pausa temporária\n"
+        "• _\"retomar lembrete água\"_ — reativa\n"
+        "• _\"editar reunião pra 15h\"_ — muda horário\n"
+        "• _\"adia 30 min\"_ — snooze após aviso"
+    ),
+    "meta": (
+        "🎯 *Metas de economia*\n\n"
+        "• _\"quero guardar 5000 pra viagem\"_ — cria meta\n"
+        "• _\"guardei 500 na meta\"_ — adiciona valor\n"
+        "• _\"minhas metas\"_ — vê progresso\n\n"
+        "Acompanho sua evolução e aviso quando atingir!"
+    ),
+    "score": (
+        "🧠 *Score e inteligência financeira*\n\n"
+        "• _\"meu score\"_ — nota de 0-100 com breakdown\n"
+        "• _\"posso comprar um tênis de 200?\"_ — análise personalizada\n"
+        "• _\"vai sobrar até o fim do mês?\"_ — projeção\n"
+        "• _\"quanto posso gastar por dia?\"_ — orçamento diário\n\n"
+        "Meu score considera: taxa de poupança + consistência de registro"
+    ),
+    "corrigir": (
+        "✏️ *Corrigir e apagar transações*\n\n"
+        "• _\"corrige\"_ — edita a última transação\n"
+        "• _\"apaga\"_ — remove a última\n"
+        "• _\"apaga todos do iFood\"_ — remove por estabelecimento\n"
+        "• _\"iFood é Lazer\"_ — muda a categoria\n\n"
+        "Ou use o *painel* pra editar visualmente: _\"painel\"_"
+    ),
+    "painel": (
+        "📊 *Painel visual*\n\n"
+        "Digite _\"painel\"_ e eu mando um link.\n"
+        "No painel você pode:\n"
+        "• Ver gráficos por categoria e diário\n"
+        "• Filtrar por período, categoria e estabelecimento\n"
+        "• Editar e apagar transações\n"
+        "• Gerenciar cartões\n"
+        "• Ver e apagar eventos da agenda\n\n"
+        "O link vale por 30 minutos."
+    ),
+}
+
+def _get_help_topic(msg: str) -> str | None:
+    """Detecta se o usuário está pedindo ajuda sobre um tema específico."""
+    msg_lower = msg.lower()
+    topic_keywords = {
+        "gasto": ("gasto", "lançar", "lancar", "registrar", "anotar", "cadastrar gasto", "despesa"),
+        "receita": ("receita", "renda", "salário", "salario", "income", "entrada", "receber"),
+        "resumo": ("resumo", "extrato", "relatório", "relatorio", "como ta", "como tá", "filtrar", "filtro", "média", "media"),
+        "cartao": ("cartão", "cartao", "fatura", "parcela", "limite", "nubank", "inter"),
+        "compromisso": ("compromisso", "conta a pagar", "fixo", "boleto", "vencimento", "aluguel"),
+        "agenda": ("agenda", "lembrete", "lembrar", "alarme", "pausar", "retomar", "snooze", "adiar"),
+        "meta": ("meta", "guardar", "poupar", "economizar", "objetivo"),
+        "score": ("score", "nota", "posso comprar", "vai sobrar", "projeção", "projecao", "inteligên"),
+        "corrigir": ("corrigir", "apagar", "editar", "deletar", "errei", "errado", "corrige"),
+        "painel": ("painel", "dashboard", "gráfico", "grafico", "visual"),
+    }
+    for topic, keywords in topic_keywords.items():
+        if any(kw in msg_lower for kw in keywords):
+            return _HELP_TOPICS[topic]
+    return None
 
 from fastapi import Form as _Form
 
@@ -10015,6 +10172,104 @@ def check_agenda_reminders():
         _logger.info(f"[AGENDA_CHECK] Enviando {len(results)} lembretes")
 
     return {"reminders": results, "date": now.strftime("%Y-%m-%d %H:%M"), "count": len(results)}
+
+
+# ── ONBOARDING DRIP — mensagens educativas nos primeiros dias ──
+
+_ONBOARDING_DRIP = {
+    1: (
+        "👋 Oi, {name}! Aqui é o ATLAS.\n\n"
+        "Ontem você começou a usar o app e quero te ajudar a aproveitar ao máximo!\n\n"
+        "💡 *Dica do dia: Lance seus gastos*\n\n"
+        "É super simples — basta digitar naturalmente:\n"
+        "• _\"almocei 35\"_\n"
+        "• _\"mercado 120\"_\n"
+        "• _\"uber 18\"_\n\n"
+        "Eu entendo o valor, o lugar e a categoria automaticamente.\n\n"
+        "🎯 *Desafio:* Lance 3 gastos de hoje e depois pergunte:\n"
+        "_\"gastos de hoje\"_\n\n"
+        "Amanhã tem mais dicas! 😊"
+    ),
+    2: (
+        "🌟 Dia 2 com o ATLAS, {name}!\n\n"
+        "💡 *Dica do dia: Cartões e parcelas*\n\n"
+        "Lance gastos no cartão assim:\n"
+        "• _\"tênis 300 no Nubank\"_ → detecta o cartão\n"
+        "• _\"notebook 3000 em 6x no Inter\"_ → parcelas automáticas\n\n"
+        "Depois configure o fechamento:\n"
+        "• _\"Nubank fecha dia 3 vence dia 10\"_\n\n"
+        "E veja suas faturas:\n"
+        "• _\"meus cartões\"_\n"
+        "• _\"minhas parcelas\"_\n\n"
+        "💡 *Dica bônus: Compromissos fixos*\n\n"
+        "Cadastre suas contas:\n"
+        "• _\"aluguel 1500 todo dia 5\"_\n"
+        "• _\"internet 120 todo dia 15\"_\n\n"
+        "Eu aviso automaticamente quando estiver perto do vencimento!\n\n"
+        "🎯 *Desafio:* Cadastre 1 cartão e 2 gastos fixos."
+    ),
+    3: (
+        "🚀 Dia 3, {name}! Agora vem a parte boa.\n\n"
+        "💡 *Dica do dia: Inteligência financeira*\n\n"
+        "Pergunte pra mim:\n"
+        "• _\"como tá meu mês?\"_ — resumo completo\n"
+        "• _\"posso comprar um tênis de 200?\"_ — análise personalizada\n"
+        "• _\"vai sobrar até o fim do mês?\"_ — projeção\n"
+        "• _\"meu score financeiro\"_ — nota de 0-100\n\n"
+        "📅 *Agenda inteligente:*\n"
+        "• _\"me lembra amanhã 14h reunião\"_\n"
+        "• _\"lembrete tomar remédio todo dia 8h\"_\n\n"
+        "📊 *Painel visual:*\n"
+        "• _\"painel\"_ — gráficos, filtros, edição\n\n"
+        "🎯 *Desafio final:* Cadastre sua renda:\n"
+        "_\"minha renda é 5000\"_\n\n"
+        "Com a renda cadastrada, desbloqueio score, projeções e análise de compras!\n\n"
+        "─────────────────────\n"
+        "Gostando? O plano gratuito dá direito a 30 transações/mês.\n"
+        "Para uso ilimitado, diga _\"quero ser founder\"_ 🚀"
+    ),
+}
+
+
+@app.get("/v1/onboarding/drip")
+def onboarding_drip():
+    """
+    Retorna mensagens de onboarding para usuários nos primeiros 3 dias.
+    Chamado pelo n8n via cron diário (ex: 10h da manhã).
+    Retorna: {"messages": [{"phone": ..., "message": ..., "day": N}], "count": N}
+    """
+    from datetime import datetime as _dt_drip
+    now = _now_br()
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    # Busca usuários criados nos últimos 3 dias
+    cur.execute("SELECT phone, name, created_at FROM users WHERE name != 'Usuário'")
+    users = cur.fetchall()
+    conn.close()
+
+    messages = []
+    for phone, name, created_at in users:
+        if not created_at:
+            continue
+        try:
+            created = _dt_drip.strptime(created_at[:19], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            try:
+                created = _dt_drip.strptime(created_at[:10], "%Y-%m-%d")
+            except Exception:
+                continue
+
+        # Calcula dias desde criação (dia 0 = dia que criou, dia 1 = amanhã)
+        days_since = (now.date() - created.date()).days
+
+        if days_since in _ONBOARDING_DRIP:
+            template = _ONBOARDING_DRIP[days_since]
+            first_name = name.split()[0] if name else "amigo"
+            message = template.format(name=first_name)
+            messages.append({"phone": phone, "message": message, "day": days_since})
+
+    return {"messages": messages, "count": len(messages)}
 
 
 # ============================================================
