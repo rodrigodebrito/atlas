@@ -1040,14 +1040,16 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     balance = income - cash_expenses - credit_expenses
 
     # Filter type label
-    filter_label = {"EXPENSE": " — apenas gastos", "INCOME": " — apenas receitas", "ALL": ""}.get(filter_type, "")
-    lines = [f"📊 *{user_name}*, seu resumo de *{month_label}*{date_label}{filter_label}:"]
+    type_label_m = {"EXPENSE": "gastos", "INCOME": "receitas", "ALL": "resumo"}.get(filter_type, "resumo")
+    lines = [f"📊 {user_name}, seu {type_label_m} de {month_label}{date_label}:"]
     lines.append("─────────────────────")
 
     income_rows_detail = [(r[1], r[2]) for r in rows if r[0] == "INCOME"]
     total_expenses = cash_expenses + credit_expenses
 
     if filter_type in ("ALL", "EXPENSE") and cat_totals_display:
+        if filter_type == "ALL" and income_rows_detail:
+            lines.append("📤 SAÍDAS:")
         for cat, total in sorted(cat_totals_display.items(), key=lambda x: -x[1]):
             pct = total / total_expenses * 100 if total_expenses else 0
             emoji = cat_emoji.get(cat, "💸")
@@ -1074,9 +1076,11 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
 
     if filter_type in ("ALL", "INCOME") and income_rows_detail:
         lines.append("")
+        if filter_type == "ALL":
+            lines.append("📥 ENTRADAS:")
         for cat, total in sorted(income_rows_detail, key=lambda x: -x[1]):
-            lines.append(f"💰 *{cat}* — R${total/100:,.2f}".replace(",", "."))
-        lines.append(f"💰 *Total recebido: R${income/100:,.2f}*".replace(",", "."))
+            lines.append(f"💰 {cat} — R${total/100:,.2f}".replace(",", "."))
+        lines.append(f"💰 Total recebido: R${income/100:,.2f}".replace(",", "."))
 
     if filter_type == "ALL":
         lines.append("─────────────────────")
@@ -2028,22 +2032,24 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
         _real_exp_rows = [r for r in exp_rows if r[1] not in _BILL_PAY_CATS_D]
         total_exp = sum(r[3] for r in _real_exp_rows)
         if _real_exp_rows:
+            if filter_type == "ALL":
+                lines.append("📤 SAÍDAS:")
             cat_totals_exp, exp_block, cash_tot, credit_tot = build_exp_block(_real_exp_rows, total_exp)
             lines.extend(exp_block)
             if credit_tot > 0:
                 lines.append(
-                    f"💸 *Total gastos: R${total_exp/100:,.2f}*"
+                    f"💸 Total gastos: R${total_exp/100:,.2f}"
                     f"  (R${cash_tot/100:,.2f} à vista · R${credit_tot/100:,.2f} 💳 crédito)".replace(",", ".")
                 )
             else:
-                lines.append(f"💸 *Total gastos: R${total_exp/100:,.2f}*".replace(",", "."))
+                lines.append(f"💸 Total gastos: R${total_exp/100:,.2f}".replace(",", "."))
         else:
             cat_totals_exp = {}
         # Pagamentos de fatura separados
         if _bill_pay_rows:
             _bp_total = sum(r[3] for r in _bill_pay_rows)
             lines.append("")
-            lines.append(f"💳 *Pagamentos (faturas/contas): R${_bp_total/100:,.2f}*".replace(",", "."))
+            lines.append(f"💳 Pagamentos (faturas/contas): R${_bp_total/100:,.2f}".replace(",", "."))
             for _bpr in _bill_pay_rows:
                 _bp_merchant = _bpr[2].strip() if _bpr[2] else "Fatura"
                 lines.append(f"  • {_bp_merchant}: R${_bpr[3]/100:,.2f}".replace(",", "."))
@@ -2054,12 +2060,24 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     if filter_type in ("ALL", "INCOME") and inc_rows:
         total_inc = sum(r[2] for r in inc_rows)
         lines.append("")
+        if filter_type == "ALL":
+            lines.append("📥 ENTRADAS:")
         cat_totals_inc, inc_block = build_inc_block(inc_rows, total_inc)
         lines.extend(inc_block)
-        lines.append(f"💰 *Total recebido: R${total_inc/100:,.2f}*".replace(",", "."))
+        lines.append(f"💰 Total recebido: R${total_inc/100:,.2f}".replace(",", "."))
         if filter_type == "INCOME" and cat_totals_inc:
             tc = max(cat_totals_inc, key=lambda x: cat_totals_inc[x])
             top_cat_name, top_pct_val = tc, cat_totals_inc[tc] / total_inc * 100
+
+    # Saldo quando mostrando ALL (entradas - saídas)
+    if filter_type == "ALL":
+        _total_out = sum(r[3] for r in exp_rows) if exp_rows else 0
+        _total_in = sum(r[2] for r in inc_rows) if inc_rows else 0
+        _balance = _total_in - _total_out
+        _bal_emoji = "✅" if _balance >= 0 else "⚠️"
+        lines.append("")
+        lines.append("─────────────────────")
+        lines.append(f"{_bal_emoji} Saldo do dia: R${_balance/100:,.2f}".replace(",", "."))
 
     if top_cat_name:
         lines.append(f"__top_category:{top_cat_name}:{top_pct_val:.0f}%")
@@ -2068,7 +2086,7 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     try:
         panel_url = get_panel_url(user_phone)
         if panel_url:
-            lines.append(f"\n📊 *Ver painel com gráficos:* {panel_url}")
+            lines.append(f"\n📊 Ver painel com gráficos: {panel_url}")
     except Exception:
         pass
 
@@ -4116,9 +4134,9 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     exp_rows = [r for r in tx_rows if r[0] == "EXPENSE"]
     inc_rows = [(r[1], r[2], r[3], r[4]) for r in tx_rows if r[0] == "INCOME"]
 
-    filter_label = {"EXPENSE": " — apenas gastos", "INCOME": " — apenas receitas", "ALL": ""}.get(filter_type, "")
+    type_label_w = {"EXPENSE": "gastos da", "INCOME": "receitas da", "ALL": "resumo da"}.get(filter_type, "resumo da")
     period = f"{start_label}" if start_label == end_label else f"{start_label} a {end_label}"
-    lines = [f"📅 *{user_name}*, sua semana ({period}){filter_label}:"]
+    lines = [f"📅 {user_name}, {type_label_w} semana ({period}):"]
     lines.append("─────────────────────")
 
     top_cat_name, top_pct_val = "", 0.0
@@ -4199,8 +4217,10 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
 
     if filter_type in ("ALL", "EXPENSE") and exp_rows:
         total_exp = sum(r[3] for r in exp_rows)
+        if filter_type == "ALL" and inc_rows:
+            lines.append("📤 SAÍDAS:")
         ct = add_exp_block(exp_rows, total_exp)
-        lines.append(f"💸 *Total gastos: R${total_exp/100:,.2f}*".replace(",", "."))
+        lines.append(f"💸 Total gastos: R${total_exp/100:,.2f}".replace(",", "."))
         if ct:
             tc = max(ct, key=lambda x: ct[x])
             top_cat_name, top_pct_val = tc, ct[tc] / total_exp * 100
@@ -4208,6 +4228,8 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     if filter_type in ("ALL", "INCOME") and inc_rows:
         total_inc = sum(r[2] for r in inc_rows)
         lines.append("")
+        if filter_type == "ALL":
+            lines.append("📥 ENTRADAS:")
         ct = add_inc_block(inc_rows, total_inc)
         lines.append(f"💰 *Total recebido: R${total_inc/100:,.2f}*".replace(",", "."))
         if filter_type == "INCOME" and ct:
