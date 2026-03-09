@@ -5346,6 +5346,34 @@ def _parse_agenda_message(msg: str) -> dict | None:
     }
 
 
+def _parse_event_time_edit(raw: str, now: datetime) -> str | None:
+    """Converte tempo informal pra ISO: '15h' → 'HH:MM', 'amanhã 10h' → 'YYYY-MM-DD HH:MM'."""
+    import re as _re_evt
+    raw = raw.lower().strip()
+
+    # "amanhã" / "amanhã 15h" / "amanhã às 14:30"
+    amanha = "amanh" in raw
+    base_date = (now + timedelta(days=1)) if amanha else now
+
+    # Tenta extrair hora: 15h, 15:30, 15h30, 14:00
+    hm = _re_evt.search(r'(\d{1,2})\s*[h:]\s*(\d{2})?', raw)
+    if hm:
+        h = int(hm.group(1))
+        m = int(hm.group(2)) if hm.group(2) else 0
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            if amanha:
+                return f"{base_date.strftime('%Y-%m-%d')} {h:02d}:{m:02d}"
+            return f"{h:02d}:{m:02d}"
+
+    # "meio-dia" / "meio dia"
+    if "meio" in raw and "dia" in raw:
+        if amanha:
+            return f"{base_date.strftime('%Y-%m-%d')} 12:00"
+        return "12:00"
+
+    return None
+
+
 def _compute_next_alert_at(event_at: str, alert_minutes_before: int) -> str:
     """Calcula quando o próximo alerta deve disparar."""
     if alert_minutes_before <= 0:
@@ -5731,6 +5759,157 @@ def delete_agenda_event(
             rec_label = " _(recorrente)_"
 
         return f"🗑️ Apagar *{title}*{rec_label}?\n_Responda *sim* para confirmar ou *não* para cancelar._"
+    finally:
+        conn.close()
+
+
+@tool
+def pause_agenda_event(
+    user_phone: str,
+    event_query: str,
+) -> str:
+    """Pausa um evento/lembrete da agenda (para de notificar).
+    Use quando o usuário disser 'pausar lembrete X', 'parar de avisar X', 'silenciar X'.
+    event_query: título parcial para buscar."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+        row = cur.fetchone()
+        if not row:
+            return "Usuário não encontrado."
+        user_id = row[0]
+
+        cur.execute(
+            """SELECT id, title, recurrence_type
+               FROM agenda_events WHERE user_id = ? AND status = 'active'
+               AND LOWER(title) LIKE ?
+               ORDER BY event_at ASC LIMIT 1""",
+            (user_id, f"%{event_query.lower()}%"),
+        )
+        ev = cur.fetchone()
+        if not ev:
+            return f"Não encontrei evento ativo com \"{event_query}\" na sua agenda."
+        ev_id, title, rec_type = ev
+        now_ts = _now_br().strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute(
+            "UPDATE agenda_events SET status = 'paused', next_alert_at = '', updated_at = ? WHERE id = ?",
+            (now_ts, ev_id),
+        )
+        conn.commit()
+        return f"⏸️ \"{title}\" pausado — não vou mais avisar até você retomar.\nDiga \"retomar {title.lower()}\" quando quiser reativar."
+    finally:
+        conn.close()
+
+
+@tool
+def resume_agenda_event(
+    user_phone: str,
+    event_query: str,
+) -> str:
+    """Retoma um evento/lembrete pausado da agenda.
+    Use quando o usuário disser 'retomar lembrete X', 'reativar X', 'voltar a avisar X'.
+    event_query: título parcial para buscar."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+        row = cur.fetchone()
+        if not row:
+            return "Usuário não encontrado."
+        user_id = row[0]
+
+        cur.execute(
+            """SELECT id, title, event_at, alert_minutes_before, recurrence_type, recurrence_rule,
+                      active_start_hour, active_end_hour
+               FROM agenda_events WHERE user_id = ? AND status = 'paused'
+               AND LOWER(title) LIKE ?
+               ORDER BY updated_at DESC LIMIT 1""",
+            (user_id, f"%{event_query.lower()}%"),
+        )
+        ev = cur.fetchone()
+        if not ev:
+            return f"Não encontrei evento pausado com \"{event_query}\"."
+        ev_id, title, event_at, alert_min, rec_type, rec_rule, start_h, end_h = ev
+        now = _now_br()
+        now_ts = now.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Recalcula próximo alerta
+        if rec_type != "once":
+            # Avança até próxima ocorrência futura
+            new_event_at = event_at
+            for _ in range(500):
+                try:
+                    dt = datetime.strptime(new_event_at, "%Y-%m-%d %H:%M") if " " in new_event_at else datetime.strptime(new_event_at, "%Y-%m-%d")
+                except Exception:
+                    break
+                if dt > now:
+                    break
+                new_event_at = _advance_recurring_event(new_event_at, rec_type, rec_rule, start_h, end_h)
+            new_alert = _compute_next_alert_at(new_event_at, alert_min)
+            cur.execute(
+                "UPDATE agenda_events SET status = 'active', event_at = ?, next_alert_at = ?, last_notified_at = '', updated_at = ? WHERE id = ?",
+                (new_event_at, new_alert, now_ts, ev_id),
+            )
+        else:
+            new_alert = _compute_next_alert_at(event_at, alert_min)
+            cur.execute(
+                "UPDATE agenda_events SET status = 'active', next_alert_at = ?, last_notified_at = '', updated_at = ? WHERE id = ?",
+                (new_alert, now_ts, ev_id),
+            )
+        conn.commit()
+        return f"▶️ \"{title}\" reativado! Vou voltar a avisar normalmente."
+    finally:
+        conn.close()
+
+
+@tool
+def edit_agenda_event_time(
+    user_phone: str,
+    event_query: str,
+    new_time: str,
+) -> str:
+    """Edita o horário/data de um evento da agenda.
+    Use quando o usuário disser 'editar reunião pra 15h', 'mudar evento X pra amanhã às 10'.
+    event_query: título parcial para buscar.
+    new_time: novo datetime ISO 'YYYY-MM-DD HH:MM' ou apenas 'HH:MM' (mantém a data)."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+        row = cur.fetchone()
+        if not row:
+            return "Usuário não encontrado."
+        user_id = row[0]
+
+        cur.execute(
+            """SELECT id, title, event_at, alert_minutes_before
+               FROM agenda_events WHERE user_id = ? AND status IN ('active', 'paused')
+               AND LOWER(title) LIKE ?
+               ORDER BY event_at ASC LIMIT 1""",
+            (user_id, f"%{event_query.lower()}%"),
+        )
+        ev = cur.fetchone()
+        if not ev:
+            return f"Não encontrei evento com \"{event_query}\" na sua agenda."
+        ev_id, title, old_event_at, alert_min = ev
+        now_ts = _now_br().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Se new_time é só HH:MM, mantém a data original
+        if len(new_time) <= 5 and ":" in new_time:
+            date_part = old_event_at[:10]
+            new_event_at = f"{date_part} {new_time}"
+        else:
+            new_event_at = new_time
+
+        new_alert = _compute_next_alert_at(new_event_at, alert_min)
+        cur.execute(
+            "UPDATE agenda_events SET event_at = ?, next_alert_at = ?, last_notified_at = '', updated_at = ? WHERE id = ?",
+            (new_event_at, new_alert, now_ts, ev_id),
+        )
+        conn.commit()
+        time_display = new_event_at.replace("-", "/").replace(" ", " às ")
+        return f"✏️ \"{title}\" atualizado para {time_display}."
     finally:
         conn.close()
 
@@ -6436,6 +6615,9 @@ AGENDA / LEMBRETES:
 - "minha agenda" → list_agenda_events
 - "feito" (após lembrete) → complete_agenda_event
 - "apagar lembrete X" → delete_agenda_event
+- "pausar lembrete X" → pause_agenda_event (para notificações)
+- "retomar lembrete X" → resume_agenda_event (reativa e recalcula alerta)
+- "editar reunião pra 15h" → edit_agenda_event_time (altera horário/data)
 - Sempre use alert_minutes_before=-1 para perguntar ao usuário quando avisar
 - ⚠️ HORÁRIO: use SEMPRE o horário de Brasília (BRT) informado no [CONTEXTO] da mensagem.
   "daqui 2 minutos" = hora_atual_BRT + 2min. "daqui 1 hora" = hora_atual_BRT + 1h.
@@ -6664,7 +6846,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=5,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event, pause_agenda_event, resume_agenda_event, edit_agenda_event_time],
     add_datetime_to_context=True,
     markdown=True,
 )
@@ -8934,6 +9116,48 @@ def _pre_route(message: str) -> dict | None:
         except Exception as _sn_exc:
             print(f"[SNOOZE] Erro: {_sn_exc}")
 
+    # --- AGENDA: pausar evento ("pausar lembrete água", "parar de avisar reunião") ---
+    _pause_m = _re_router.match(
+        r'(?:paus(?:ar|e|a)|silenci(?:ar|e|a)|par(?:ar|e|a) de (?:avisar|lembrar|notificar)|desativ(?:ar|e|a))\s+'
+        r'(?:(?:o |a )?(?:lembrete|evento|alarme|notifica[çc][aã]o)\s+(?:d[eoa]\s+)?)?'
+        r'(.+?)[\s\?\!\.]*$',
+        msg
+    )
+    if _pause_m:
+        _pause_query = _pause_m.group(1).strip()
+        if _pause_query and len(_pause_query) < 60:
+            return {"response": _call(pause_agenda_event, user_phone, _pause_query)}
+
+    # --- AGENDA: retomar evento ("retomar lembrete água", "reativar reunião") ---
+    _resume_m = _re_router.match(
+        r'(?:retom(?:ar|e|a)|reativ(?:ar|e|a)|volt(?:ar|e|a) a (?:avisar|lembrar|notificar)|ativ(?:ar|e|a))\s+'
+        r'(?:(?:o |a )?(?:lembrete|evento|alarme|notifica[çc][aã]o)\s+(?:d[eoa]\s+)?)?'
+        r'(.+?)[\s\?\!\.]*$',
+        msg
+    )
+    if _resume_m:
+        _resume_query = _resume_m.group(1).strip()
+        if _resume_query and len(_resume_query) < 60:
+            return {"response": _call(resume_agenda_event, user_phone, _resume_query)}
+
+    # --- AGENDA: editar horário ("editar reunião pra 15h", "mudar evento X pra amanhã 10h") ---
+    _edit_ev_m = _re_router.match(
+        r'(?:edit(?:ar|e|a)|mud(?:ar|e|a)|alter(?:ar|e|a)|troc(?:ar|e|a))\s+'
+        r'(?:(?:o )?(?:hor[aá]rio|data|hora) (?:d[eoa] )?)?'
+        r'(.+?)\s+'
+        r'(?:pra|para|por)\s+'
+        r'(.+?)[\s\?\!\.]*$',
+        msg
+    )
+    if _edit_ev_m:
+        _edit_name = _edit_ev_m.group(1).strip()
+        _edit_time_raw = _edit_ev_m.group(2).strip()
+        if _edit_name and _edit_time_raw:
+            # Converte tempo informal pra formato ISO
+            _new_time = _parse_event_time_edit(_edit_time_raw, today)
+            if _new_time:
+                return {"response": _call(edit_agenda_event_time, user_phone, _edit_name, _new_time)}
+
     # --- PAINEL HTML ---
     if _re_router.match(r'(painel|dashboard|meu painel|me mostr[ea] o painel|abr[ea] o painel|quero ver o painel|ver painel)[\s\?\!\.]*$', msg):
         panel_url = get_panel_url(user_phone)
@@ -9415,6 +9639,24 @@ def _keyword_route(user_phone: str, msg: str) -> dict | None:
                 category="geral",
             )
             return {"response": result}
+
+    # --- AGENDA: pausar/retomar (keyword) ---
+    if any(k in n for k in ("pausar", "pausa", "silenciar", "desativar")) and any(k in n for k in ("lembrete", "evento", "alarme", "agenda")):
+        # Extrai nome do evento: remove verbos e palavras-chave
+        _pn = msg
+        for _rm in ("pausar", "pausa", "silenciar", "desativar", "o", "a", "lembrete", "evento", "alarme", "de", "do", "da"):
+            _pn = _pn.replace(_rm, "")
+        _pn = _pn.strip()
+        if _pn:
+            return {"response": _call(pause_agenda_event, user_phone, _pn)}
+
+    if any(k in n for k in ("retomar", "reativar", "ativar", "voltar")) and any(k in n for k in ("lembrete", "evento", "alarme", "agenda")):
+        _rn = msg
+        for _rm in ("retomar", "reativar", "ativar", "voltar", "a", "avisar", "o", "lembrete", "evento", "alarme", "de", "do", "da"):
+            _rn = _rn.replace(_rm, "")
+        _rn = _rn.strip()
+        if _rn:
+            return {"response": _call(resume_agenda_event, user_phone, _rn)}
 
     # --- AJUDA ---
     if any(k in n for k in ("ajuda", "help", "menu", "comando", "o que voce faz", "o que você faz", "o que vc faz")):
