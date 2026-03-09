@@ -8788,6 +8788,10 @@ def _pre_route(message: str) -> dict | None:
     if _re_router.match(r'(como (?:foi|tá|ta|está|anda) (?:minha )?semana|resumo (?:da |desta |dessa |semanal)?semana|minha semana|gastos? (?:da |desta |dessa )?semana|extrato (?:da |desta )?semana|quanto gastei (?:essa|esta|na) semana)[\s\?\!\.]*$', msg):
         return {"response": _call(get_week_summary, user_phone, "ALL")}
 
+    # --- MOVIMENTAÇÕES DE HOJE (ALL) ---
+    if _re_router.match(r'(?:mostre?|mostra|ver|exib[aei]r?)?(?:\s+as?)?\s*movimenta[çc][õo]es?\s+(?:de\s+)?hoje[\s\?\!\.]*$', msg):
+        return {"response": _call(get_today_total, user_phone, "ALL", 1)}
+
     # --- GASTOS DE HOJE ---
     if _re_router.match(r'(gastos? de hoje|o que (?:eu )?gastei hoje|hoje|quanto (?:eu )?gastei hoje|extrato (?:de )?hoje|saldo (?:de )?hoje|me (?:d[aá]|fala|mostra) (?:o )?(?:saldo|extrato|gastos?)(?: de)? (?:de )?hoje|como (?:tá|ta|está) (?:o )?(?:dia de )?hoje)[\s\?\!\.]*$', msg):
         return {"response": _call(get_today_total, user_phone, "EXPENSE", 1)}
@@ -9032,16 +9036,20 @@ def _keyword_route(user_phone: str, msg: str) -> dict | None:
     # --- COMO TÁ MEU MÊS / QUANTO GASTEI NO MÊS (variações) ---
     # Só roteia para resumo geral se NÃO tiver qualificador de categoria/merchant
     _has_specific_filter = _re_router.search(r'gastei (?:de |em |no |na |com |n[oa]s? )\w', n) and not _re_router.search(r'gastei (?:esse|este|no|nesse|neste) mes', n)
-    if ("como" in n or "mostr" in n or "gastei" in n or "quanto" in n) and ("mes" in n or "financ" in n or "gasto" in n):
+    if ("como" in n or "mostr" in n or "gastei" in n or "quanto" in n or "movimenta" in n) and ("mes" in n or "financ" in n or "gasto" in n or "movimenta" in n):
         if "semana" not in n and "hoje" not in n and not _has_specific_filter:
             return {"response": _call(get_month_summary, user_phone, current_month, "ALL")}
 
     # --- RESUMO SEMANAL ---
-    if any(k in n for k in ("semana", "semanal")) and any(k in n for k in ("resumo", "como", "gasto", "extrato")):
+    if any(k in n for k in ("semana", "semanal")) and any(k in n for k in ("resumo", "como", "gasto", "extrato", "movimenta")):
         return {"response": _call(get_week_summary, user_phone, "ALL")}
 
+    # --- MOVIMENTAÇÕES DE HOJE (ALL) ---
+    if "hoje" in n and "movimenta" in n:
+        return {"response": _call(get_today_total, user_phone, "ALL", 1)}
+
     # --- GASTOS DE HOJE ---
-    if "hoje" in n and any(k in n for k in ("gasto", "gastei", "quanto", "extrato", "saldo", "mostr")):
+    if "hoje" in n and any(k in n for k in ("gasto", "gastei", "quanto", "extrato", "saldo")):
         return {"response": _call(get_today_total, user_phone, "EXPENSE", 1)}
 
     # --- CARTÕES ---
