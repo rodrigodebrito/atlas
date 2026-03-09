@@ -9026,32 +9026,46 @@ def _pre_route(message: str) -> dict | None:
         _pay_name = _pay_m.group(1).strip()
         _pay_val_str = _pay_m.group(2)
         _pay_val = float(_pay_val_str.replace(",", ".")) if _pay_val_str else 0
-        # Guard: se "paguei" é seguido direto de um valor numérico + merchant, é GASTO, não pagamento
-        # Ex: "paguei 28 assinatura ElevenLabs" = gasto R$28 em ElevenLabs
-        # Mas: "paguei o aluguel 1500" = pagamento de compromisso (nome primeiro, valor depois)
-        if _re_router.match(r'(?:pagamento|paguei|pago|quitei|pagar)\s+\d+(?:[.,]\d{1,2})?\s+\w', msg):
-            _pay_m = None  # Cai no smart extractor como gasto
+
+        # "paguei 28 assinatura ElevenLabs" → valor vem primeiro, nome depois
+        # Tenta extrair valor + nome quando o padrão é "paguei [valor] [nome]"
+        _val_first_m = _re_router.match(
+            r'(?:pagamento|paguei|pago|quitei|pagar)\s+(?:d[aeo]\s+)?(\d+(?:[.,]\d{1,2})?)\s+(.+?)[\s\?\!\.]*$',
+            msg
+        )
+        if _val_first_m:
+            _pay_val = float(_val_first_m.group(1).replace(",", "."))
+            _pay_name = _val_first_m.group(2).strip()
+
         # Remove noise words do nome
-        if _pay_m:
-            _pay_name_clean = _re_router.sub(r'\b(?:do|da|de|no|na|o|a|meu|minha|pelo|pela|cart[aã]o|cartao|fatura)\b', '', _pay_name).strip()
-        else:
-            _pay_name_clean = None
+        _pay_name_clean = _re_router.sub(r'\b(?:do|da|de|no|na|o|a|meu|minha|pelo|pela|cart[aã]o|cartao|fatura)\b', '', _pay_name).strip()
         if _pay_name_clean:
-            # Verifica se é cartão de crédito (close_bill) ou conta genérica (pay_bill)
+            # Verifica se é cartão, compromisso existente, ou gasto novo
             _pay_conn = _get_conn()
             _pay_cur = _pay_conn.cursor()
             _pay_uid = _get_user_id(_pay_cur, user_phone)
             _is_card = False
+            _is_bill = False
             if _pay_uid:
+                # 1. É cartão?
                 _pay_card = _find_card(_pay_cur, _pay_uid, _pay_name_clean)
                 if _pay_card:
                     _is_card = True
+                else:
+                    # 2. É compromisso existente? (recurring_transactions ou bills)
+                    _pay_cur.execute(
+                        "SELECT id FROM recurring_transactions WHERE user_id = ? AND LOWER(name) LIKE ? AND active = 1 LIMIT 1",
+                        (_pay_uid, f"%{_pay_name_clean.lower()}%"),
+                    )
+                    if _pay_cur.fetchone():
+                        _is_bill = True
             _pay_conn.close()
 
             if _is_card:
                 return {"response": _call(close_bill, user_phone, _pay_name_clean)}
-            else:
+            elif _is_bill:
                 return {"response": _call(pay_bill, user_phone, _pay_name_clean, _pay_val)}
+            # Não é cartão nem compromisso → cai no smart extractor como gasto normal
 
     # ── GUARD: mensagens de agenda/lembrete NUNCA devem cair no smart extractor ──
     # Se chegou aqui com trigger de agenda, deixa o LLM processar (não é gasto)
