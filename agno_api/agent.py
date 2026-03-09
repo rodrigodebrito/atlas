@@ -8269,6 +8269,12 @@ def _onboard_if_new(user_phone: str, message: str) -> dict | None:
 # Funciona com: "gastei 50 no ifood pelo nubank", "abasteci 32 de gasolina no posto
 # shell no cartão mercado pago", "uber 15", "pagamento gasolina 130 mercado pago"
 
+_INCOME_VERBS = frozenset({
+    "recebi", "recebido", "recebimento", "caiu", "entrou", "ganhei",
+    "depositaram", "depositou", "transferiram", "creditaram", "creditou",
+    "salário", "salario", "freela", "freelance", "renda", "receita",
+})
+
 _EXPENSE_VERBS = frozenset({
     "gastei", "paguei", "pagamento", "comprei", "torrei", "saiu", "foram",
     "abasteci", "almocei", "jantei", "lancei", "pedi", "tomei", "comi",
@@ -8363,6 +8369,11 @@ def _smart_expense_extract(user_phone: str, msg: str) -> dict | None:
     has_verb = bool(tokens & _EXPENSE_VERBS)
     has_merchant = bool(tokens & _EXPENSE_MERCHANT_SIGNALS)
     has_card_word = "cartão" in msg_lower or "cartao" in msg_lower
+
+    # ── Guard: mensagens de INCOME não são gasto ──
+    has_income_verb = bool(tokens & _INCOME_VERBS)
+    if has_income_verb and not has_verb:
+        return None  # "recebi 39.42 uber" → vai pro LLM como receita
 
     # Sem nenhum sinal → não é gasto (ex: "meu saldo", "meta 500")
     if not has_verb and not has_merchant and not has_card_word:
