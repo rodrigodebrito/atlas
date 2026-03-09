@@ -2792,8 +2792,8 @@ def close_bill(user_phone: str, card_name: str) -> str:
         import uuid as _uuid_cb
         tx_id = str(_uuid_cb.uuid4())
         cur.execute(
-            "INSERT INTO transactions (id, user_id, type, amount_cents, category, merchant, occurred_at, card_id, description) "
-            "VALUES (?, ?, 'EXPENSE', ?, 'Pagamento Fatura', ?, ?, NULL, ?)",
+            "INSERT INTO transactions (id, user_id, type, amount_cents, category, merchant, occurred_at, notes) "
+            "VALUES (?, ?, 'EXPENSE', ?, 'Pagamento Fatura', ?, ?, ?)",
             (tx_id, user_id, fatura_total, f"Fatura {card[1]}", today_str, f"Pagamento fatura {card[1]}"),
         )
 
