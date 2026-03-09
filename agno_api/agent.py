@@ -6990,9 +6990,31 @@ def _render_panel_html(data: dict, token: str) -> str:
         "Investimentos": "📊", "Benefício": "🎁", "Venda": "🛒",
     }
 
-    cat_colors = [
-        "#00e5a0", "#4fc3f7", "#ff7043", "#ab47bc", "#ffca28",
-        "#ef5350", "#26c6da", "#66bb6a", "#8d6e63", "#78909c", "#ec407a", "#7e57c2"
+    cat_color_map = {
+        "Alimentação": "#ff6b6b", "Alimentacao": "#ff6b6b",
+        "Transporte": "#ffd93d",
+        "Moradia": "#6bcb77",
+        "Saúde": "#4d96ff", "Saude": "#4d96ff",
+        "Lazer": "#ff922b",
+        "Assinaturas": "#cc5de8",
+        "Educação": "#20c997", "Educacao": "#20c997",
+        "Vestuário": "#e599f7", "Vestuario": "#e599f7",
+        "Investimento": "#51cf66",
+        "Pets": "#f59f00",
+        "Outros": "#868e96",
+        "Cartão": "#74c0fc",
+        "Pagamento Fatura": "#74c0fc",
+        "Salário": "#69db7c",
+        "Freelance": "#38d9a9",
+        "Aluguel Recebido": "#a9e34b",
+        "Investimentos": "#66d9e8",
+        "Benefício": "#fcc419",
+        "Venda": "#ff8787",
+    }
+    _fallback_colors = [
+        "#ff6b6b", "#ffd93d", "#6bcb77", "#4d96ff", "#ff922b",
+        "#cc5de8", "#20c997", "#e599f7", "#51cf66", "#f59f00",
+        "#868e96", "#74c0fc", "#38d9a9", "#69db7c", "#fcc419"
     ]
 
     def fmt(cents):
@@ -7009,7 +7031,15 @@ def _render_panel_html(data: dict, token: str) -> str:
     agenda_json = _safe_json(data.get("agenda", []))
     cat_labels = _safe_json([c["name"] for c in data["categories"]])
     cat_values = _json.dumps([c["amount"] / 100 for c in data["categories"]])
-    cat_colors_json = _json.dumps(cat_colors[:max(len(data["categories"]), 1)])
+    _used_fallback = 0
+    _cat_color_list = []
+    for c in data["categories"]:
+        color = cat_color_map.get(c["name"])
+        if not color:
+            color = _fallback_colors[_used_fallback % len(_fallback_colors)]
+            _used_fallback += 1
+        _cat_color_list.append(color)
+    cat_colors_json = _json.dumps(_cat_color_list if _cat_color_list else ["#868e96"])
     daily_labels_json = _json.dumps(data["daily_labels"])
     daily_values_json = _json.dumps(data["daily_values"])
     daily_income_json = _json.dumps(data["daily_income_values"])
@@ -7371,6 +7401,16 @@ body{{
     <button class="tx-filter-btn" data-filter="EXPENSE" onclick="setTxFilter('EXPENSE')">Gastos</button>
     <button class="tx-filter-btn" data-filter="INCOME" onclick="setTxFilter('INCOME')">Receitas</button>
     <button class="tx-sort-btn" onclick="toggleSort()" id="sortBtn">↓ Recentes</button>
+    <button class="tx-sort-btn" onclick="toggleSortMode()" id="sortModeBtn">📅 Data</button>
+  </div>
+  <div class="tx-filters" style="gap:6px">
+    <select id="catFilterSelect" onchange="filterByCatSelect(this.value)" style="flex:1;padding:6px 10px;border-radius:16px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:11px;max-width:160px">
+      <option value="">Categoria</option>
+    </select>
+    <select id="merchantFilterSelect" onchange="filterByMerchant(this.value)" style="flex:1;padding:6px 10px;border-radius:16px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:11px;max-width:160px">
+      <option value="">Estabelecimento</option>
+    </select>
+    <button class="tx-sort-btn" onclick="clearAllFilters()" id="clearFiltersBtn" style="display:none;color:var(--red);border-color:var(--red)">✕ Limpar</button>
   </div>
   <div class="tx-list" id="txList"></div>
 </div>
@@ -7448,14 +7488,18 @@ const ALL_TX = {tx_json};
 const ALL_CARDS = {cards_json};
 const ALL_AGENDA = {agenda_json};
 const CAT_COLORS = {cat_colors_json};
+const CAT_COLOR_MAP = {_json.dumps(cat_color_map, ensure_ascii=False)};
+const FALLBACK_COLORS = {_json.dumps(_fallback_colors)};
 const CAT_DATA = {cats_data_json};
 const CAT_EMOJI = {_json.dumps(cat_emoji, ensure_ascii=False)};
 
 let currentFilter = 'ALL';
 let currentPeriod = 'month';
 let sortAsc = false;
+let sortMode = 'date'; // 'date' or 'amount'
 let currentCatFilter = null;
 let currentCardFilter = null;
+let currentMerchantFilter = null;
 let pieChart = null;
 
 // ==================== FORMATTING ====================
@@ -7476,7 +7520,10 @@ function setPeriod(period) {{
   currentPeriod = period;
   currentCatFilter = null;
   currentCardFilter = null;
+  currentMerchantFilter = null;
   currentFilter = 'ALL';
+  document.getElementById('catFilterSelect').value = '';
+  document.getElementById('merchantFilterSelect').value = '';
   document.querySelectorAll('.period-btn').forEach(b => b.classList.toggle('active', b.textContent.toLowerCase().includes(
     period === 'month' ? 'mês' : period === 'week' ? 'semana' : period === 'today' ? 'hoje' : period === '7d' ? '7' : '15'
   )));
@@ -7509,7 +7556,8 @@ function updateDashboard() {{
   const catNames = sortedCats.map(c => c[0]);
   const catAmounts = sortedCats.map(c => c[1] / 100);
   const catTotals = sortedCats.map(c => c[1]);
-  const colors = catNames.map((_, i) => CAT_COLORS[i % CAT_COLORS.length]);
+  let _fb = 0;
+  const colors = catNames.map(n => CAT_COLOR_MAP[n] || FALLBACK_COLORS[_fb++ % FALLBACK_COLORS.length]);
 
   // Update doughnut chart
   if (pieChart) {{
@@ -7521,8 +7569,9 @@ function updateDashboard() {{
 
   // Update category breakdown list
   let catHtml = '';
+  let _fb2 = 0;
   sortedCats.forEach(([name, amount], i) => {{
-    const color = CAT_COLORS[i % CAT_COLORS.length];
+    const color = CAT_COLOR_MAP[name] || FALLBACK_COLORS[_fb2++ % FALLBACK_COLORS.length];
     const emoji = CAT_EMOJI[name] || '💸';
     const pct = expenseTotal > 0 ? (amount / expenseTotal * 100).toFixed(0) : 0;
     catHtml += `<div class="cat-row" onclick="filterByCategory('${{name}}')">
@@ -7578,7 +7627,10 @@ function applyCustomPeriod() {{
   currentPeriod = 'custom';
   currentCatFilter = null;
   currentCardFilter = null;
+  currentMerchantFilter = null;
   currentFilter = 'ALL';
+  document.getElementById('catFilterSelect').value = '';
+  document.getElementById('merchantFilterSelect').value = '';
   document.querySelectorAll('.period-btn').forEach(b => {{
     b.classList.toggle('active', b.textContent.includes('📅'));
   }});
@@ -7592,7 +7644,10 @@ function applyCustomPeriod() {{
 function filterTx(type) {{
   currentCatFilter = null;
   currentCardFilter = null;
+  currentMerchantFilter = null;
   currentFilter = type;
+  document.getElementById('catFilterSelect').value = '';
+  document.getElementById('merchantFilterSelect').value = '';
   document.querySelectorAll('.tx-filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === type));
   document.querySelectorAll('.summary-card').forEach((c,i) => c.classList.remove('active'));
   if (type === 'INCOME') document.querySelectorAll('.summary-card')[0].classList.add('active');
@@ -7604,15 +7659,21 @@ function filterTx(type) {{
 function setTxFilter(type) {{
   currentCatFilter = null;
   currentCardFilter = null;
+  currentMerchantFilter = null;
   currentFilter = type;
+  document.getElementById('catFilterSelect').value = '';
+  document.getElementById('merchantFilterSelect').value = '';
   document.querySelectorAll('.tx-filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === type));
   renderTxList();
 }}
 
 function filterByCategory(catName) {{
   currentCardFilter = null;
+  currentMerchantFilter = null;
   currentFilter = 'EXPENSE';
   currentCatFilter = catName;
+  document.getElementById('catFilterSelect').value = catName;
+  document.getElementById('merchantFilterSelect').value = '';
   document.querySelectorAll('.tx-filter-btn').forEach(b => b.classList.remove('active'));
   renderTxList();
   document.getElementById('txSection').scrollIntoView({{behavior:'smooth',block:'start'}});
@@ -7620,8 +7681,11 @@ function filterByCategory(catName) {{
 
 function filterByCard(cardId) {{
   currentCatFilter = null;
+  currentMerchantFilter = null;
   currentFilter = 'ALL';
   currentCardFilter = cardId;
+  document.getElementById('catFilterSelect').value = '';
+  document.getElementById('merchantFilterSelect').value = '';
   document.querySelectorAll('.tx-filter-btn').forEach(b => b.classList.remove('active'));
   renderTxList();
   document.getElementById('txSection').scrollIntoView({{behavior:'smooth',block:'start'}});
@@ -7629,8 +7693,76 @@ function filterByCard(cardId) {{
 
 function toggleSort() {{
   sortAsc = !sortAsc;
-  document.getElementById('sortBtn').textContent = sortAsc ? '↑ Antigos' : '↓ Recentes';
+  if (sortMode === 'date') {{
+    document.getElementById('sortBtn').textContent = sortAsc ? '↑ Antigos' : '↓ Recentes';
+  }} else {{
+    document.getElementById('sortBtn').textContent = sortAsc ? '↑ Menor' : '↓ Maior';
+  }}
   renderTxList();
+}}
+
+function toggleSortMode() {{
+  sortMode = sortMode === 'date' ? 'amount' : 'date';
+  sortAsc = false;
+  if (sortMode === 'date') {{
+    document.getElementById('sortModeBtn').textContent = '📅 Data';
+    document.getElementById('sortBtn').textContent = '↓ Recentes';
+  }} else {{
+    document.getElementById('sortModeBtn').textContent = '💰 Valor';
+    document.getElementById('sortBtn').textContent = '↓ Maior';
+  }}
+  renderTxList();
+}}
+
+function filterByCatSelect(cat) {{
+  currentCatFilter = cat || null;
+  currentCardFilter = null;
+  currentMerchantFilter = null;
+  document.getElementById('merchantFilterSelect').value = '';
+  updateFilterUI();
+  renderTxList();
+}}
+
+function filterByMerchant(merchant) {{
+  currentMerchantFilter = merchant || null;
+  currentCardFilter = null;
+  updateFilterUI();
+  renderTxList();
+}}
+
+function clearAllFilters() {{
+  currentCatFilter = null;
+  currentCardFilter = null;
+  currentMerchantFilter = null;
+  currentFilter = 'ALL';
+  document.getElementById('catFilterSelect').value = '';
+  document.getElementById('merchantFilterSelect').value = '';
+  document.querySelectorAll('.tx-filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === 'ALL'));
+  updateFilterUI();
+  renderTxList();
+}}
+
+function updateFilterUI() {{
+  const hasFilter = currentCatFilter || currentMerchantFilter || currentCardFilter;
+  document.getElementById('clearFiltersBtn').style.display = hasFilter ? 'inline-block' : 'none';
+  populateFilterDropdowns();
+}}
+
+function populateFilterDropdowns() {{
+  let txs = getFilteredByPeriod([...ALL_TX]);
+  if (currentFilter !== 'ALL') txs = txs.filter(t => t.type === currentFilter);
+
+  // Categories
+  const cats = [...new Set(txs.map(t => t.category).filter(Boolean))].sort();
+  const catSel = document.getElementById('catFilterSelect');
+  const catVal = catSel.value;
+  catSel.innerHTML = '<option value="">Categoria</option>' + cats.map(c => `<option value="${{c}}" ${{c===catVal?'selected':''}}>${{c}}</option>`).join('');
+
+  // Merchants
+  const merchants = [...new Set(txs.map(t => t.merchant).filter(Boolean))].sort();
+  const merSel = document.getElementById('merchantFilterSelect');
+  const merVal = merSel.value;
+  merSel.innerHTML = '<option value="">Estabelecimento</option>' + merchants.map(m => `<option value="${{m}}" ${{m===merVal?'selected':''}}>${{m}}</option>`).join('');
 }}
 
 function renderTxList() {{
@@ -7639,9 +7771,16 @@ function renderTxList() {{
   if (currentFilter !== 'ALL') txs = txs.filter(t => t.type === currentFilter);
   if (currentCatFilter) txs = txs.filter(t => t.category === currentCatFilter);
   if (currentCardFilter) txs = txs.filter(t => t.card_id === currentCardFilter);
-  if (sortAsc) txs.reverse();
+  if (currentMerchantFilter) txs = txs.filter(t => t.merchant === currentMerchantFilter);
+  if (sortMode === 'amount') {{
+    txs.sort((a, b) => sortAsc ? a.amount - b.amount : b.amount - a.amount);
+  }} else {{
+    if (sortAsc) txs.reverse();
+  }}
+  updateFilterUI();
 
-  const title = currentCatFilter ? currentCatFilter :
+  const title = currentMerchantFilter ? currentMerchantFilter :
+                currentCatFilter ? currentCatFilter :
                 currentCardFilter ? ALL_CARDS.find(c => c.id === currentCardFilter)?.name || 'Cartão' :
                 currentFilter === 'INCOME' ? 'Receitas' :
                 currentFilter === 'EXPENSE' ? 'Gastos' : 'Transações';
@@ -7686,8 +7825,9 @@ function renderTxList() {{
 // ==================== CATEGORY BREAKDOWN ====================
 function renderCatBreakdown() {{
   let html = '';
+  let _fb3 = 0;
   CAT_DATA.forEach((c, i) => {{
-    const color = CAT_COLORS[i % CAT_COLORS.length];
+    const color = CAT_COLOR_MAP[c.name] || FALLBACK_COLORS[_fb3++ % FALLBACK_COLORS.length];
     const emoji = CAT_EMOJI[c.name] || '💸';
     html += `<div class="cat-row" onclick="filterByCategory('${{c.name}}')">
       <span class="cat-dot" style="background:${{color}}"></span>
@@ -7731,8 +7871,8 @@ function renderCards() {{
       </div>
       <div class="card-detail" id="cardDetail-${{card.id}}">
         <div class="card-detail-inner">
-          <button class="tx-filter-btn" onclick="editCard('${{card.id}}', ${{card.closing_day}}, ${{card.due_day}}, ${{card.limit}}, ${{card.available || 0}}, ${{card.opening || 0}}, '${{card.name}}')" style="margin-bottom:10px">⚙️ Editar cartao</button>
-          <button class="tx-filter-btn" onclick="filterByCard('${{card.id}}')" style="margin-bottom:10px">📋 Ver transacoes</button>
+          <button class="tx-filter-btn" onclick="editCard('${{card.id}}', ${{card.closing_day}}, ${{card.due_day}}, ${{card.limit}}, ${{card.available || 0}}, ${{card.opening || 0}}, '${{card.name}}')" style="margin-bottom:10px">⚙️ Editar cartão</button>
+          <button class="tx-filter-btn" onclick="filterByCard('${{card.id}}')" style="margin-bottom:10px">📋 Ver transações</button>
         </div>
       </div>
     </div>`;
@@ -7932,6 +8072,7 @@ async function saveTx() {{
 
 // ==================== CHARTS ====================
 document.addEventListener('DOMContentLoaded', () => {{
+  populateFilterDropdowns();
   renderTxList();
   renderCatBreakdown();
   renderCards();
