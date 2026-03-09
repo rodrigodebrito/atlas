@@ -8451,6 +8451,11 @@ def _smart_expense_extract(user_phone: str, msg: str) -> dict | None:
     return {"response": result}
 
 
+# Cache de contexto recente por usuário (para continuações tipo "e no Talentos?")
+# Guarda: {phone: {"month": "2026-03", "ts": timestamp}}
+_user_last_context: dict = {}
+
+
 def _pre_route(message: str) -> dict | None:
     """
     Tenta rotear mensagens comuns sem chamar o LLM.
@@ -8762,7 +8767,21 @@ def _pre_route(message: str) -> dict | None:
                 return {"response": _call(get_category_breakdown, user_phone, _matched_cat, current_month)}
             else:
                 # Busca como merchant (ifood, deville, mercado, etc)
+                _user_last_context[user_phone] = {"month": current_month, "type": "merchant", "ts": _now_br()}
                 return {"response": _call(get_transactions_by_merchant, user_phone, _filter_query, current_month)}
+
+    # --- CONTINUAÇÃO: "e no Talentos?", "e o Deville?", "e uber?" ---
+    _cont_m = _re_router.match(r'e (?:no |na |o |a |n[oa]s? )?(.+?)[\s\?\!\.\,]*$', msg)
+    if _cont_m:
+        _cont_query = _cont_m.group(1).strip()
+        if _cont_query and len(_cont_query) < 40:
+            import time as _t_ctx
+            ctx = _user_last_context.get(user_phone)
+            # Usa contexto se for recente (< 5 min)
+            if ctx and (_now_br() - ctx["ts"]).total_seconds() < 300:
+                _ctx_month = ctx.get("month", current_month)
+                _user_last_context[user_phone] = {"month": _ctx_month, "type": "merchant", "ts": _now_br()}
+                return {"response": _call(get_transactions_by_merchant, user_phone, _cont_query, _ctx_month)}
 
     # --- RESUMO MENSAL ---
     if _re_router.match(r'(como t[aá] (?:o )?meu m[eê]s|resumo (?:do |mensal|deste |desse )?m[eê]s|meus gastos(?: do m[eê]s)?|como (?:foi|esta|está|tá|ta|anda|andou)(?: (?:o )?meu| o)? m[eê]s|me d[aá] (?:o )?resumo|resumo geral|vis[aã]o geral|saldo do m[eê]s|saldo mensal|quanto (?:eu )?(?:j[aá] )?gastei (?:esse|este|no) m[eê]s|total do m[eê]s|balan[çc]o do m[eê]s|extrato do m[eê]s|extrato mensal|como (?:est[aá]|tá|ta|anda) (?:minhas? )?finan[çc]as)[\s\?\!\.]*$', msg):
