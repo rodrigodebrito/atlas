@@ -944,6 +944,17 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     )
     tx_rows = cur.fetchall()
 
+    # Individual INCOME transactions (para mostrar detalhes)
+    cur.execute(
+        """SELECT t.category, t.merchant, t.amount_cents, t.occurred_at
+           FROM transactions t
+           WHERE t.user_id = ? AND UPPER(t.type) = 'INCOME'
+           AND t.occurred_at LIKE ?
+           ORDER BY t.amount_cents DESC""",
+        (user_id, f"{month}%"),
+    )
+    inc_tx_rows = cur.fetchall()
+
     # Date range of the month's transactions
     cur.execute(
         "SELECT MIN(occurred_at), MAX(occurred_at) FROM transactions WHERE user_id = ? AND occurred_at LIKE ?",
@@ -1078,8 +1089,18 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         lines.append("")
         if filter_type == "ALL":
             lines.append("📥 ENTRADAS:")
+        # Agrupa transações individuais de income por categoria
+        from collections import defaultdict as _dd_inc
+        _inc_by_cat = _dd_inc(list)
+        for cat, merchant, amount, occurred in inc_tx_rows:
+            label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
+            dt_lbl = f"{occurred[8:10]}/{occurred[5:7]}" if occurred and len(occurred) >= 10 else ""
+            _inc_by_cat[cat].append((dt_lbl, label, amount))
         for cat, total in sorted(income_rows_detail, key=lambda x: -x[1]):
             lines.append(f"💰 {cat} — R${total/100:,.2f}".replace(",", "."))
+            for dt_lbl, label, amt in _inc_by_cat.get(cat, []):
+                lines.append(f"  • {dt_lbl} — {label}: R${amt/100:,.2f}".replace(",", "."))
+            lines.append("")
         lines.append(f"💰 Total recebido: R${income/100:,.2f}".replace(",", "."))
 
     if filter_type == "ALL":
