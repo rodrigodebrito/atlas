@@ -9257,13 +9257,13 @@ async def chat_endpoint(
     # 1. Tenta pré-roteamento (sem LLM)
     routed = _pre_route(full_message)
     if routed:
-        return {"content": _strip_whatsapp_bold(routed["response"]), "routed": True}
+        return {"content": routed["response"], "routed": True}
 
     # 2. Keyword matcher — tolerante a typos (sem LLM)
     body = _extract_body(full_message).strip()
     kw_routed = _keyword_route(user_phone, body)
     if kw_routed:
-        return {"content": _strip_whatsapp_bold(kw_routed["response"]), "routed": True}
+        return {"content": kw_routed["response"], "routed": True}
 
     # 3. Fallback: chama o agente LLM
     if not session_id:
@@ -9289,7 +9289,6 @@ async def chat_endpoint(
     )
     content = response.content if hasattr(response, 'content') else str(response)
     content = _strip_trailing_questions(content)
-    content = _strip_whatsapp_bold(content)
     del response  # libera memória do response do LLM
     import gc as _gc; _gc.collect()
     return {"content": content, "routed": False, "session_id": session_id}
