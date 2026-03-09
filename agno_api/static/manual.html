@@ -172,6 +172,7 @@
   <a href="#fatura-mentor">🔍 Mentor</a>
   <a href="#fixos">📋 Fixos</a>
   <a href="#analises">📊 Análises</a>
+  <a href="#movimentacoes">🔄 Movimentações</a>
   <a href="#medias">📈 Médias</a>
   <a href="#agenda">📅 Agenda</a>
   <a href="#metas">🎯 Metas</a>
@@ -227,6 +228,16 @@
         <div class="bubble atlas">✅ 5 transações removidas.<span class="tick">✓✓</span></div>
       </div>
 
+      <div class="label">Detecta pagamento</div>
+      <div class="chat">
+        <div class="bubble user">paguei 28 assinatura ElevenLabs<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">✅ <strong>R$28,00 — Assinaturas</strong><br>📍 ElevenLabs<br>📅 09/03/2026 (hoje)<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="tip"><strong>💡 "paguei" tem dois comportamentos:</strong><br>
+      • "paguei 28 assinatura X" → registra como gasto normal<br>
+      • "paguei o aluguel" → marca compromisso fixo como pago (ver seção Fixos)</div>
+
       <div class="tip-green"><strong>✅ Ordem não importa!</strong><br>
       ATLAS entende "paguei 53,80 na padaria", "gasolina 130 mercado pago", "abasteci 82 de gasolina no posto shell no cartão mercado pago" — tudo no mesmo formato inteligente.</div>
 
@@ -268,7 +279,14 @@
         <div class="bubble atlas">💰 <strong>R$1.200,00</strong> registrado — Freelance<span class="tick">✓✓</span></div>
       </div>
 
+      <div class="label">Renda de apps/gig</div>
+      <div class="chat">
+        <div class="bubble user">recebi 50 de uber<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">💰 <strong>R$50,00</strong> registrado — Freelance<br>📍 Uber<span class="tick">✓✓</span></div>
+      </div>
+
       <div class="tip"><strong>💡 Categorias de receita:</strong> Salário, Freelance, Aluguel Recebido, Investimentos, Benefício, Venda.</div>
+      <div class="tip-green"><strong>✅ Renda de apps:</strong> "recebi X de uber/99/rappi" é detectado automaticamente como receita (Freelance), não como gasto de transporte.</div>
     </div>
   </section>
 
@@ -359,6 +377,18 @@
         <div class="bubble atlas">✅ Aluguel marcado como pago!<span class="tick">✓✓</span></div>
       </div>
 
+      <div class="label">Pagar com valor</div>
+      <div class="chat">
+        <div class="bubble user">paguei o aluguel 1500<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">✅ Aluguel marcado como pago! R$1.500,00 registrado.<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="label">Fechar fatura de cartão</div>
+      <div class="chat">
+        <div class="bubble user">paguei fatura caixa<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">✅ Fatura do Caixa fechada e marcada como paga!<span class="tick">✓✓</span></div>
+      </div>
+
       <div class="tip"><strong>💡</strong> "compromissos dos próximos 3 meses" — mostra tudo que vai vencer.</div>
     </div>
   </section>
@@ -386,8 +416,24 @@
       <div class="label">Filtrar por estabelecimento</div>
       <div class="chat">
         <div class="bubble user">quanto gastei no Deville?<span class="tick">✓✓</span></div>
-        <div class="bubble atlas">🔍 <strong>Supermercado Deville</strong> — 4 lançamentos<br>💸 Total gasto: R$201,68<br>• 05/03 — R$77,00<br>• 04/03 — R$19,00<br>• 03/03 — R$105,68<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">🔍 Supermercado Deville — 4 lançamentos<br>💸 Total gasto: R$201,68<br>• 05/03 — R$77,00<br>• 04/03 — R$19,00<br>• 03/03 — R$105,68<span class="tick">✓✓</span></div>
       </div>
+
+      <div class="label">Movimentações de hoje</div>
+      <div class="chat">
+        <div class="bubble user">movimentações de hoje<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">📊 Movimentações de hoje (09/03):<br><br>📤 SAÍDAS<br>• Restaurante Talentos — R$35,00 (Alimentação)<br>• Uber — R$18,00 (Transporte)<br><br>📥 ENTRADAS<br>• Uber — R$50,00 (Freelance)<br><br>💸 Total saídas: R$53,00<br>💰 Total entradas: R$50,00<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="label">Continuação de contexto</div>
+      <div class="chat">
+        <div class="bubble user">quanto gastei de alimentação em fevereiro?<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">🔍 Alimentação em 2026-02 — R$1.320,50 total (18 transações)<br>• Supermercado Deville: R$380,00 (29%)<br>• iFood: R$290,00 (22%)<span class="tick">✓✓</span></div>
+        <div class="bubble user">e no Talentos?<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">🔍 Restaurante Talentos em 2026-02 — 6 lançamentos<br>💸 Total gasto: R$198,00<br>• 28/02 — R$35,00<br>• 25/02 — R$33,00<br>• 20/02 — R$35,00<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="tip-green"><strong>✅ Contexto inteligente:</strong> ATLAS lembra o período da pergunta anterior. "e no Talentos?" herda automaticamente o mês de fevereiro da conversa.</div>
 
       <div class="label">Posso comprar?</div>
       <div class="chat">
@@ -414,6 +460,47 @@
           "minhas parcelas"
         </div>
       </div>
+    </div>
+  </section>
+
+  <!-- MOVIMENTAÇÕES -->
+  <section id="movimentacoes">
+    <div class="section-header">
+      <span class="icon">🔄</span>
+      <h2>Movimentações (saídas + entradas)</h2>
+    </div>
+    <div class="section-body">
+      <p>"Gastos" mostra apenas despesas. "Movimentações" mostra tudo: despesas E receitas, separadas por 📤 SAÍDAS e 📥 ENTRADAS.</p>
+
+      <div class="label">Diferença entre gastos e movimentações</div>
+      <div class="grid">
+        <div class="grid-item">
+          <div class="gi-label">"gastos de hoje"</div>
+          Mostra apenas despesas<br>
+          💸 Total gasto: R$53,00
+        </div>
+        <div class="grid-item">
+          <div class="gi-label">"movimentações de hoje"</div>
+          Mostra saídas E entradas<br>
+          📤 Saídas + 📥 Entradas
+        </div>
+      </div>
+
+      <div class="label" style="margin-top:14px">Visão diária</div>
+      <div class="chat">
+        <div class="bubble user">movimentações de hoje<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">📊 Movimentações de hoje (09/03):<br><br>📤 SAÍDAS<br>• Restaurante Talentos — R$35,00 (Alimentação)<br>• Uber — R$18,00 (Transporte)<br><br>📥 ENTRADAS<br>• Uber — R$50,00 (Freelance)<br><br>💸 Total saídas: R$53,00<br>💰 Total entradas: R$50,00<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="label">Visão semanal / mensal</div>
+      <div class="chat">
+        <div class="bubble user">movimentações da semana<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">📊 Movimentações da semana (03/03 a 09/03):<br><br>📤 SAÍDAS — R$1.280,00<br>• Alimentação: R$420,00<br>• Transporte: R$180,00<br>• Moradia: R$680,00<br><br>📥 ENTRADAS — R$5.050,00<br>• Salário: R$5.000,00<br>• Freelance: R$50,00<span class="tick">✓✓</span></div>
+      </div>
+
+      <div class="tip"><strong>💡 Quando usar cada um:</strong><br>
+      • "gastos" → quando quer ver só o que saiu<br>
+      • "movimentações" → quando quer ver o panorama completo (entradas e saídas)</div>
     </div>
   </section>
 
@@ -482,6 +569,12 @@
         <div class="bubble atlas">💊 <strong>Evento agendado!</strong><br><strong>Título:</strong> Tomar remédio <em>(todo dia)</em><br><strong>Quando:</strong> 08:00<span class="tick">✓✓</span></div>
       </div>
 
+      <div class="label">Lembrete relativo</div>
+      <div class="chat">
+        <div class="bubble user">me lembra daqui 30 min tomar água<span class="tick">✓✓</span></div>
+        <div class="bubble atlas">🔵 <strong>Evento agendado!</strong><br><strong>Título:</strong> Tomar água<br><strong>Quando:</strong> 09/03/2026 às 15:30<br><em>(daqui 30 min)</em><span class="tick">✓✓</span></div>
+      </div>
+
       <div class="label">Lembrete por intervalo</div>
       <div class="chat">
         <div class="bubble user">tomar água de 4 em 4 horas<span class="tick">✓✓</span></div>
@@ -507,7 +600,10 @@
       • "todo dia às 8h" → diário<br>
       • "toda segunda às 9h" → semanal<br>
       • "todo dia 15" → mensal<br>
-      • "de 4 em 4 horas" → intervalo (8h-22h)</div>
+      • "de 4 em 4 horas" → intervalo (8h-22h)<br>
+      • "daqui 30 min" / "daqui 2 horas" → tempo relativo</div>
+
+      <div class="tip-green"><strong>✅ Notificações via WhatsApp:</strong> Todos os lembretes e alertas são enviados automaticamente pelo WhatsApp na hora marcada. Não precisa instalar nada.</div>
     </div>
   </section>
 
@@ -584,26 +680,46 @@
 
       <div class="grid">
         <div class="grid-item">
-          <div class="gi-label">O que mostra</div>
-          Resumo financeiro<br>
-          Gráfico por categoria<br>
-          Gastos diários<br>
-          Score financeiro<br>
-          Lista de transações<br>
-          Cartões com fatura<br>
-          Agenda de eventos
+          <div class="gi-label">Gráficos</div>
+          🍩 Rosca por categoria<br>
+          📈 Linha de gastos diários<br>
+          🏆 Score com nota circular<br>
+          💳 Cartões com fatura atual
         </div>
         <div class="grid-item">
-          <div class="gi-label">O que pode fazer</div>
+          <div class="gi-label">CRUD completo</div>
           Editar transações<br>
           Excluir transações<br>
-          Filtrar por categoria<br>
-          Filtrar por cartão<br>
-          Adicionar cartão<br>
-          Editar/excluir cartão<br>
-          Excluir eventos
+          Criar/editar/excluir cartões<br>
+          Excluir eventos da agenda
         </div>
       </div>
+
+      <div class="grid" style="margin-top:8px">
+        <div class="grid-item">
+          <div class="gi-label">Filtros por período</div>
+          Mês atual / anterior<br>
+          Semana / Hoje<br>
+          Últimos 7d / 15d<br>
+          Intervalo personalizado
+        </div>
+        <div class="grid-item">
+          <div class="gi-label">Filtros por tipo</div>
+          Clique na categoria → filtra<br>
+          Receitas / Despesas<br>
+          Por cartão específico<br>
+          Busca por merchant
+        </div>
+      </div>
+
+      <div class="tip-green"><strong>✅ Seções do painel:</strong><br>
+      • Resumo financeiro (receitas, despesas, saldo)<br>
+      • Gráfico rosca por categoria com clique para filtrar<br>
+      • Gráfico de linha de gastos diários<br>
+      • Score financeiro com círculo e nota (A+ a F)<br>
+      • Lista completa de transações (editar/excluir)<br>
+      • Cartões de crédito com acompanhamento de fatura<br>
+      • Agenda de eventos com visual de calendário</div>
     </div>
   </section>
 

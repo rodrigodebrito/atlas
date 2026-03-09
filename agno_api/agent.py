@@ -6754,7 +6754,7 @@ _PANEL_BASE_URL = os.getenv("RENDER_EXTERNAL_URL", "https://atlas-m3wb.onrender.
 
 
 def _generate_panel_token(user_id: str) -> str:
-    """Gera token temporario (30min) para acesso ao painel."""
+    """Gera token temporário (30min) para acesso ao painel."""
     token = _secrets.token_urlsafe(32)
     expires = (_now_br() + timedelta(minutes=30)).isoformat()
     conn = _get_conn()
@@ -6825,6 +6825,7 @@ def _get_panel_data_inner(conn, user_id: str, month: str) -> dict:
     income_total = 0
     cat_totals: dict = {}
     daily_totals: dict = {}
+    daily_income: dict = {}
     merchants_count: dict = {}
 
     for tx in tx_rows:
@@ -6847,6 +6848,9 @@ def _get_panel_data_inner(conn, user_id: str, month: str) -> dict:
                 merchants_count[merchant] = merchants_count.get(merchant, 0) + 1
         elif tx_type == "INCOME":
             income_total += amt
+            day = occurred[:10] if occurred else ""
+            if day:
+                daily_income[day] = daily_income.get(day, 0) + amt
 
     # Previous month for comparison
     m_y, m_m = int(month[:4]), int(month[5:7])
@@ -6916,13 +6920,13 @@ def _get_panel_data_inner(conn, user_id: str, month: str) -> dict:
         if prev_val > 0:
             change = ((total - prev_val) / prev_val) * 100
             arrow = "+" if change > 0 else ""
-            insights.append(f"{cat}: R${total/100:.2f} ({arrow}{change:.0f}% vs mes anterior)")
+            insights.append(f"{cat}: R${total/100:.2f} ({arrow}{change:.0f}% vs mês anterior)")
     if expense_total > 0 and days_elapsed > 0:
         projected = (expense_total / days_elapsed) * 30
-        insights.append(f"Projecao mensal: R${projected/100:.2f}")
+        insights.append(f"Projeção mensal: R${projected/100:.2f}")
 
     # Month label
-    months_pt = ["", "Janeiro", "Fevereiro", "Marco", "Abril", "Maio", "Junho",
+    months_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
                  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
     month_label = f"{months_pt[m_m]}/{m_y}"
 
@@ -6934,6 +6938,7 @@ def _get_panel_data_inner(conn, user_id: str, month: str) -> dict:
     days_in_month = _cal.monthrange(m_y, m_m)[1]
     daily_labels = [f"{d:02d}" for d in range(1, days_in_month + 1)]
     daily_values = [daily_totals.get(f"{month}-{d:02d}", 0) / 100 for d in range(1, days_in_month + 1)]
+    daily_income_values = [daily_income.get(f"{month}-{d:02d}", 0) / 100 for d in range(1, days_in_month + 1)]
 
     # Agenda events (próximos 30 dias)
     agenda_events = []
@@ -6963,7 +6968,7 @@ def _get_panel_data_inner(conn, user_id: str, month: str) -> dict:
         "income_budget": income_cents,
         "transactions": transactions,
         "categories": [{"name": c, "amount": a, "pct": a / expense_total * 100 if expense_total else 0} for c, a in sorted_cats],
-        "daily_labels": daily_labels, "daily_values": daily_values,
+        "daily_labels": daily_labels, "daily_values": daily_values, "daily_income_values": daily_income_values,
         "cards": cards,
         "agenda": agenda_events,
         "score": score, "grade": grade, "savings_rate": savings_rate,
@@ -7007,6 +7012,7 @@ def _render_panel_html(data: dict, token: str) -> str:
     cat_colors_json = _json.dumps(cat_colors[:max(len(data["categories"]), 1)])
     daily_labels_json = _json.dumps(data["daily_labels"])
     daily_values_json = _json.dumps(data["daily_values"])
+    daily_income_json = _json.dumps(data["daily_income_values"])
     cats_data_json = _safe_json(data["categories"])
 
     # Score
@@ -7297,8 +7303,8 @@ body{{
     </div>
   </div>
   <div class="score-details">
-    <span>Poupanca: {data['savings_rate']*100:.0f}%</span>
-    <span>{'📈' if data['expenses'] < data['prev_total'] else '📉' if data['prev_total'] > 0 else ''} {'vs mes ant: ' + fmt(data['prev_total']) if data['prev_total'] > 0 else ''}</span>
+    <span>Poupança: {data['savings_rate']*100:.0f}%</span>
+    <span>{'📈' if data['expenses'] < data['prev_total'] else '📉' if data['prev_total'] > 0 else ''} {'vs mês ant: ' + fmt(data['prev_total']) if data['prev_total'] > 0 else ''}</span>
   </div>
 </div>
 
@@ -7321,7 +7327,7 @@ body{{
 </div>
 
 <div class="period-bar">
-  <button class="period-btn active" onclick="setPeriod('month')">Mes</button>
+  <button class="period-btn active" onclick="setPeriod('month')">Mês</button>
   <button class="period-btn" onclick="setPeriod('week')">Semana</button>
   <button class="period-btn" onclick="setPeriod('today')">Hoje</button>
   <button class="period-btn" onclick="setPeriod('7d')">7 dias</button>
@@ -7332,7 +7338,7 @@ body{{
   <div style="display:flex;gap:8px;align-items:center;width:100%">
     <label style="color:var(--text2);font-size:12px">De:</label>
     <input type="date" id="periodFrom" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:var(--radius-xs);padding:6px 8px;font-size:13px">
-    <label style="color:var(--text2);font-size:12px">Ate:</label>
+    <label style="color:var(--text2);font-size:12px">Até:</label>
     <input type="date" id="periodTo" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:var(--radius-xs);padding:6px 8px;font-size:13px">
     <button onclick="applyCustomPeriod()" style="background:var(--green);color:#000;border:none;border-radius:var(--radius-xs);padding:6px 12px;font-weight:600;font-size:13px;cursor:pointer">OK</button>
   </div>
@@ -7347,7 +7353,7 @@ body{{
 </div>
 
 <div class="section">
-  <div class="section-title">Gastos diarios</div>
+  <div class="section-title">Movimentação diária</div>
   <div class="chart-container">
     <div class="chart-wrap"><canvas id="lineChart"></canvas></div>
   </div>
@@ -7357,7 +7363,7 @@ body{{
 
 <div class="section" id="txSection">
   <div class="section-title">
-    <span id="txTitle">Transacoes</span>
+    <span id="txTitle">Transações</span>
     <span class="count" id="txCount"></span>
   </div>
   <div class="tx-filters">
@@ -7370,7 +7376,7 @@ body{{
 </div>
 
 <div class="section" id="cardsSection">
-  <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">Cartoes <button onclick="addCard()" style="background:var(--green);color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:.85rem;cursor:pointer">+ Adicionar</button></div>
+  <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">Cartões <button onclick="addCard()" style="background:var(--green);color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:.85rem;cursor:pointer">+ Adicionar</button></div>
   <div id="cardsList"></div>
 </div>
 
@@ -7380,7 +7386,7 @@ body{{
 </div>
 
 <div class="footer">
-  ATLAS — Seu assistente financeiro · Link valido por 30 min
+  ATLAS — Seu assistente financeiro · Link válido por 30 min
 </div>
 
 </div><!-- /container -->
@@ -7388,7 +7394,7 @@ body{{
 <!-- Edit Modal -->
 <div class="modal-overlay" id="editModal" onclick="if(event.target===this)closeModal()">
   <div class="modal">
-    <h3>✏️ Editar transacao</h3>
+    <h3>✏️ Editar transação</h3>
     <input type="hidden" id="editId">
     <label>Valor (R$)</label>
     <input type="number" id="editAmount" step="0.01" inputmode="decimal" placeholder="0,00">
@@ -7422,7 +7428,7 @@ body{{
     <input type="number" id="cardDue" min="1" max="31" inputmode="numeric">
     <label>Limite total (R$)</label>
     <input type="number" id="cardLimit" step="0.01" inputmode="decimal">
-    <label>Disponivel (R$)</label>
+    <label>Disponível (R$)</label>
     <input type="number" id="cardAvail" step="0.01" inputmode="decimal">
     <div class="modal-btns">
       <button class="btn-cancel" onclick="closeCardModal()">Cancelar</button>
@@ -7472,7 +7478,7 @@ function setPeriod(period) {{
   currentCardFilter = null;
   currentFilter = 'ALL';
   document.querySelectorAll('.period-btn').forEach(b => b.classList.toggle('active', b.textContent.toLowerCase().includes(
-    period === 'month' ? 'mes' : period === 'week' ? 'semana' : period === 'today' ? 'hoje' : period === '7d' ? '7' : '15'
+    period === 'month' ? 'mês' : period === 'week' ? 'semana' : period === 'today' ? 'hoje' : period === '7d' ? '7' : '15'
   )));
   document.querySelectorAll('.tx-filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === 'ALL'));
   renderTxList();
@@ -7527,7 +7533,7 @@ function updateDashboard() {{
       <span class="cat-chevron">›</span>
     </div>`;
   }});
-  document.getElementById('catBreakdown').innerHTML = catHtml || '<div class="empty-state">Sem gastos neste periodo</div>';
+  document.getElementById('catBreakdown').innerHTML = catHtml || '<div class="empty-state">Sem gastos neste período</div>';
 }}
 
 let customFrom = '', customTo = '';
@@ -7636,14 +7642,14 @@ function renderTxList() {{
   if (sortAsc) txs.reverse();
 
   const title = currentCatFilter ? currentCatFilter :
-                currentCardFilter ? ALL_CARDS.find(c => c.id === currentCardFilter)?.name || 'Cartao' :
+                currentCardFilter ? ALL_CARDS.find(c => c.id === currentCardFilter)?.name || 'Cartão' :
                 currentFilter === 'INCOME' ? 'Receitas' :
-                currentFilter === 'EXPENSE' ? 'Gastos' : 'Transacoes';
+                currentFilter === 'EXPENSE' ? 'Gastos' : 'Transações';
   document.getElementById('txTitle').textContent = title;
   document.getElementById('txCount').textContent = txs.length + ' itens';
 
   if (!txs.length) {{
-    document.getElementById('txList').innerHTML = '<div class="empty-state"><div class="emoji">📭</div>Nenhuma transacao neste periodo</div>';
+    document.getElementById('txList').innerHTML = '<div class="empty-state"><div class="emoji">📭</div>Nenhuma transação neste período</div>';
     return;
   }}
 
@@ -7710,7 +7716,7 @@ function renderCards() {{
       const barColor = barPct > 80 ? 'var(--red)' : barPct > 50 ? 'var(--yellow)' : 'var(--green)';
       availFmt = fmt(avail);
       limitHtml = `<div class="card-bar-wrap"><div class="card-bar" style="width:${{barPct.toFixed(0)}}%;background:${{barColor}}"></div></div>
-        <div class="card-limits"><span>Usado: ${{fmt(card.limit - avail)}}</span><span>Disponivel: <b>${{availFmt}}</b></span></div>`;
+        <div class="card-limits"><span>Usado: ${{fmt(card.limit - avail)}}</span><span>Disponível: <b>${{availFmt}}</b></span></div>`;
     }}
     html += `<div class="card-item" id="card-${{card.id}}">
       <div class="card-top" onclick="toggleCard('${{card.id}}')">
@@ -7784,7 +7790,7 @@ async function saveCard() {{
       method, headers: {{'Content-Type':'application/json'}}, body: JSON.stringify(body)
     }});
     if (r.ok) {{
-      showToast(isNew ? 'Cartao criado' : 'Cartao atualizado');
+      showToast(isNew ? 'Cartão criado' : 'Cartão atualizado');
       closeCardModal();
       setTimeout(() => location.reload(), 800);
     }} else {{ const d = await r.json().catch(()=>({{}})); showToast(d.error || 'Erro ao salvar', true); }}
@@ -7793,11 +7799,11 @@ async function saveCard() {{
 
 async function deleteCard() {{
   const id = document.getElementById('cardEditId').value;
-  if (!confirm('Excluir este cartao? As transacoes vinculadas nao serao apagadas.')) return;
+  if (!confirm('Excluir este cartão? As transações vinculadas não serão apagadas.')) return;
   try {{
     const r = await fetch(API + '/v1/api/card/' + id + '?t=' + TOKEN, {{method:'DELETE'}});
     if (r.ok) {{
-      showToast('Cartao excluido');
+      showToast('Cartão excluído');
       closeCardModal();
       setTimeout(() => location.reload(), 800);
     }} else {{ showToast('Erro ao excluir', true); }}
@@ -7871,14 +7877,14 @@ async function deleteAgendaEvent(id, title) {{
       const idx = ALL_AGENDA.findIndex(e => e.id === id);
       if (idx >= 0) ALL_AGENDA.splice(idx, 1);
       renderAgenda();
-      showToast('Evento excluido');
+      showToast('Evento excluído');
     }} else {{ showToast('Erro ao excluir', true); }}
   }} catch(e) {{ showToast('Erro de conexao', true); }}
 }}
 
 // ==================== TX CRUD ====================
 async function deleteTx(id) {{
-  if (!confirm('Apagar esta transacao?')) return;
+  if (!confirm('Apagar esta transação?')) return;
   try {{
     const r = await fetch(API + '/v1/api/transaction/' + id + '?t=' + TOKEN, {{method:'DELETE'}});
     if (r.ok) {{
@@ -7959,7 +7965,12 @@ document.addEventListener('DOMContentLoaded', () => {{
       datasets: [{{
         label: 'Gastos',
         data: {daily_values_json},
-        borderColor: '#4fc3f7', backgroundColor: 'rgba(79,195,247,0.08)',
+        borderColor: '#ef5350', backgroundColor: 'rgba(239,83,80,0.08)',
+        fill: true, tension: 0.3, pointRadius: 1.5, pointHoverRadius: 6, borderWidth: 2
+      }}, {{
+        label: 'Receitas',
+        data: {daily_income_json},
+        borderColor: '#00e5a0', backgroundColor: 'rgba(0,229,160,0.08)',
         fill: true, tension: 0.3, pointRadius: 1.5, pointHoverRadius: 6, borderWidth: 2
       }}]
     }},
@@ -7969,7 +7980,7 @@ document.addEventListener('DOMContentLoaded', () => {{
         x: {{ ticks: {{ color: '#555', maxTicksLimit: 10, font: {{size:10}} }}, grid: {{ color: 'rgba(255,255,255,0.03)' }} }},
         y: {{ ticks: {{ color: '#555', callback: v => 'R$' + v, font: {{size:10}} }}, grid: {{ color: 'rgba(255,255,255,0.05)' }} }}
       }},
-      plugins: {{ legend: {{ display: false }} }}
+      plugins: {{ legend: {{ display: true, labels: {{ color: '#aaa', boxWidth: 12, padding: 16, font: {{size: 11}} }} }} }}
     }}
   }});
 }});
@@ -7980,7 +7991,7 @@ document.addEventListener('DOMContentLoaded', () => {{
 
 @app.get("/v1/painel")
 def panel_page(t: str = "", phone: str = "", month: str = ""):
-    """Painel HTML inteligente — acesso via token temporario."""
+    """Painel HTML inteligente — acesso via token temporário."""
     _error_page = (
         "<html><body style='background:#0a0a1a;color:#fff;text-align:center;padding:60px;font-family:sans-serif'>"
         "<h2>{title}</h2><p>{msg}</p></body></html>"
@@ -8019,17 +8030,17 @@ def panel_page(t: str = "", phone: str = "", month: str = ""):
         _err = _tb.format_exc()
         print(f"[PAINEL] Erro ao gerar painel: {_err}")
         return _HTMLResponse(
-            _error_page.format(title="Erro temporario", msg="Tente novamente em alguns segundos.<br>Se persistir, peca um novo link no WhatsApp."),
+            _error_page.format(title="Erro temporário", msg="Tente novamente em alguns segundos.<br>Se persistir, peça um novo link no WhatsApp."),
             status_code=200,
         )
 
 
 @app.delete("/v1/api/transaction/{tx_id}")
 def delete_transaction_api(tx_id: str, t: str = ""):
-    """Apaga uma transacao via API do painel."""
+    """Apaga uma transação via API do painel."""
     user_id = _validate_panel_token(t)
     if not user_id:
-        return _JSONResponse({"error": "Token invalido ou expirado"}, status_code=401)
+        return _JSONResponse({"error": "Token inválido ou expirado"}, status_code=401)
     try:
         conn = _get_conn()
         cur = conn.cursor()
@@ -8039,7 +8050,7 @@ def delete_transaction_api(tx_id: str, t: str = ""):
         conn.close()
         if affected:
             return _JSONResponse({"ok": True})
-        return _JSONResponse({"error": "Transacao nao encontrada"}, status_code=404)
+        return _JSONResponse({"error": "Transação não encontrada"}, status_code=404)
     except Exception as exc:
         print(f"[PAINEL] Erro ao deletar tx {tx_id}: {exc}")
         return _JSONResponse({"error": "Erro interno"}, status_code=500)
@@ -8047,10 +8058,10 @@ def delete_transaction_api(tx_id: str, t: str = ""):
 
 @app.put("/v1/api/transaction/{tx_id}")
 async def edit_transaction_api(tx_id: str, request: _Request, t: str = ""):
-    """Edita uma transacao via API do painel."""
+    """Edita uma transação via API do painel."""
     user_id = _validate_panel_token(t)
     if not user_id:
-        return _JSONResponse({"error": "Token invalido ou expirado"}, status_code=401)
+        return _JSONResponse({"error": "Token inválido ou expirado"}, status_code=401)
     try:
         body = await request.json()
         updates = []
@@ -8078,7 +8089,7 @@ async def edit_transaction_api(tx_id: str, request: _Request, t: str = ""):
         conn.close()
         if affected:
             return _JSONResponse({"ok": True})
-        return _JSONResponse({"error": "Transacao nao encontrada"}, status_code=404)
+        return _JSONResponse({"error": "Transação não encontrada"}, status_code=404)
     except Exception as exc:
         print(f"[PAINEL] Erro ao editar tx {tx_id}: {exc}")
         return _JSONResponse({"error": "Erro interno"}, status_code=500)
@@ -8089,7 +8100,7 @@ async def edit_card_api(card_id: str, request: _Request, t: str = ""):
     """Edita dados de um cartao via API do painel."""
     user_id = _validate_panel_token(t)
     if not user_id:
-        return _JSONResponse({"error": "Token invalido ou expirado"}, status_code=401)
+        return _JSONResponse({"error": "Token inválido ou expirado"}, status_code=401)
     try:
         body = await request.json()
         updates = []
@@ -8120,7 +8131,7 @@ async def edit_card_api(card_id: str, request: _Request, t: str = ""):
         conn.close()
         if affected:
             return _JSONResponse({"ok": True})
-        return _JSONResponse({"error": "Cartao nao encontrado"}, status_code=404)
+        return _JSONResponse({"error": "Cartão não encontrado"}, status_code=404)
     except Exception as exc:
         print(f"[PAINEL] Erro ao editar card {card_id}: {exc}")
         return _JSONResponse({"error": "Erro interno"}, status_code=500)
@@ -8128,14 +8139,14 @@ async def edit_card_api(card_id: str, request: _Request, t: str = ""):
 
 @app.delete("/v1/api/card/{card_id}")
 async def delete_card_api(card_id: str, t: str = ""):
-    """Exclui um cartao via API do painel."""
+    """Exclui um cartão via API do painel."""
     user_id = _validate_panel_token(t)
     if not user_id:
-        return _JSONResponse({"error": "Token invalido ou expirado"}, status_code=401)
+        return _JSONResponse({"error": "Token inválido ou expirado"}, status_code=401)
     try:
         conn = _get_conn()
         cur = conn.cursor()
-        # Desvincular transacoes do cartao (nao apaga)
+        # Desvincular transações do cartão (não apaga)
         cur.execute("UPDATE transactions SET card_id = NULL WHERE card_id = ? AND user_id = ?", (card_id, user_id))
         cur.execute("DELETE FROM credit_cards WHERE id = ? AND user_id = ?", (card_id, user_id))
         affected = cur.rowcount
@@ -8143,7 +8154,7 @@ async def delete_card_api(card_id: str, t: str = ""):
         conn.close()
         if affected:
             return _JSONResponse({"ok": True})
-        return _JSONResponse({"error": "Cartao nao encontrado"}, status_code=404)
+        return _JSONResponse({"error": "Cartão não encontrado"}, status_code=404)
     except Exception as exc:
         print(f"[PAINEL] Erro ao excluir card {card_id}: {exc}")
         return _JSONResponse({"error": "Erro interno"}, status_code=500)
@@ -8154,7 +8165,7 @@ async def create_card_api(request: _Request, t: str = ""):
     """Cria um novo cartao via API do painel."""
     user_id = _validate_panel_token(t)
     if not user_id:
-        return _JSONResponse({"error": "Token invalido ou expirado"}, status_code=401)
+        return _JSONResponse({"error": "Token inválido ou expirado"}, status_code=401)
     try:
         body = await request.json()
         name = (body.get("name") or "").strip()
@@ -8186,7 +8197,7 @@ async def delete_agenda_event_api(event_id: str, t: str = ""):
     """Exclui um evento da agenda via API do painel."""
     user_id = _validate_panel_token(t)
     if not user_id:
-        return _JSONResponse({"error": "Token invalido ou expirado"}, status_code=401)
+        return _JSONResponse({"error": "Token inválido ou expirado"}, status_code=401)
     try:
         conn = _get_conn()
         cur = conn.cursor()
@@ -8196,7 +8207,7 @@ async def delete_agenda_event_api(event_id: str, t: str = ""):
         conn.close()
         if affected:
             return _JSONResponse({"ok": True})
-        return _JSONResponse({"error": "Evento nao encontrado"}, status_code=404)
+        return _JSONResponse({"error": "Evento não encontrado"}, status_code=404)
     except Exception as exc:
         print(f"[PAINEL] Erro ao excluir evento {event_id}: {exc}")
         return _JSONResponse({"error": "Erro interno"}, status_code=500)
@@ -8210,7 +8221,7 @@ def get_panel_url(user_phone: str) -> str:
         cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
         row = cur.fetchone()
         if not row:
-            print(f"[PAINEL] get_panel_url: phone '{user_phone}' nao encontrado na tabela users")
+            print(f"[PAINEL] get_panel_url: phone '{user_phone}' não encontrado na tabela users")
             conn.close()
             return ""
         conn.close()
@@ -9204,7 +9215,7 @@ def _keyword_route(user_phone: str, msg: str) -> dict | None:
             return {"response": result}
 
     # --- AJUDA ---
-    if any(k in n for k in ("ajuda", "help", "menu", "comando", "o que voce faz", "o que vc faz")):
+    if any(k in n for k in ("ajuda", "help", "menu", "comando", "o que voce faz", "o que você faz", "o que vc faz")):
         return {"response": _HELP_TEXT}
 
     return None  # Fallback ao LLM
