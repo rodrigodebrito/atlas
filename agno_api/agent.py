@@ -8873,6 +8873,67 @@ def _pre_route(message: str) -> dict | None:
         except Exception:
             pass
 
+    # --- AGENDA: snooze (adia 1h, adia 30 min, adia pra amanhã) ---
+    _snooze_m = _re_router.match(
+        r'(?:adia(?:r)?|snooze|soneca|depois|lembra (?:de novo |dnv )?(?:em |daqui ))\s*'
+        r'(?:pra |para |por |em |daqui )?'
+        r'(?:(\d+)\s*(?:min(?:uto)?s?)|(\d+)\s*h(?:ora)?s?|amanh[aã]|(\d+)\s*dia(?:s)?)[\s\?\!\.]*$',
+        msg
+    )
+    if _snooze_m:
+        try:
+            conn_sn = _get_conn()
+            cur_sn = conn_sn.cursor()
+            user_id_sn = _get_user_id(cur_sn, user_phone)
+            if user_id_sn:
+                # Busca o evento notificado mais recente (últimos 30 min)
+                cutoff = (today - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+                cur_sn.execute(
+                    """SELECT id, title, event_at, alert_minutes_before, recurrence_type, recurrence_rule,
+                              active_start_hour, active_end_hour
+                       FROM agenda_events
+                       WHERE user_id = ? AND status = 'active' AND last_notified_at >= ?
+                       ORDER BY last_notified_at DESC LIMIT 1""",
+                    (user_id_sn, cutoff),
+                )
+                sn_row = cur_sn.fetchone()
+                if sn_row:
+                    sn_id, sn_title, sn_event_at, sn_alert_min, sn_rec, sn_rule, sn_start_h, sn_end_h = sn_row
+                    # Calcula novo next_alert_at
+                    mins_text = _snooze_m.group(1)
+                    hours_text = _snooze_m.group(2)
+                    days_text = _snooze_m.group(3)
+                    if mins_text:
+                        snooze_delta = timedelta(minutes=int(mins_text))
+                        snooze_label = f"{mins_text} minutos"
+                    elif hours_text:
+                        snooze_delta = timedelta(hours=int(hours_text))
+                        snooze_label = f"{hours_text}h"
+                    elif days_text:
+                        snooze_delta = timedelta(days=int(days_text))
+                        snooze_label = f"{days_text} dia(s)"
+                    elif "amanh" in msg:
+                        snooze_delta = timedelta(days=1)
+                        snooze_label = "amanhã"
+                    else:
+                        snooze_delta = timedelta(hours=1)
+                        snooze_label = "1h"
+                    new_alert = (today + snooze_delta).strftime("%Y-%m-%d %H:%M")
+                    now_ts = today.strftime("%Y-%m-%d %H:%M:%S")
+                    cur_sn.execute(
+                        "UPDATE agenda_events SET next_alert_at = ?, last_notified_at = '', updated_at = ? WHERE id = ?",
+                        (new_alert, now_ts, sn_id),
+                    )
+                    conn_sn.commit()
+                    conn_sn.close()
+                    return {"response": f"⏰ Lembrete \"{sn_title}\" adiado por {snooze_label}.\nVou avisar de novo às {new_alert[11:16]}. ✌️"}
+                else:
+                    conn_sn.close()
+                    return {"response": "Não encontrei nenhum lembrete recente para adiar. Tente especificar qual evento quer adiar."}
+            conn_sn.close()
+        except Exception as _sn_exc:
+            print(f"[SNOOZE] Erro: {_sn_exc}")
+
     # --- PAINEL HTML ---
     if _re_router.match(r'(painel|dashboard|meu painel|me mostr[ea] o painel|abr[ea] o painel|quero ver o painel|ver painel)[\s\?\!\.]*$', msg):
         panel_url = get_panel_url(user_phone)
