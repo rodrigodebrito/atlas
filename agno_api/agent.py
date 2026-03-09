@@ -1965,8 +1965,8 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     exp_rows = [r for r in rows if r[0] == "EXPENSE"]
     inc_rows = [(r[1], r[2], r[3]) for r in rows if r[0] == "INCOME"]
 
-    filter_label = {"EXPENSE": " — apenas gastos", "INCOME": " — apenas receitas", "ALL": ""}.get(filter_type, "")
-    lines = [f"📅 *{user_name}*, suas movimentações — {period_label}{filter_label}:"]
+    type_label = {"EXPENSE": "gastos", "INCOME": "receitas", "ALL": "movimentações"}.get(filter_type, "movimentações")
+    lines = [f"📅 {user_name}, seus {type_label} — {period_label}:"]
     lines.append("─────────────────────")
 
     def build_exp_block(tx_list, ref_total):
