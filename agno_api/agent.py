@@ -8734,11 +8734,21 @@ def _pre_route(message: str) -> dict | None:
         "outros": "Outros",
         "salario": "Salário", "salário": "Salário",
     }
+    # Variante 1: "quanto gastei este mes no Deville" (tempo ANTES do merchant)
     _filter_m = _re_router.match(
-        r'(?:quanto (?:eu )?(?:j[aá] )?gastei (?:de |em |no |na |com |n[oa]s? )|gastos? (?:de |em |no |na |com |n[oa]s? )|(?:me )?mostr[ae]? (?:(?:os |meus )?gastos? )?(?:de |em |no |na |com |n[oa]s? )|(?:qual |quais )?(?:(?:os |meus )?gastos? )(?:de |em |no |na |com |n[oa]s? ))'
-        r'(.+?)(?:\s+(?:est[ea]|ess[ea]|neste|nesse|no|do|deste|desse)\s+m[eê]s|\s+(?:esta|essa|nesta|nessa|na|da|desta|dessa)\s+semana|\s+hoje)?[\s\?\!\.\,]*$',
+        r'(?:quanto (?:eu )?(?:j[aá] )?gastei|gastos?|(?:me )?mostr[ae]? (?:(?:os |meus )?gastos? )?)'
+        r'(?:\s+(?:est[ea]|ess[ea]|neste|nesse|no|do|deste|desse)\s+m[eê]s|\s+(?:esta|essa|nesta|nessa|na|da|desta|dessa)\s+semana|\s+hoje)?'
+        r'\s+(?:de |em |no |na |com |n[oa]s? )'
+        r'(.+?)[\s\?\!\.\,]*$',
         msg
     )
+    # Variante 2: "quanto gastei no Deville este mes" (merchant ANTES do tempo)
+    if not _filter_m:
+        _filter_m = _re_router.match(
+            r'(?:quanto (?:eu )?(?:j[aá] )?gastei (?:de |em |no |na |com |n[oa]s? )|gastos? (?:de |em |no |na |com |n[oa]s? )|(?:me )?mostr[ae]? (?:(?:os |meus )?gastos? )?(?:de |em |no |na |com |n[oa]s? )|(?:qual |quais )?(?:(?:os |meus )?gastos? )(?:de |em |no |na |com |n[oa]s? ))'
+            r'(.+?)(?:\s+(?:est[ea]|ess[ea]|neste|nesse|no|do|deste|desse)\s+m[eê]s|\s+(?:esta|essa|nesta|nessa|na|da|desta|dessa)\s+semana|\s+hoje)?[\s\?\!\.\,]*$',
+            msg
+        )
     if _filter_m:
         _filter_query = _filter_m.group(1).strip().rstrip("?!. ")
         # Remove preposições soltas no final
