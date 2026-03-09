@@ -9026,8 +9026,16 @@ def _pre_route(message: str) -> dict | None:
         _pay_name = _pay_m.group(1).strip()
         _pay_val_str = _pay_m.group(2)
         _pay_val = float(_pay_val_str.replace(",", ".")) if _pay_val_str else 0
+        # Guard: se "paguei" é seguido direto de um valor numérico + merchant, é GASTO, não pagamento
+        # Ex: "paguei 28 assinatura ElevenLabs" = gasto R$28 em ElevenLabs
+        # Mas: "paguei o aluguel 1500" = pagamento de compromisso (nome primeiro, valor depois)
+        if _re_router.match(r'(?:pagamento|paguei|pago|quitei|pagar)\s+\d+(?:[.,]\d{1,2})?\s+\w', msg):
+            _pay_m = None  # Cai no smart extractor como gasto
         # Remove noise words do nome
-        _pay_name_clean = _re_router.sub(r'\b(?:do|da|de|no|na|o|a|meu|minha|pelo|pela|cart[aã]o|cartao|fatura)\b', '', _pay_name).strip()
+        if _pay_m:
+            _pay_name_clean = _re_router.sub(r'\b(?:do|da|de|no|na|o|a|meu|minha|pelo|pela|cart[aã]o|cartao|fatura)\b', '', _pay_name).strip()
+        else:
+            _pay_name_clean = None
         if _pay_name_clean:
             # Verifica se é cartão de crédito (close_bill) ou conta genérica (pay_bill)
             _pay_conn = _get_conn()
