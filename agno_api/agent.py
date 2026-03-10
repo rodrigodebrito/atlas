@@ -1052,15 +1052,22 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
 
     # Filter type label
     type_label_m = {"EXPENSE": "gastos", "INCOME": "receitas", "ALL": "resumo"}.get(filter_type, "resumo")
-    lines = [f"📊 {user_name}, seu {type_label_m} de {month_label}{date_label}:"]
-    lines.append("─────────────────────")
+    lines = [
+        f"📊 *{user_name}, seu {type_label_m} de {month_label}*",
+        f"📆 {date_label.strip(' ()')}" if date_label else "",
+        f"",
+        f"─────────────────────",
+    ]
+    lines = [l for l in lines if l or l == ""]  # remove empty date line if no date
 
     income_rows_detail = [(r[1], r[2]) for r in rows if r[0] == "INCOME"]
     total_expenses = cash_expenses + credit_expenses
 
     if filter_type in ("ALL", "EXPENSE") and cat_totals_display:
         if filter_type == "ALL" and income_rows_detail:
-            lines.append("📤 SAÍDAS:")
+            lines.append("")
+            lines.append("📤 *SAÍDAS*")
+            lines.append("")
         for cat, total in sorted(cat_totals_display.items(), key=lambda x: -x[1]):
             pct = total / total_expenses * 100 if total_expenses else 0
             emoji = cat_emoji.get(cat, "💸")
@@ -1070,25 +1077,27 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
                 lines.append(f"  {item_line}")
             lines.append("")
 
+        lines.append(f"─────────────────────")
         if credit_expenses > 0:
             lines.append(
-                f"💸 *Total gasto: R${total_expenses/100:,.2f}*"
+                f"💸 *Total gasto:* R${total_expenses/100:,.2f}"
                 f"  (R${cash_expenses/100:,.2f} à vista · R${credit_expenses/100:,.2f} 💳 cartão)".replace(",", ".")
             )
         else:
-            lines.append(f"💸 *Total gasto: R${total_expenses/100:,.2f}*".replace(",", "."))
+            lines.append(f"💸 *Total gasto:* R${total_expenses/100:,.2f}".replace(",", "."))
 
     # Pagamentos de fatura (saída real, mas não duplica nos gastos)
     if bill_payment_lines:
         lines.append("")
-        lines.append(f"💳 *Pagamentos (faturas/contas): R${bill_payment_total/100:,.2f}*".replace(",", "."))
+        lines.append(f"💳 *Pagamentos (faturas/contas):* R${bill_payment_total/100:,.2f}".replace(",", "."))
         for bpl in bill_payment_lines:
             lines.append(f"  {bpl}")
 
     if filter_type in ("ALL", "INCOME") and income_rows_detail:
         lines.append("")
         if filter_type == "ALL":
-            lines.append("📥 ENTRADAS:")
+            lines.append("📥 *ENTRADAS*")
+            lines.append("")
         # Agrupa transações individuais de income por categoria
         from collections import defaultdict as _dd_inc
         _inc_by_cat = _dd_inc(list)
@@ -1097,15 +1106,17 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
             dt_lbl = f"{occurred[8:10]}/{occurred[5:7]}" if occurred and len(occurred) >= 10 else ""
             _inc_by_cat[cat].append((dt_lbl, label, amount))
         for cat, total in sorted(income_rows_detail, key=lambda x: -x[1]):
-            lines.append(f"💰 {cat} — R${total/100:,.2f}".replace(",", "."))
+            lines.append(f"💰 *{cat}* — R${total/100:,.2f}".replace(",", "."))
             for dt_lbl, label, amt in _inc_by_cat.get(cat, []):
                 lines.append(f"  • {dt_lbl} — {label}: R${amt/100:,.2f}".replace(",", "."))
             lines.append("")
-        lines.append(f"💰 Total recebido: R${income/100:,.2f}".replace(",", "."))
+        lines.append(f"─────────────────────")
+        lines.append(f"💰 *Total recebido:* R${income/100:,.2f}".replace(",", "."))
 
     if filter_type == "ALL":
-        lines.append("─────────────────────")
-        lines.append(f"{'✅' if balance >= 0 else '⚠️'} *Saldo: R${balance/100:,.2f}*".replace(",", "."))
+        lines.append("")
+        lines.append(f"─────────────────────")
+        lines.append(f"{'✅' if balance >= 0 else '⚠️'} *Saldo:* R${balance/100:,.2f}".replace(",", "."))
 
     # Calcula compromissos restantes do mês — direto da fonte, sem depender da tabela bills
     pending_commitments = 0
@@ -1406,8 +1417,11 @@ def get_installments_summary(user_phone: str) -> str:
 
     total_monthly = 0
     total_commitment = 0
-    lines = ["💳 *Compras parceladas*"]
-    lines.append("─────────────────────")
+    lines = [
+        f"💳 *Compras parceladas*",
+        f"",
+        f"─────────────────────",
+    ]
 
     # Novo sistema: conta registros futuros do grupo
     conn2 = _get_conn()
@@ -1463,9 +1477,12 @@ def get_installments_summary(user_phone: str) -> str:
     if total_monthly == 0:
         return "Nenhuma parcela ativa no momento."
 
-    lines.append("\n─────────────────────")
-    lines.append(f"💸 *Comprometido/mês:* R${total_monthly/100:.2f}")
-    lines.append(f"🔒 *Total restante:* R${total_commitment/100:.2f}")
+    monthly_fmt = f"R${total_monthly/100:,.2f}".replace(",", ".")
+    commit_fmt = f"R${total_commitment/100:,.2f}".replace(",", ".")
+    lines.append("")
+    lines.append("─────────────────────")
+    lines.append(f"💸 *Comprometido/mês:* {monthly_fmt}")
+    lines.append(f"🔒 *Total restante:* {commit_fmt}")
     return "\n".join(lines)
 
 
@@ -1991,8 +2008,12 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     inc_rows = [(r[1], r[2], r[3]) for r in rows if r[0] == "INCOME"]
 
     type_label = {"EXPENSE": "gastos", "INCOME": "receitas", "ALL": "movimentações"}.get(filter_type, "movimentações")
-    lines = [f"📅 {user_name}, seus {type_label} — {period_label}:"]
-    lines.append("─────────────────────")
+    lines = [
+        f"📅 *{user_name}, seus {type_label}*",
+        f"📆 {period_label}",
+        f"",
+        f"─────────────────────",
+    ]
 
     def build_exp_block(tx_list, ref_total):
         cat_totals: dict = defaultdict(int)
@@ -2054,23 +2075,26 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
         total_exp = sum(r[3] for r in _real_exp_rows)
         if _real_exp_rows:
             if filter_type == "ALL":
-                lines.append("📤 SAÍDAS:")
+                lines.append("")
+                lines.append("📤 *SAÍDAS*")
+                lines.append("")
             cat_totals_exp, exp_block, cash_tot, credit_tot = build_exp_block(_real_exp_rows, total_exp)
             lines.extend(exp_block)
+            lines.append(f"─────────────────────")
             if credit_tot > 0:
                 lines.append(
-                    f"💸 Total gastos: R${total_exp/100:,.2f}"
+                    f"💸 *Total gastos:* R${total_exp/100:,.2f}"
                     f"  (R${cash_tot/100:,.2f} à vista · R${credit_tot/100:,.2f} 💳 crédito)".replace(",", ".")
                 )
             else:
-                lines.append(f"💸 Total gastos: R${total_exp/100:,.2f}".replace(",", "."))
+                lines.append(f"💸 *Total gastos:* R${total_exp/100:,.2f}".replace(",", "."))
         else:
             cat_totals_exp = {}
         # Pagamentos de fatura separados
         if _bill_pay_rows:
             _bp_total = sum(r[3] for r in _bill_pay_rows)
             lines.append("")
-            lines.append(f"💳 Pagamentos (faturas/contas): R${_bp_total/100:,.2f}".replace(",", "."))
+            lines.append(f"💳 *Pagamentos (faturas/contas):* R${_bp_total/100:,.2f}".replace(",", "."))
             for _bpr in _bill_pay_rows:
                 _bp_merchant = _bpr[2].strip() if _bpr[2] else "Fatura"
                 lines.append(f"  • {_bp_merchant}: R${_bpr[3]/100:,.2f}".replace(",", "."))
@@ -2082,10 +2106,12 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
         total_inc = sum(r[2] for r in inc_rows)
         lines.append("")
         if filter_type == "ALL":
-            lines.append("📥 ENTRADAS:")
+            lines.append("📥 *ENTRADAS*")
+            lines.append("")
         cat_totals_inc, inc_block = build_inc_block(inc_rows, total_inc)
         lines.extend(inc_block)
-        lines.append(f"💰 Total recebido: R${total_inc/100:,.2f}".replace(",", "."))
+        lines.append(f"─────────────────────")
+        lines.append(f"💰 *Total recebido:* R${total_inc/100:,.2f}".replace(",", "."))
         if filter_type == "INCOME" and cat_totals_inc:
             tc = max(cat_totals_inc, key=lambda x: cat_totals_inc[x])
             top_cat_name, top_pct_val = tc, cat_totals_inc[tc] / total_inc * 100
@@ -2098,7 +2124,7 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
         _bal_emoji = "✅" if _balance >= 0 else "⚠️"
         lines.append("")
         lines.append("─────────────────────")
-        lines.append(f"{_bal_emoji} Saldo do dia: R${_balance/100:,.2f}".replace(",", "."))
+        lines.append(f"{_bal_emoji} *Saldo do dia:* R${_balance/100:,.2f}".replace(",", "."))
 
     if top_cat_name:
         lines.append(f"__top_category:{top_cat_name}:{top_pct_val:.0f}%")
@@ -2747,8 +2773,12 @@ def get_cards(user_phone: str) -> str:
         return "Nenhum cartão cadastrado. Use register_card para adicionar."
 
     today = _now_br()
-    lines = [f"💳 *Seus cartões* — {today.strftime('%d/%m/%Y')}"]
-    lines.append("─────────────────────")
+    lines = [
+        f"💳 *Seus cartões*",
+        f"📆 {today.strftime('%d/%m/%Y')}",
+        f"",
+        f"─────────────────────",
+    ]
     for card_row in cards:
         card_id, name, closing_day, due_day, limit_cents, opening_cents, last_paid = card_row[:7]
         available_cents = card_row[7] if len(card_row) > 7 else None
@@ -3011,14 +3041,24 @@ def get_recurring(user_phone: str) -> str:
         return "Nenhum gasto fixo cadastrado. Use register_recurring para adicionar."
 
     total = sum(r[1] for r in rows)
+    total_fmt = f"R${total/100:,.2f}".replace(",", ".")
     today = _now_br().day
-    lines = [f"📋 *Gastos fixos mensais* — Total: *R${total/100:.2f}*"]
-    lines.append("─────────────────────")
+    lines = [
+        f"📋 *Gastos fixos mensais*",
+        f"",
+        f"💰 *Total:* {total_fmt}/mês",
+        f"─────────────────────",
+    ]
     for name, amount, category, day, merchant, card_name in rows:
         paid = "✅" if day < today else "⏳"
-        card_str = f" 💳 {card_name}" if card_name else ""
-        merch_str = f" — {merchant}" if merchant else ""
-        lines.append(f"  {paid} *Dia {day:02d}:* {name}{merch_str} — R${amount/100:.2f} [{category}]{card_str}")
+        card_str = f"  💳 {card_name}" if card_name else ""
+        amt_fmt = f"R${amount/100:,.2f}".replace(",", ".")
+        lines.append(f"  {paid} *Dia {day:02d}* — *{name}*: {amt_fmt}  _{category}_{card_str}")
+
+    lines.append("")
+    lines.append("─────────────────────")
+    paid_count = sum(1 for r in rows if r[3] < today)
+    lines.append(f"✅ {paid_count}/{len(rows)} já passaram este mês")
 
     return "\n".join(lines)
 
@@ -3443,19 +3483,27 @@ def _get_bills_impl(user_phone: str, month: str = "") -> str:
     m_num = int(month.split("-")[1])
     month_label = months_pt.get(m_num, month)
 
-    lines = [f"📋 *Contas a pagar — {month_label}*"]
-    lines.append("─────────────────────")
+    total_fmt = f"R${total/100:,.2f}".replace(",", ".")
+    pending_fmt = f"R${pending_total/100:,.2f}".replace(",", ".")
+    lines = [
+        f"📋 *Contas a pagar — {month_label}*",
+        f"",
+        f"💰 *Total:* {total_fmt}  •  ⬜ *Pendente:* {pending_fmt}",
+        f"─────────────────────",
+    ]
 
     for name, amt, due, paid, paid_at, cat in rows:
         d = due[8:10] + "/" + due[5:7]
         amt_fmt = f"R${amt/100:,.2f}".replace(",", ".")
         if paid:
-            lines.append(f"  ✅ *{d}* — {name}: {amt_fmt} _(pago)_")
+            lines.append(f"  ✅ {d} — *{name}*: {amt_fmt} _(pago)_")
         else:
-            lines.append(f"  ⬜ *{d}* — {name}: {amt_fmt}")
+            lines.append(f"  ⬜ {d} — *{name}*: {amt_fmt}")
 
-    lines.append("─────────────────────")
-    lines.append(f"*Total:* {f'R${total/100:,.2f}'.replace(',', '.')} | ✅ *Pago:* {f'R${paid_total/100:,.2f}'.replace(',', '.')} | ⬜ *Falta:* {f'R${pending_total/100:,.2f}'.replace(',', '.')}")
+    lines.append("")
+    lines.append(f"─────────────────────")
+    lines.append(f"✅ *Pago:* {f'R${paid_total/100:,.2f}'.replace(',', '.')}  ({paid_count}/{len(rows)})")
+    lines.append(f"⬜ *Falta:* {pending_fmt}")
 
     return "\n".join(lines)
 
@@ -4203,8 +4251,12 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
 
     type_label_w = {"EXPENSE": "gastos da", "INCOME": "receitas da", "ALL": "resumo da"}.get(filter_type, "resumo da")
     period = f"{start_label}" if start_label == end_label else f"{start_label} a {end_label}"
-    lines = [f"📅 {user_name}, {type_label_w} semana ({period}):"]
-    lines.append("─────────────────────")
+    lines = [
+        f"📅 *{user_name}, {type_label_w} semana*",
+        f"📆 {period}",
+        f"",
+        f"─────────────────────",
+    ]
 
     top_cat_name, top_pct_val = "", 0.0
     alertas = []
@@ -4285,9 +4337,12 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     if filter_type in ("ALL", "EXPENSE") and exp_rows:
         total_exp = sum(r[3] for r in exp_rows)
         if filter_type == "ALL" and inc_rows:
-            lines.append("📤 SAÍDAS:")
+            lines.append("")
+            lines.append("📤 *SAÍDAS*")
+            lines.append("")
         ct = add_exp_block(exp_rows, total_exp)
-        lines.append(f"💸 Total gastos: R${total_exp/100:,.2f}".replace(",", "."))
+        lines.append(f"─────────────────────")
+        lines.append(f"💸 *Total gastos:* R${total_exp/100:,.2f}".replace(",", "."))
         if ct:
             tc = max(ct, key=lambda x: ct[x])
             top_cat_name, top_pct_val = tc, ct[tc] / total_exp * 100
@@ -4296,9 +4351,11 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
         total_inc = sum(r[2] for r in inc_rows)
         lines.append("")
         if filter_type == "ALL":
-            lines.append("📥 ENTRADAS:")
+            lines.append("📥 *ENTRADAS*")
+            lines.append("")
         ct = add_inc_block(inc_rows, total_inc)
-        lines.append(f"💰 *Total recebido: R${total_inc/100:,.2f}*".replace(",", "."))
+        lines.append(f"─────────────────────")
+        lines.append(f"💰 *Total recebido:* R${total_inc/100:,.2f}".replace(",", "."))
         if filter_type == "INCOME" and ct:
             tc = max(ct, key=lambda x: ct[x])
             top_cat_name, top_pct_val = tc, ct[tc] / total_inc * 100
@@ -4628,15 +4685,27 @@ def get_goals(user_phone: str) -> str:
     if not rows:
         return "Você ainda não tem metas. Crie uma com 'quero guardar R$5k pra viagem'."
 
-    lines = ["🎯 Suas metas:"]
+    lines = [
+        f"🎯 *Suas metas*",
+        f"",
+        f"─────────────────────",
+    ]
     for name, target, current, is_ef in rows:
         pct = min(current / target * 100, 100) if target else 0
         bar = _progress_bar(current, target)
         label = "🛡️ Reserva" if is_ef else "🎯"
         falta = max(target - current, 0)
-        lines.append(f"\n{label} {name}")
-        lines.append(f"   {bar} {pct:.0f}%")
-        lines.append(f"   R${current/100:.2f} / R${target/100:.2f}  •  faltam R${falta/100:.2f}")
+        current_fmt = f"R${current/100:,.2f}".replace(",", ".")
+        target_fmt = f"R${target/100:,.2f}".replace(",", ".")
+        falta_fmt = f"R${falta/100:,.2f}".replace(",", ".")
+        lines.append(f"")
+        lines.append(f"{label} *{name}*")
+        lines.append(f"  {bar}  {pct:.0f}%")
+        lines.append(f"  {current_fmt} / {target_fmt}  •  _faltam {falta_fmt}_")
+
+    lines.append("")
+    lines.append("─────────────────────")
+    lines.append("_Adicionar: \"guardei 200 na [meta]\"_")
 
     return "\n".join(lines)
 
@@ -4809,22 +4878,29 @@ def get_financial_score(user_phone: str) -> str:
         "C+": "😐", "C": "⚠️", "D": "😟", "F": "🚨"
     }[grade]
 
-    lines = [f"{grade_emoji} *Score de saúde financeira* — {final}/100 ({grade})"]
-    lines.append("─────────────────────")
+    lines = [
+        f"{grade_emoji} *Score de saúde financeira*",
+        f"",
+        f"🏅 *{final}/100* — Grau *{grade}*",
+        f"─────────────────────",
+    ]
 
     # detalhes dos componentes
+    lines.append("")
     lines.append("📊 *Componentes:*")
-    bar_s = "█" * round(s_score / 10) + "░" * (10 - round(s_score / 10))
-    bar_c = "█" * round(c_score / 10) + "░" * (10 - round(c_score / 10))
-    bar_g = "█" * round(g_score / 10) + "░" * (10 - round(g_score / 10))
-    bar_b = "█" * round(b_score / 10) + "░" * (10 - round(b_score / 10))
-    lines.append(f"  💰 *Poupança* {bar_s} {s_score:.0f}/100")
-    lines.append(f"  📅 *Consistência* {bar_c} {c_score:.0f}/100")
-    lines.append(f"  🎯 *Metas* {bar_g} {g_score:.0f}/100")
-    lines.append(f"  🧮 *Orçamento* {bar_b} {b_score:.0f}/100")
+    lines.append("")
+    bar_s = "▓" * round(s_score / 10) + "░" * (10 - round(s_score / 10))
+    bar_c = "▓" * round(c_score / 10) + "░" * (10 - round(c_score / 10))
+    bar_g = "▓" * round(g_score / 10) + "░" * (10 - round(g_score / 10))
+    bar_b = "▓" * round(b_score / 10) + "░" * (10 - round(b_score / 10))
+    lines.append(f"  💰 *Poupança*  {bar_s}  {s_score:.0f}/100")
+    lines.append(f"  📅 *Consistência*  {bar_c}  {c_score:.0f}/100")
+    lines.append(f"  🎯 *Metas*  {bar_g}  {g_score:.0f}/100")
+    lines.append(f"  🧮 *Orçamento*  {bar_b}  {b_score:.0f}/100")
 
     # contexto adicional
     lines.append("")
+    lines.append("─────────────────────")
     if has_income and savings_rate > 0:
         lines.append(f"💸 *Poupança:* {savings_rate*100:.1f}%")
     lines.append(f"📅 *Registros:* {active_days} de {days_elapsed} dias do mês")
@@ -4836,10 +4912,12 @@ def get_financial_score(user_phone: str) -> str:
         [("poupança", s_score), ("consistência", c_score), ("metas", g_score), ("orçamento", b_score)],
         key=lambda x: x[1],
     )
-    lines.append(f"\n💡 *Dica:* foque em {worst[0]} ({worst[1]:.0f}/100 agora)")
+    lines.append(f"")
+    lines.append(f"💡 *Dica:* foque em {worst[0]} ({worst[1]:.0f}/100 agora)")
 
     if not has_income:
-        lines.append("\n⚠️ Cadastre sua renda para um score mais preciso.")
+        lines.append("")
+        lines.append("⚠️ _Cadastre sua renda para um score mais preciso._")
 
     return "\n".join(lines)
 
