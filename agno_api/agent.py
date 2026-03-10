@@ -10892,6 +10892,104 @@ def daily_report():
     return {"messages": messages, "count": len(messages)}
 
 
+@app.get("/v1/reactivation/nudge")
+def reactivation_nudge():
+    """
+    Detecta usuários inativos (3-14 dias sem lançar) e envia nudge de reativação.
+    Chamado pelo n8n via cron diário às 14h BRT.
+    Não envia pra quem está nos primeiros 3 dias (onboarding cuida).
+    Retorna: {"messages": [{"phone": ..., "message": ...}], "count": N}
+    """
+    from datetime import datetime as _dt_react
+    now = _now_br()
+    month_str = now.strftime("%Y-%m")
+
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id, phone, name, created_at FROM users WHERE name != 'Usuário'")
+    users = cur.fetchall()
+
+    messages = []
+    for user_id, phone, name, created_at in users:
+        if not created_at:
+            continue
+
+        # Pula usuários nos primeiros 3 dias (onboarding drip cuida)
+        try:
+            created = _dt_react.strptime(created_at[:10], "%Y-%m-%d")
+        except Exception:
+            continue
+        days_since_signup = (now.date() - created.date()).days
+        if days_since_signup <= 3:
+            continue
+
+        first_name = name.split()[0] if name else "amigo"
+
+        # Última transação do usuário
+        cur.execute(
+            "SELECT MAX(occurred_at) FROM transactions WHERE user_id = ?",
+            (user_id,),
+        )
+        last_tx = cur.fetchone()[0]
+        if not last_tx:
+            # Nunca lançou nada mas já passou do onboarding → nudge leve
+            messages.append({
+                "phone": phone,
+                "message": (
+                    f"Oi, {first_name}! Tudo bem? 😊\n\n"
+                    "Vi que você ainda não registrou nenhum gasto.\n"
+                    "É rapidinho — basta digitar:\n\n"
+                    "• _\"almocei 35\"_\n"
+                    "• _\"uber 18\"_\n\n"
+                    "Tenta agora! Estou aqui pra te ajudar 💪"
+                ),
+            })
+            continue
+
+        # Calcula dias desde última transação
+        try:
+            last_date = _dt_react.strptime(last_tx[:10], "%Y-%m-%d")
+            days_inactive = (now.date() - last_date.date()).days
+        except Exception:
+            continue
+        # Ativo (< 3 dias) → pula
+        if days_inactive < 3:
+            continue
+        # Desistiu (> 14 dias) → não spamma
+        if days_inactive > 14:
+            continue
+
+        # Inativo há 3-14 dias → nudge com dados
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+            (user_id, month_str + "%"),
+        )
+        month_total = cur.fetchone()[0] or 0
+
+        if month_total > 0:
+            month_fmt = f"R${month_total/100:,.2f}".replace(",", ".")
+            msg = (
+                f"Oi, {first_name}! Faz {days_inactive} dias que não te vejo 😊\n\n"
+                f"📆 Seu mês até agora: *{month_fmt}* em gastos.\n\n"
+                "Manda um gasto de hoje que eu atualizo tudo pra você!\n"
+                "Ex: _\"almocei 35\"_ ou _\"mercado 120\"_"
+            )
+        else:
+            msg = (
+                f"Oi, {first_name}! Faz {days_inactive} dias que não te vejo 😊\n\n"
+                "Bora registrar os gastos de hoje?\n"
+                "Ex: _\"almocei 35\"_ ou _\"uber 18\"_\n\n"
+                "Quanto mais lançar, melhor fico nos seus resumos! 💪"
+            )
+
+        messages.append({"phone": phone, "message": msg})
+
+    conn.close()
+    return {"messages": messages, "count": len(messages)}
+
+
 # ============================================================
 # FATURA ANALYZER — parse + import endpoints
 # ============================================================
