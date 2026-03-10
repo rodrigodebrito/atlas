@@ -2220,7 +2220,22 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
         return f"Nenhuma transação em {category} em {month}."
 
     total = sum(r[1] for r in rows)
-    lines = [f"🔍 *{category}* em {month} — *R${total/100:.2f}* total ({len(rows)} transações)"]
+    total_fmt = f"R${total/100:,.2f}".replace(",", ".")
+
+    months_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+                 "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+    try:
+        y, m_num = map(int, month.split("-"))
+        month_label = f"{months_pt[m_num]}/{y}"
+    except Exception:
+        month_label = month
+
+    lines = [
+        f"📂 *{category} — {month_label}*",
+        f"",
+        f"💰 *Total:* {total_fmt}  ({len(rows)} transações)",
+        f"─────────────────────",
+    ]
 
     # group by merchant
     merchants: dict[str, int] = {}
@@ -2230,7 +2245,14 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
 
     for m, amt in sorted(merchants.items(), key=lambda x: -x[1]):
         pct = amt / total * 100
-        lines.append(f"  • {m}: R${amt/100:.2f} ({pct:.0f}%)")
+        amt_fmt = f"R${amt/100:,.2f}".replace(",", ".")
+        bar_filled = round(pct / 5)
+        bar = "▓" * bar_filled + "░" * (20 - bar_filled)
+        lines.append(f"  *{m}*  —  {amt_fmt}  ({pct:.0f}%)")
+        lines.append(f"  {bar}")
+
+    lines.append("")
+    lines.append(f"_Quer detalhar? \"gastos no [nome]\"_")
 
     return "\n".join(lines)
 
@@ -2274,18 +2296,35 @@ def get_all_categories_breakdown(user_phone: str, month: str = "") -> str:
     except Exception:
         month_label = month
 
-    lines = [f"📊 *Categorias — {month_label}*", f"💸 *Total:* R${grand_total/100:,.2f}".replace(",", "."), "─────────────────────"]
+    _cat_emojis = {
+        "Alimentação": "🍔", "Transporte": "🚗", "Moradia": "🏠",
+        "Saúde": "💊", "Lazer": "🎮", "Assinaturas": "📺",
+        "Educação": "📚", "Vestuário": "👕", "Pets": "🐾",
+        "Investimento": "📈", "Outros": "📦", "Cartão": "💳",
+    }
+
+    grand_total_fmt = f"R${grand_total/100:,.2f}".replace(",", ".")
+    lines = [
+        f"📊 *Categorias — {month_label}*",
+        f"",
+        f"💸 *Total gasto:* {grand_total_fmt}",
+        f"─────────────────────",
+    ]
 
     for cat, total, cnt in rows:
         pct = total / grand_total * 100
         bar_filled = round(pct / 5)
-        bar = "█" * bar_filled + "░" * (20 - bar_filled)
-        lines.append(f"*{cat or 'Sem categoria'}* — R${total/100:,.2f} ({pct:.0f}%)".replace(",", "."))
-        lines.append(f"{bar}  {cnt} transação(ões)")
+        bar = "▓" * bar_filled + "░" * (20 - bar_filled)
+        emoji = _cat_emojis.get(cat, "📦")
+        total_fmt = f"R${total/100:,.2f}".replace(",", ".")
+        lines.append(f"")
+        lines.append(f"{emoji} *{cat or 'Sem categoria'}*  —  {total_fmt}  ({pct:.0f}%)")
+        lines.append(f"  {bar}  _{cnt} transação{'ões' if cnt > 1 else ''}_")
 
     lines.append("")
-    lines.append("_Para detalhar uma categoria: \"quanto gastei em Alimentação?\"_")
-    lines.append("_Para mudar categoria: \"iFood é Lazer\"_")
+    lines.append("─────────────────────")
+    lines.append("_Detalhar: \"quanto gastei em Alimentação?\"_")
+    lines.append("_Mudar categoria: \"iFood é Lazer\"_")
 
     return "\n".join(lines)
 
@@ -2478,13 +2517,19 @@ def get_transactions_by_merchant(
     n = len(rows)
 
     merchant_display = rows[0][3] or merchant_query
-    header = f"🔍 *{merchant_display}*{period} — {n} lançamento{'s' if n > 1 else ''}"
-    if total_expense:
-        header += f"\n💸 Gasto total: *R${total_expense/100:,.2f}*".replace(",", ".")
-    if total_income:
-        header += f"\n💰 Recebido: *R${total_income/100:,.2f}*".replace(",", ".")
+    expense_fmt = f"R${total_expense/100:,.2f}".replace(",", ".") if total_expense else ""
+    income_fmt = f"R${total_income/100:,.2f}".replace(",", ".") if total_income else ""
 
-    lines = [header, ""]
+    lines = [
+        f"🔍 *{merchant_display}*{period}",
+        f"",
+    ]
+    if total_expense:
+        lines.append(f"💸 *Gasto total:* {expense_fmt}  ({n} lançamento{'s' if n > 1 else ''})")
+    if total_income:
+        lines.append(f"💰 *Recebido:* {income_fmt}")
+    lines.append(f"─────────────────────")
+
     for tx_type, cat, amt, merch, occurred in rows:
         try:
             d = occurred[:10]
@@ -2493,7 +2538,8 @@ def get_transactions_by_merchant(
         except Exception:
             date_str = occurred[:10]
         icon = "💰" if tx_type == "INCOME" else "💸"
-        lines.append(f"  {icon} R${amt/100:,.2f} — {cat}  •  {date_str}".replace(",", "."))
+        amt_fmt = f"R${amt/100:,.2f}".replace(",", ".")
+        lines.append(f"  {icon}  {amt_fmt}  —  {cat}  •  {date_str}")
 
     return "\n".join(lines)
 
