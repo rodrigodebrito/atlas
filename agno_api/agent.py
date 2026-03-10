@@ -8799,10 +8799,25 @@ def _onboard_if_new(user_phone: str, message: str) -> dict | None:
     fn(user_phone, first_name)
 
     welcome = (
-        f"Oi, {first_name}! Sou o *ATLAS* — seu assistente financeiro no WhatsApp 🎉\n\n"
-        "Pra começar, me manda um gasto que você fez hoje!\n\n"
-        "Ex: _\"almocei 35\"_ ou _\"mercado 120\"_ ou _\"uber 18\"_\n\n"
-        "Pode ir, estou esperando 😊"
+        f"Oi, {first_name}! Eu sou o *ATLAS* 🎉\n"
+        "Seu assistente financeiro direto no WhatsApp.\n\n"
+        "─────────────────────\n"
+        "📌 *O que eu faço por você:*\n\n"
+        "💸 Registro seus gastos automaticamente\n"
+        "💳 Controlo cartões, faturas e parcelas\n"
+        "📊 Monto resumos diários, semanais e mensais\n"
+        "🔔 Aviso quando tem conta pra pagar\n"
+        "🧠 Analiso se você pode comprar algo\n\n"
+        "─────────────────────\n"
+        "🚀 *Como funciona?*\n\n"
+        "Basta digitar naturalmente:\n"
+        "• _\"almocei 35\"_ → registro + categoria automática\n"
+        "• _\"uber 18\"_ → entendo na hora\n"
+        "• _\"mercado 120 no Nubank\"_ → já vinculo ao cartão\n\n"
+        "─────────────────────\n"
+        f"🎯 *Bora, {first_name}?*\n\n"
+        "Me manda um gasto que você fez hoje!\n"
+        "Pode ser qualquer coisa — eu entendo 😊"
     )
     return {"response": welcome}
 
