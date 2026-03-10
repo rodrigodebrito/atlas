@@ -8756,24 +8756,10 @@ def _onboard_if_new(user_phone: str, message: str) -> dict | None:
     fn(user_phone, first_name)
 
     welcome = (
-        f"Tudo certo, {first_name}! 🎉\n"
-        "Sou o *ATLAS* — seu assistente financeiro no WhatsApp.\n"
-        "Pode me mandar seus gastos assim:\n\n"
-        "💸 *Gastos do dia a dia:*\n"
-        "• _\"almocei 35 no Restaurante\"_\n"
-        "• _\"mercado 120\"_\n"
-        "• _\"uber 18\"_\n\n"
-        "💳 *Compras no cartão:*\n"
-        "• _\"comprei tênis 300 no Nubank\"_\n"
-        "• _\"notebook 3000 em 6x no Inter\"_\n\n"
-        "💰 *Receitas:*\n"
-        "• _\"recebi 4500 de salário\"_\n"
-        "• _\"entrou 1200 de freela\"_\n\n"
-        "📊 *Ver como está:*\n"
-        "• _\"como tá meu mês?\"_\n"
-        "• _\"posso comprar um tênis de 200?\"_\n\n"
-        "Digite *ajuda* pra ver tudo que sei fazer 🎯\n"
-        "👉 Manual completo: https://atlas-m3wb.onrender.com/manual"
+        f"Oi, {first_name}! Sou o *ATLAS* — seu assistente financeiro no WhatsApp 🎉\n\n"
+        "Pra começar, me manda um gasto que você fez hoje!\n\n"
+        "Ex: _\"almocei 35\"_ ou _\"mercado 120\"_ ou _\"uber 18\"_\n\n"
+        "Pode ir, estou esperando 😊"
     )
     return {"response": welcome}
 
@@ -10446,65 +10432,115 @@ def check_agenda_reminders():
 
 # ── ONBOARDING DRIP — mensagens educativas nos primeiros dias ──
 
-_ONBOARDING_DRIP = {
-    1: (
-        "👋 Oi, {name}! Aqui é o ATLAS.\n\n"
-        "Ontem você começou a usar o app e quero te ajudar a aproveitar ao máximo!\n\n"
-        "💡 *Dica do dia: Lance seus gastos*\n\n"
-        "É super simples — basta digitar naturalmente:\n"
-        "• _\"almocei 35\"_\n"
-        "• _\"mercado 120\"_\n"
-        "• _\"uber 18\"_\n\n"
-        "Eu entendo o valor, o lugar e a categoria automaticamente.\n\n"
-        "🎯 *Desafio:* Lance 3 gastos de hoje e depois pergunte:\n"
-        "_\"gastos de hoje\"_\n\n"
-        "Amanhã tem mais dicas! 😊"
-    ),
-    2: (
-        "🌟 Dia 2 com o ATLAS, {name}!\n\n"
-        "💡 *Dica do dia: Cartões e parcelas*\n\n"
-        "Lance gastos no cartão assim:\n"
-        "• _\"tênis 300 no Nubank\"_ → detecta o cartão\n"
-        "• _\"notebook 3000 em 6x no Inter\"_ → parcelas automáticas\n\n"
-        "Depois configure o fechamento:\n"
-        "• _\"Nubank fecha dia 3 vence dia 10\"_\n\n"
-        "E veja suas faturas:\n"
-        "• _\"meus cartões\"_\n"
-        "• _\"minhas parcelas\"_\n\n"
-        "💡 *Dica bônus: Compromissos fixos*\n\n"
-        "Cadastre suas contas:\n"
-        "• _\"aluguel 1500 todo dia 5\"_\n"
-        "• _\"internet 120 todo dia 15\"_\n\n"
-        "Eu aviso automaticamente quando estiver perto do vencimento!\n\n"
-        "🎯 *Desafio:* Cadastre 1 cartão e 2 gastos fixos."
-    ),
-    3: (
-        "🚀 Dia 3, {name}! Agora vem a parte boa.\n\n"
-        "💡 *Dica do dia: Inteligência financeira*\n\n"
-        "Pergunte pra mim:\n"
-        "• _\"como tá meu mês?\"_ — resumo completo\n"
-        "• _\"posso comprar um tênis de 200?\"_ — análise personalizada\n"
-        "• _\"vai sobrar até o fim do mês?\"_ — projeção\n"
-        "• _\"meu score financeiro\"_ — nota de 0-100\n\n"
-        "📅 *Agenda inteligente:*\n"
-        "• _\"me lembra amanhã 14h reunião\"_\n"
-        "• _\"lembrete tomar remédio todo dia 8h\"_\n\n"
-        "📊 *Painel visual:*\n"
-        "• _\"painel\"_ — gráficos, filtros, edição\n\n"
-        "🎯 *Desafio final:* Cadastre sua renda:\n"
-        "_\"minha renda é 5000\"_\n\n"
-        "Com a renda cadastrada, desbloqueio score, projeções e análise de compras!\n\n"
-        "─────────────────────\n"
-        "Gostando? O plano gratuito dá direito a 30 transações/mês.\n"
-        "Para uso ilimitado, diga _\"quero ser founder\"_ 🚀"
-    ),
-}
+def _build_drip_message(user_id, first_name, days_since, cur):
+    """Constrói mensagem de onboarding contextual baseada no uso real do usuário."""
+
+    if days_since == 1:
+        # Dia 1: verificar se lançou algum gasto
+        cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id = ? AND type = 'EXPENSE'", (user_id,))
+        tx_count = cur.fetchone()[0]
+
+        if tx_count > 0:
+            return (
+                f"💪 Oi, {first_name}! Vi que você já lançou {tx_count} gasto{'s' if tx_count > 1 else ''}. Parabéns!\n\n"
+                "Agora experimenta perguntar:\n"
+                "• _\"gastos de hoje\"_\n"
+                "• _\"como tá meu mês?\"_\n\n"
+                "Eu monto o resumo pra você na hora 😊\n\n"
+                "Amanhã tem mais dicas!"
+            )
+        else:
+            return (
+                f"👋 Oi, {first_name}! Aqui é o ATLAS.\n\n"
+                "Vi que você ainda não lançou nenhum gasto — sem stress!\n\n"
+                "É super simples, basta digitar:\n"
+                "• _\"almocei 35\"_\n"
+                "• _\"uber 18\"_\n"
+                "• _\"mercado 120\"_\n\n"
+                "Eu entendo tudo automaticamente.\n\n"
+                "🎯 *Tenta agora:* manda um gasto que fez hoje!"
+            )
+
+    elif days_since == 2:
+        # Dia 2: verificar se tem cartões cadastrados
+        cur.execute("SELECT COUNT(*) FROM cards WHERE user_id = ?", (user_id,))
+        has_cards = cur.fetchone()[0] > 0
+        cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id = ? AND type = 'EXPENSE'", (user_id,))
+        tx_count = cur.fetchone()[0]
+
+        if has_cards:
+            # Já tem cartão → ensina compromissos fixos
+            return (
+                f"🌟 Dia 2, {first_name}! Vi que já cadastrou seu cartão — show!\n\n"
+                "💡 *Dica: Compromissos fixos*\n\n"
+                "Cadastre suas contas mensais:\n"
+                "• _\"aluguel 1500 todo dia 5\"_\n"
+                "• _\"internet 120 todo dia 15\"_\n\n"
+                "Eu aviso automaticamente quando vencer!\n\n"
+                "🎯 *Tenta agora:* cadastra 1 conta fixa."
+            )
+        elif tx_count >= 3:
+            # Tem gastos mas sem cartão → ensina cartão
+            return (
+                f"🌟 Dia 2, {first_name}! Você tá mandando bem com {tx_count} gastos!\n\n"
+                "💡 *Dica: Cartão de crédito*\n\n"
+                "Lance gastos no cartão:\n"
+                "• _\"tênis 300 no Nubank\"_\n"
+                "• _\"notebook 3000 em 6x no Inter\"_\n\n"
+                "Configure o fechamento:\n"
+                "• _\"Nubank fecha dia 3 vence dia 10\"_\n\n"
+                "🎯 *Tenta agora:* cadastra um cartão!"
+            )
+        else:
+            # Pouco uso → reforça o básico
+            return (
+                f"🌟 Dia 2, {first_name}!\n\n"
+                "Sabia que eu entendo gastos escritos naturalmente?\n\n"
+                "• _\"almocei 35\"_ → Alimentação ✅\n"
+                "• _\"uber 18\"_ → Transporte ✅\n"
+                "• _\"50 farmácia\"_ → Saúde ✅\n\n"
+                "Pode mandar vários de uma vez, um por linha!\n\n"
+                "🎯 *Tenta agora:* manda 2 ou 3 gastos de hoje."
+            )
+
+    elif days_since == 3:
+        # Dia 3: painel + renda
+        cur.execute("SELECT income_cents FROM users WHERE id = ?", (user_id,))
+        row = cur.fetchone()
+        has_income = row and row[0] and row[0] > 0
+
+        if has_income:
+            return (
+                f"🚀 Dia 3, {first_name}! Tá tudo configurado.\n\n"
+                "Agora você pode perguntar:\n"
+                "• _\"posso comprar um tênis de 200?\"_\n"
+                "• _\"meu score financeiro\"_\n"
+                "• _\"vai sobrar até o fim do mês?\"_\n\n"
+                "📊 E tem o painel visual:\n"
+                "• _\"painel\"_ → gráficos, filtros e edição\n\n"
+                "Aproveita! 😊"
+            )
+        else:
+            return (
+                f"🚀 Dia 3, {first_name}! Uma última dica importante.\n\n"
+                "💡 *Cadastre sua renda:*\n"
+                "_\"minha renda é 5000\"_\n\n"
+                "Com a renda eu desbloqueio:\n"
+                "• 📊 Score financeiro (nota de 0-100)\n"
+                "• 🔮 Projeção de sobra no mês\n"
+                "• 🛒 Análise de compras (\"posso comprar X?\")\n\n"
+                "📊 E tem o painel visual:\n"
+                "• _\"painel\"_ → gráficos completos\n\n"
+                "🎯 *Tenta agora:* diz quanto ganha por mês!"
+            )
+
+    return None
 
 
 @app.get("/v1/onboarding/drip")
 def onboarding_drip():
     """
-    Retorna mensagens de onboarding para usuários nos primeiros 3 dias.
+    Retorna mensagens de onboarding contextuais para usuários nos primeiros 3 dias.
     Chamado pelo n8n via cron diário (ex: 10h da manhã).
     Retorna: {"messages": [{"phone": ..., "message": ..., "day": N}], "count": N}
     """
@@ -10513,13 +10549,11 @@ def onboarding_drip():
     conn = _get_conn()
     cur = conn.cursor()
 
-    # Busca usuários criados nos últimos 3 dias
-    cur.execute("SELECT phone, name, created_at FROM users WHERE name != 'Usuário'")
+    cur.execute("SELECT id, phone, name, created_at FROM users WHERE name != 'Usuário'")
     users = cur.fetchall()
-    conn.close()
 
     messages = []
-    for phone, name, created_at in users:
+    for user_id, phone, name, created_at in users:
         if not created_at:
             continue
         try:
@@ -10530,15 +10564,15 @@ def onboarding_drip():
             except Exception:
                 continue
 
-        # Calcula dias desde criação (dia 0 = dia que criou, dia 1 = amanhã)
         days_since = (now.date() - created.date()).days
 
-        if days_since in _ONBOARDING_DRIP:
-            template = _ONBOARDING_DRIP[days_since]
+        if days_since in (1, 2, 3):
             first_name = name.split()[0] if name else "amigo"
-            message = template.format(name=first_name)
-            messages.append({"phone": phone, "message": message, "day": days_since})
+            message = _build_drip_message(user_id, first_name, days_since, cur)
+            if message:
+                messages.append({"phone": phone, "message": message, "day": days_since})
 
+    conn.close()
     return {"messages": messages, "count": len(messages)}
 
 
@@ -10658,6 +10692,157 @@ def weekly_report():
         lines.append(f"✅ {tx_count} lançamentos na semana")
         lines.append("")
         lines.append("Boa semana! Diga \"como tá meu mês?\" pra ver o mensal. 🎯")
+
+        messages.append({"phone": phone, "message": "\n".join(lines)})
+
+    conn.close()
+    return {"messages": messages, "count": len(messages)}
+
+
+@app.get("/v1/reports/daily")
+def daily_report():
+    """
+    Gera relatório diário personalizado para usuários ativos.
+    Chamado pelo n8n via cron diário às 20h BRT (23h UTC).
+    Retorna: {"messages": [{"phone": ..., "message": ...}], "count": N}
+    """
+    from collections import defaultdict
+    today = _now_br()
+    today_str = today.strftime("%Y-%m-%d")
+    today_label = today.strftime("%d/%m")
+    month_str = today.strftime("%Y-%m")
+
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id, phone, name, income_cents FROM users WHERE name != 'Usuário'")
+    users = cur.fetchall()
+
+    # Pré-calcula features usadas por user para dicas contextuais
+    _TIPS = [
+        ("cards", "💳 Sabia que pode cadastrar cartões? Diga: _\"tenho Nubank\"_"),
+        ("commitments", "📅 Cadastre contas fixas: _\"aluguel 1500 todo dia 5\"_"),
+        ("income", "💰 Cadastre sua renda pra eu calcular projeções: _\"minha renda é 5000\"_"),
+        ("agenda", "⏰ Crie lembretes: _\"me lembra amanhã 14h reunião\"_"),
+        ("goals", "🎯 Crie uma meta: _\"meta viagem 5000\"_"),
+        ("panel", "📊 Veja seu painel visual: diga _\"painel\"_"),
+    ]
+
+    messages = []
+    for user_id, phone, name, income_cents in users:
+        first_name = name.split()[0] if name else "amigo"
+
+        # Transações do dia
+        cur.execute(
+            """SELECT type, amount_cents, category, merchant
+               FROM transactions WHERE user_id = ? AND occurred_at >= ? AND occurred_at <= ?""",
+            (user_id, today_str, today_str + " 23:59:59"),
+        )
+        today_txs = cur.fetchall()
+
+        # Total do mês até agora
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+            (user_id, month_str + "%"),
+        )
+        month_expense = cur.fetchone()[0] or 0
+
+        # Se não tem atividade no mês inteiro, pula (user inativo)
+        if month_expense == 0 and not today_txs:
+            continue
+
+        lines = []
+
+        if today_txs:
+            # Tem gastos hoje → resumo do dia
+            expense_today = 0
+            income_today = 0
+            cat_totals = defaultdict(int)
+            for tx_type, amt, cat, merchant in today_txs:
+                if tx_type == "EXPENSE":
+                    expense_today += amt
+                    cat_totals[cat or "Outros"] += amt
+                elif tx_type == "INCOME":
+                    income_today += amt
+
+            lines.append(f"📊 *Resumo do Dia* — {today_label}")
+            lines.append(f"Oi, {first_name}!")
+            lines.append("")
+            lines.append(f"📤 Gastos hoje: R${expense_today/100:,.2f}".replace(",", "."))
+            if income_today > 0:
+                lines.append(f"📥 Receitas hoje: R${income_today/100:,.2f}".replace(",", "."))
+
+            # Top categorias do dia
+            if cat_totals:
+                cat_emoji_map = {
+                    "Alimentação": "🍽", "Transporte": "🚗", "Moradia": "🏠",
+                    "Saúde": "💊", "Lazer": "🎮", "Assinaturas": "📱",
+                    "Educação": "📚", "Vestuário": "👟", "Pets": "🐾", "Outros": "📦",
+                }
+                sorted_cats = sorted(cat_totals.items(), key=lambda x: -x[1])[:3]
+                for cat, total in sorted_cats:
+                    emoji = cat_emoji_map.get(cat, "💸")
+                    lines.append(f"  {emoji} {cat}: R${total/100:,.2f}".replace(",", "."))
+
+            lines.append("")
+            lines.append(f"📆 Mês até agora: R${month_expense/100:,.2f}".replace(",", "."))
+
+            # Se tem renda, mostra quanto resta
+            if income_cents and income_cents > 0:
+                remaining = income_cents - month_expense
+                if remaining >= 0:
+                    lines.append(f"💰 Restam: R${remaining/100:,.2f}".replace(",", "."))
+                else:
+                    lines.append(f"⚠️ Estourou: R${abs(remaining)/100:,.2f}".replace(",", "."))
+
+            lines.append("")
+            lines.append(f"✅ {len(today_txs)} lançamento{'s' if len(today_txs) > 1 else ''} hoje")
+
+        else:
+            # Sem gastos hoje → nudge leve
+            lines.append(f"📊 *Seu dia* — {today_label}")
+            lines.append(f"Oi, {first_name}!")
+            lines.append("")
+            lines.append("Nenhum gasto registrado hoje.")
+            lines.append(f"📆 Mês até agora: R${month_expense/100:,.2f}".replace(",", "."))
+            if income_cents and income_cents > 0:
+                remaining = income_cents - month_expense
+                if remaining >= 0:
+                    lines.append(f"💰 Restam: R${remaining/100:,.2f}".replace(",", "."))
+            lines.append("")
+            lines.append("Gastou algo? Manda pra eu registrar 😊")
+
+        # Dica contextual: detecta feature não usada e sugere
+        cur.execute("SELECT COUNT(*) FROM cards WHERE user_id = ?", (user_id,))
+        has_cards = cur.fetchone()[0] > 0
+        cur.execute("SELECT COUNT(*) FROM commitments WHERE user_id = ?", (user_id,))
+        has_commitments = cur.fetchone()[0] > 0
+        cur.execute("SELECT COUNT(*) FROM agenda_events WHERE user_id = ?", (user_id,))
+        has_agenda = cur.fetchone()[0] > 0
+        cur.execute("SELECT COUNT(*) FROM goals WHERE user_id = ?", (user_id,))
+        has_goals = cur.fetchone()[0] > 0
+
+        unused = []
+        if not has_cards:
+            unused.append("cards")
+        if not has_commitments:
+            unused.append("commitments")
+        if not (income_cents and income_cents > 0):
+            unused.append("income")
+        if not has_agenda:
+            unused.append("agenda")
+        if not has_goals:
+            unused.append("goals")
+
+        # Escolhe 1 dica aleatória das features não usadas
+        tip = None
+        for key, text in _TIPS:
+            if key in unused:
+                tip = text
+                break
+        if tip:
+            lines.append("")
+            lines.append(f"💡 *Dica:* {tip}")
 
         messages.append({"phone": phone, "message": "\n".join(lines)})
 
