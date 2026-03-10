@@ -854,34 +854,35 @@ def save_transaction(
     if card_name:
         merchant_parts.append(card_display_name)
 
+    # Mapa de emojis por categoria
+    _cat_emoji_conf = {
+        "Alimentação": "🍽", "Transporte": "🚗", "Moradia": "🏠",
+        "Saúde": "💊", "Lazer": "🎮", "Assinaturas": "📱",
+        "Educação": "📚", "Vestuário": "👟", "Pets": "🐾",
+        "Investimento": "📈", "Outros": "📦",
+    }
+
     # Monta resposta WhatsApp formatada
     if transaction_type == "INCOME":
         amt_fmt = f"R${amount_cents/100:,.2f}".replace(",", ".")
-        lines = [f"💰 *Receita registrada!*"]
-        lines.append(f"*Valor:* {amt_fmt}")
-        lines.append(f"*Categoria:* {category}")
-        if merchant:
-            lines.append(f"*Origem:* {merchant}")
-        lines.append(f"📅 *Data:* {date_label}")
+        origin = f" — {merchant}" if merchant else ""
+        lines = [f"💰 *{amt_fmt}{origin}*"]
+        lines.append(f"📥 {category}  •  {date_label}")
         lines.append('_Errou? → "corrige" ou "apaga"_')
     elif installments > 1:
         parcela_fmt = f"R${amount_cents/100:,.2f}".replace(",", ".")
         total_fmt = f"R${total_amount_cents/100:,.2f}".replace(",", ".")
-        lines = [f"✅ *Parcelamento registrado!*"]
-        lines.append(f"*Valor:* {parcela_fmt}/mês × {installments}x ({total_fmt} total)")
-        lines.append(f"*Categoria:* {category}")
-        if merchant_parts:
-            lines.append("*Local:* " + "  •  ".join(merchant_parts))
-        lines.append(f"📅 *Data:* {date_label}")
+        cat_icon = _cat_emoji_conf.get(category, "💸")
+        local = " — " + "  •  ".join(merchant_parts) if merchant_parts else ""
+        lines = [f"✅ *{parcela_fmt}/mês × {installments}x*{local}"]
+        lines.append(f"{cat_icon} {category}  •  {total_fmt} total  •  {date_label}")
         lines.append('_Errou? → "corrige" ou "apaga"_')
     else:
         amt_fmt = f"R${amount_cents/100:,.2f}".replace(",", ".")
-        lines = [f"✅ *Gasto registrado!*"]
-        lines.append(f"*Valor:* {amt_fmt}")
-        lines.append(f"*Categoria:* {category}")
-        if merchant_parts:
-            lines.append("*Local:* " + "  •  ".join(merchant_parts))
-        lines.append(f"📅 *Data:* {date_label}")
+        cat_icon = _cat_emoji_conf.get(category, "💸")
+        local = " — " + "  •  ".join(merchant_parts) if merchant_parts else ""
+        lines = [f"✅ *{amt_fmt}{local}*"]
+        lines.append(f"{cat_icon} {category}  •  {date_label}")
         lines.append('_Errou? → "corrige" ou "apaga"_')
 
     result = "\n".join(lines)
