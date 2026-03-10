@@ -798,23 +798,34 @@ def save_transaction(
         card_suffix = f" ({card_display_name})"
         today_day = _now_br().day
         if card_closing_day > 0 and card_due_day > 0:
+            months_pt = ["", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+            _t = _now_br()
+
+            def _advance_month(y, m, n=1):
+                """Avança N meses."""
+                for _ in range(n):
+                    m += 1
+                    if m > 12:
+                        m = 1
+                        y += 1
+                return y, m
+
             if today_day > card_closing_day:
                 # Fatura já fechou — compra entra na PRÓXIMA fatura
-                # Calcula mês de pagamento: fecha mês que vem → vence mês+2
-                _t = _now_br()
-                _next_close_m = _t.month + 1 if _t.month < 12 else 1
-                _next_close_y = _t.year if _t.month < 12 else _t.year + 1
-                _pay_m = _next_close_m + 1 if _next_close_m < 12 else 1
-                _pay_y = _next_close_y if _next_close_m < 12 else _next_close_y + 1
-                months_pt = ["", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+                _next_close_y, _next_close_m = _advance_month(_t.year, _t.month, 1)
+                # Vencimento: mesmo mês se due_day > closing_day, senão mês seguinte
+                if card_due_day > card_closing_day:
+                    _pay_y, _pay_m = _next_close_y, _next_close_m
+                else:
+                    _pay_y, _pay_m = _advance_month(_next_close_y, _next_close_m, 1)
                 next_bill_warning = f"\n📂 Entra na *próxima fatura* (fecha {card_closing_day}/{months_pt[_next_close_m]}) — paga só em *{card_due_day:02d}/{months_pt[_pay_m]}*"
             else:
                 # Fatura aberta — compra entra na fatura atual
-                # Calcula pagamento: fecha este mês → vence mês que vem
-                _t = _now_br()
-                _pay_m = _t.month + 1 if _t.month < 12 else 1
-                _pay_y = _t.year if _t.month < 12 else _t.year + 1
-                months_pt = ["", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+                # Vencimento: mesmo mês se due_day > closing_day, senão mês seguinte
+                if card_due_day > card_closing_day:
+                    _pay_y, _pay_m = _t.year, _t.month
+                else:
+                    _pay_y, _pay_m = _advance_month(_t.year, _t.month, 1)
                 days_to_close = card_closing_day - today_day
                 next_bill_warning = f"\n📋 Fatura fecha em *{days_to_close} dia(s)* (dia {card_closing_day}) — paga em *{card_due_day:02d}/{months_pt[_pay_m]}*"
         elif card_is_new:
@@ -3413,11 +3424,16 @@ def _get_bills_impl(user_phone: str, month: str = "") -> str:
         card_bill_ref = f"card_{card_id}"
 
         # Calcula mês correto de vencimento da fatura
-        # A fatura fecha no closing_day do mês e vence no due_day do MÊS SEGUINTE
-        # Ex: fecha 2/mar → vence 7/abr, fecha 25/mar → vence 10/abr
+        # Se due_day > closing_day → vence no MESMO mês do fechamento
+        # Se due_day <= closing_day → vence no MÊS SEGUINTE
         m_year, m_month = int(month[:4]), int(month[5:7])
-        due_m = m_month + 1 if m_month < 12 else 1
-        due_y = m_year if m_month < 12 else m_year + 1
+        if due_day > closing_day_card:
+            # Vence no mesmo mês (ex: fecha 5, vence 16 → mesmo mês)
+            due_m, due_y = m_month, m_year
+        else:
+            # Vence no mês seguinte (ex: fecha 25, vence 10 → mês seguinte)
+            due_m = m_month + 1 if m_month < 12 else 1
+            due_y = m_year if m_month < 12 else m_year + 1
         due = f"{due_y}-{due_m:02d}-{due_day:02d}"
 
         # Mês de vencimento para buscar bills existentes
