@@ -905,6 +905,48 @@ def save_transaction(
         except Exception:
             pass
 
+    # --- PRIMEIRO GASTO + RESUMO DO DIA ---
+    if transaction_type == "EXPENSE":
+        try:
+            _ctx_conn = _get_conn()
+            _ctx_cur = _ctx_conn.cursor()
+
+            # Total de gastos do usuário (pra saber se é o primeiro)
+            _ctx_cur.execute(
+                "SELECT COUNT(*) FROM transactions WHERE user_id = ? AND type = 'EXPENSE'",
+                (user_id,),
+            )
+            total_expenses = _ctx_cur.fetchone()[0]
+
+            if total_expenses == 1:
+                # Primeiro gasto de todos!
+                result += (
+                    "\n\n🎉 *Esse é seu primeiro gasto registrado!*"
+                    "\nA partir de agora, todo dia às 20h te mando um resumo."
+                    "\nContinua lançando — quanto mais registrar, melhor fico! 😊"
+                )
+            else:
+                # Resumo do dia inline
+                _ctx_cur.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(amount_cents), 0) FROM transactions "
+                    "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at >= ? AND occurred_at <= ?",
+                    (user_id, today_str, today_str + " 23:59:59"),
+                )
+                day_count, day_total = _ctx_cur.fetchone()
+                if day_count and day_count > 1:
+                    _cat_emoji = {
+                        "Alimentação": "🍽", "Transporte": "🚗", "Moradia": "🏠",
+                        "Saúde": "💊", "Lazer": "🎮", "Assinaturas": "📱",
+                        "Educação": "📚", "Vestuário": "👟", "Pets": "🐾", "Outros": "📦",
+                    }
+                    cat_icon = _cat_emoji.get(category, "💸")
+                    day_fmt = f"R${day_total/100:,.2f}".replace(",", ".")
+                    result += f"\n{cat_icon} Hoje: {day_fmt} em {day_count} gastos"
+
+            _ctx_conn.close()
+        except Exception:
+            pass
+
     return result
 
 
