@@ -9307,7 +9307,7 @@ def _pre_route(message: str) -> dict | None:
     }
     # Variante 1: "quanto gastei este mes no Deville" (tempo ANTES do merchant)
     _filter_m = _re_router.match(
-        r'(?:quanto (?:eu )?(?:j[aá] )?gastei|gastos?|(?:me )?mostr[ae]? (?:(?:os |meus )?gastos? )?)'
+        r'(?:qua[nl]to (?:eu )?(?:j[aá] )?gastei|gastos?|(?:me )?mostr[ae]? (?:(?:os |meus )?gastos? )?)'
         r'(?:\s+(?:est[ea]|ess[ea]|neste|nesse|no|do|deste|desse)\s+m[eê]s|\s+(?:esta|essa|nesta|nessa|na|da|desta|dessa)\s+semana|\s+hoje)?'
         r'\s+(?:de |em |no |na |com |n[oa]s? )'
         r'(.+?)[\s\?\!\.\,]*$',
@@ -9316,14 +9316,18 @@ def _pre_route(message: str) -> dict | None:
     # Variante 2: "quanto gastei no Deville este mes" (merchant ANTES do tempo)
     if not _filter_m:
         _filter_m = _re_router.match(
-            r'(?:quanto (?:eu )?(?:j[aá] )?gastei (?:de |em |no |na |com |n[oa]s? )|gastos? (?:de |em |no |na |com |n[oa]s? )|(?:me )?mostr[ae]? (?:(?:os |meus )?gastos? )?(?:de |em |no |na |com |n[oa]s? )|(?:qual |quais )?(?:(?:os |meus )?gastos? )(?:de |em |no |na |com |n[oa]s? ))'
+            r'(?:qua[nl]to (?:eu )?(?:j[aá] )?gastei (?:de |em |no |na |com |n[oa]s? )|gastos? (?:de |em |no |na |com |n[oa]s? )|(?:me )?mostr[ae]? (?:(?:os |meus )?gastos? )?(?:de |em |no |na |com |n[oa]s? )|(?:qual |quais )?(?:(?:os |meus )?gastos? )(?:de |em |no |na |com |n[oa]s? ))'
             r'(.+?)(?:\s+(?:est[ea]|ess[ea]|neste|nesse|no|do|deste|desse)\s+m[eê]s|\s+(?:esta|essa|nesta|nessa|na|da|desta|dessa)\s+semana|\s+hoje)?[\s\?\!\.\,]*$',
             msg
         )
     if _filter_m:
         _filter_query = _filter_m.group(1).strip().rstrip("?!. ")
-        # Remove preposições soltas no final
-        _filter_query = _re_router.sub(r'\s+(?:de|em|no|na|do|da|com|este|esse|este|essa|neste|nesse)$', '', _filter_query).strip()
+        # Remove expressões de tempo no final ("este mes", "essa semana", "hoje", etc)
+        _filter_query = _re_router.sub(
+            r'\s+(?:(?:est[ea]|ess[ea]|neste|nesse|nesta|nessa|no|do|deste|desse)\s+m[eê]s'
+            r'|(?:esta|essa|nesta|nessa|na|da|desta|dessa)\s+semana'
+            r'|hoje|ontem|este|esse|esta|essa|neste|nesse'
+            r'|de|em|no|na|do|da|com)+\s*$', '', _filter_query).strip()
         # Ignora queries genéricas que são tempo, não filtro
         _generic_time = {"mes", "mês", "semana", "hoje", "dia", "ano", "este mes", "esse mes", "este mês", "esse mês"}
         if _filter_query and _filter_query.lower() not in _generic_time:
