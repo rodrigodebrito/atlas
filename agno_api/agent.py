@@ -8577,6 +8577,12 @@ def _extract_body(message: str) -> str:
     body_lines = [l for l in lines if not l.strip().startswith("[")]
     return " ".join(body_lines).strip()
 
+def _extract_body_raw(message: str) -> str:
+    """Extrai o corpo preservando quebras de linha originais."""
+    lines = message.strip().split("\n")
+    body_lines = [l for l in lines if not l.strip().startswith("[")]
+    return "\n".join(body_lines).strip()
+
 def _extract_user_name_header(message: str) -> str:
     """Extrai user_name do header [user_name: João da Silva]."""
     m = _re_router.search(r'\[user_name:\s*([^\]]+)\]', message)
@@ -8629,6 +8635,85 @@ def _onboard_if_new(user_phone: str, message: str) -> dict | None:
         "👉 Manual completo: https://atlas-m3wb.onrender.com/manual"
     )
     return {"response": welcome}
+
+# ── EXTRATOR DE MÚLTIPLOS GASTOS (multilinha) ─────────────────────
+# Detecta quando o usuário manda vários gastos de uma vez, um por linha.
+# Padrão: "1000 relogio\n70 padaria\n150 farmacia\n2000 aluguel"
+
+_MULTI_LINE_PATTERN = _re_router.compile(
+    r'^\s*(?:[Rr][$]\s?)?(\d+(?:[.,]\d{1,2})?)\s+(?:de\s+|d[aeo]\s+|no\s+|na\s+|em\s+|pra\s+)?'
+    r'(.+?)\s*$'
+)
+_MULTI_LINE_PATTERN_REV = _re_router.compile(
+    r'^\s*(.+?)\s+(?:[Rr][$]\s?)?(\d+(?:[.,]\d{1,2})?)\s*$'
+)
+
+
+def _multi_expense_extract(user_phone: str, raw_body: str) -> dict | None:
+    """
+    Detecta e salva múltiplos gastos enviados em linhas separadas.
+    Ex: "1000 relogio\\n70 padaria\\n150 farmacia\\n2000 aluguel"
+    Retorna {"response": str} se detectou 2+ linhas de gasto, None caso contrário.
+    """
+    lines = [l.strip() for l in raw_body.strip().split("\n") if l.strip()]
+    if len(lines) < 2:
+        return None
+
+    # Tenta parsear cada linha como "valor merchant" ou "merchant valor"
+    parsed = []
+    for line in lines:
+        m = _MULTI_LINE_PATTERN.match(line)
+        if m:
+            val = float(m.group(1).replace(",", "."))
+            merchant = m.group(2).strip()
+            if val > 0 and merchant:
+                parsed.append((val, merchant))
+                continue
+        # Tenta padrão invertido: "padaria 70"
+        m2 = _MULTI_LINE_PATTERN_REV.match(line)
+        if m2:
+            merchant = m2.group(1).strip()
+            val = float(m2.group(2).replace(",", "."))
+            # Guard: merchant não pode ser só números ou palavras de comando
+            if val > 0 and merchant and not merchant.replace(" ", "").isdigit():
+                parsed.append((val, merchant))
+                continue
+        # Linha não parseable → não é multi-expense
+        return None
+
+    if len(parsed) < 2:
+        return None
+
+    # Auto-categoriza e salva cada merchant
+    saved = []
+    errors = []
+    fn = getattr(save_transaction, 'entrypoint', None) or save_transaction
+    total = 0
+    for val, merchant in parsed:
+        category = "Outros"
+        m_lower = merchant.lower()
+        for keywords, cat_name in _CAT_RULES:
+            if any(k in m_lower for k in keywords):
+                category = cat_name
+                break
+        try:
+            fn(user_phone, "EXPENSE", val, category, merchant, "", "", 1, 0, "", "")
+            amt_fmt = f"R${val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            saved.append(f"• {amt_fmt} — {merchant.title()} ({category})")
+            total += val
+        except Exception:
+            errors.append(f"• ❌ {merchant} R${val:.2f}")
+
+    total_fmt = f"R${total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    summary = f"✅ *{len(saved)} gastos registrados!*\n\n"
+    summary += "\n".join(saved)
+    if errors:
+        summary += "\n" + "\n".join(errors)
+    summary += f"\n\n💰 *Total:* {total_fmt}"
+    summary += f"\n\n_Errou algo? Mande \"corrige\" ou \"apaga [nome]\"_"
+
+    return {"response": summary}
+
 
 # ── EXTRATOR INTELIGENTE DE GASTOS ──────────────────────────────────
 # Independente de ordem: acha VALOR, CARTÃO (do DB do usuário), MERCHANT (resto).
@@ -8848,6 +8933,7 @@ def _pre_route(message: str) -> dict | None:
         return onboard
 
     body = _extract_body(message)
+    body_raw = _extract_body_raw(message)  # preserva newlines p/ multi-expense
     msg = " ".join(body.lower().split())  # normaliza espaços múltiplos
     today = _now_br()
     current_month = today.strftime("%Y-%m")
@@ -9548,6 +9634,16 @@ def _pre_route(message: str) -> dict | None:
     # Se chegou aqui com trigger de agenda, deixa o LLM processar (não é gasto)
     if _re_router.match(r'(?:me\s+)?(?:lembr[aeo]r?|avisa[r]?)\s+', msg):
         return None  # Vai pro LLM que tem as tools de agenda
+
+    # ── MULTI-EXPENSE: vários gastos em linhas separadas ──────────
+    # "1000 relogio\n70 padaria\n150 farmacia\n2000 aluguel"
+    try:
+        _multi = _multi_expense_extract(user_phone, body_raw)
+        if _multi:
+            return _multi
+    except Exception as _multi_err:
+        import logging as _log_multi
+        _log_multi.getLogger("atlas").error(f"Multi expense extract error: {_multi_err}", exc_info=True)
 
     # ── EXTRATOR INTELIGENTE DE GASTOS ──────────────────────────────
     # Independente de ordem: acha VALOR, CARTÃO (DB), MERCHANT (resto).
