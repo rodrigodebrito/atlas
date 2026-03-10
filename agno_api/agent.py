@@ -10154,10 +10154,8 @@ def _get_help_topic(msg: str) -> str | None:
 from fastapi import Form as _Form
 
 def _strip_whatsapp_bold(text: str) -> str:
-    """Remove *negrito* do WhatsApp que não renderiza no Chatwoot."""
-    import re as _re_bold
-    # *texto* → texto (mas não remove * isolados como em "5 * 3")
-    return _re_bold.sub(r'\*([^*\n]+)\*', r'\1', text)
+    """Preserva *negrito* do WhatsApp — Chatwoot/Evolution renderiza corretamente."""
+    return text  # negritos agora fazem parte do design visual
 
 
 def _strip_trailing_questions(text: str) -> str:
