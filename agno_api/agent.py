@@ -868,7 +868,6 @@ def save_transaction(
         origin = f" — {merchant}" if merchant else ""
         lines = [f"💰 *{amt_fmt}{origin}*"]
         lines.append(f"📥 {category}  •  {date_label}")
-        lines.append('_Errou? → "corrige" ou "apaga"_')
     elif installments > 1:
         parcela_fmt = f"R${amount_cents/100:,.2f}".replace(",", ".")
         total_fmt = f"R${total_amount_cents/100:,.2f}".replace(",", ".")
@@ -876,14 +875,12 @@ def save_transaction(
         local = " — " + "  •  ".join(merchant_parts) if merchant_parts else ""
         lines = [f"✅ *{parcela_fmt}/mês × {installments}x*{local}"]
         lines.append(f"{cat_icon} {category}  •  {total_fmt} total  •  {date_label}")
-        lines.append('_Errou? → "corrige" ou "apaga"_')
     else:
         amt_fmt = f"R${amount_cents/100:,.2f}".replace(",", ".")
         cat_icon = _cat_emoji_conf.get(category, "💸")
         local = " — " + "  •  ".join(merchant_parts) if merchant_parts else ""
         lines = [f"✅ *{amt_fmt}{local}*"]
         lines.append(f"{cat_icon} {category}  •  {date_label}")
-        lines.append('_Errou? → "corrige" ou "apaga"_')
 
     result = "\n".join(lines)
 
@@ -947,6 +944,9 @@ def save_transaction(
             _ctx_conn.close()
         except Exception:
             pass
+
+    # "Errou?" sempre por último
+    result += '\n_Errou? → "corrige" ou "apaga"_'
 
     return result
 
