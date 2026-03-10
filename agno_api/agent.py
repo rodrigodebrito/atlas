@@ -3423,21 +3423,34 @@ def _get_bills_impl(user_phone: str, month: str = "") -> str:
 
         card_bill_ref = f"card_{card_id}"
 
-        # Calcula mês correto de vencimento da fatura
-        # Se due_day > closing_day → vence no MESMO mês do fechamento
-        # Se due_day <= closing_day → vence no MÊS SEGUINTE
+        # Calcula a fatura correta usando ciclos de fechamento.
+        # Cada transação pertence a um ciclo baseado em _compute_due_month.
+        # Para o mês consultado, precisamos de TODAS as transações do cartão
+        # e filtrar apenas as que vencem neste mês.
         m_year, m_month = int(month[:4]), int(month[5:7])
-        if due_day > closing_day_card:
-            # Vence no mesmo mês (ex: fecha 5, vence 16 → mesmo mês)
-            due_m, due_y = m_month, m_year
-        else:
-            # Vence no mês seguinte (ex: fecha 25, vence 10 → mês seguinte)
-            due_m = m_month + 1 if m_month < 12 else 1
-            due_y = m_year if m_month < 12 else m_year + 1
-        due = f"{due_y}-{due_m:02d}-{due_day:02d}"
 
-        # Mês de vencimento para buscar bills existentes
-        due_month_str = f"{due_y}-{due_m:02d}"
+        # Busca transações dos últimos 2 meses do cartão (cobre qualquer ciclo)
+        prev_m = m_month - 1 if m_month > 1 else 12
+        prev_y = m_year if m_month > 1 else m_year - 1
+        cur.execute(
+            """SELECT occurred_at, amount_cents FROM transactions
+               WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE'
+               AND (occurred_at LIKE ? OR occurred_at LIKE ?)""",
+            (user_id, card_id, f"{prev_y}-{prev_m:02d}%", f"{month}%"),
+        )
+        card_txs = cur.fetchall()
+
+        # Filtra: só transações cuja fatura vence no mês consultado
+        card_spent = 0
+        for tx_date, tx_amt in card_txs:
+            tx_due = _compute_due_month(tx_date, closing_day_card, due_day)
+            if tx_due == month:
+                card_spent += tx_amt
+
+        # Calcula due_date para a fatura que vence neste mês
+        # Determina o dia de vencimento dentro do mês consultado
+        due = f"{m_year}-{m_month:02d}-{due_day:02d}"
+        due_month_str = month
 
         # Verifica se a fatura já foi paga
         cur.execute(
@@ -3448,19 +3461,7 @@ def _get_bills_impl(user_phone: str, month: str = "") -> str:
         if already_paid:
             continue
 
-        # Calcula valor da fatura: gastos no cartão do mês de FECHAMENTO + opening balance
-        if last_paid:
-            cur.execute(
-                "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at >= ? AND occurred_at LIKE ?",
-                (user_id, card_id, last_paid, f"{month}%"),
-            )
-        else:
-            cur.execute(
-                "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
-                (user_id, card_id, f"{month}%"),
-            )
-        card_spent = cur.fetchone()[0]
-        fatura_total = card_spent + bill_cents
+        fatura_total = card_spent + (bill_cents if card_spent > 0 else 0)
         if fatura_total > 0:
             cur.execute(
                 "SELECT id, amount_cents FROM bills WHERE user_id = ? AND recurring_id = ? AND due_date LIKE ?",
