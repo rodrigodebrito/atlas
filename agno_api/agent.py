@@ -10298,6 +10298,129 @@ def onboarding_drip():
     return {"messages": messages, "count": len(messages)}
 
 
+@app.get("/v1/reports/weekly")
+def weekly_report():
+    """
+    Gera relatório semanal para usuários ativos (tiveram transações na semana).
+    Chamado pelo n8n via cron domingo 20h BRT.
+    Retorna: {"messages": [{"phone": ..., "message": ...}], "count": N}
+    """
+    from collections import defaultdict
+    today = _now_br()
+    days_since_monday = today.weekday()
+    monday = today - timedelta(days=days_since_monday)
+    monday_str = monday.strftime("%Y-%m-%d")
+    today_str = today.strftime("%Y-%m-%d")
+    start_label = monday.strftime("%d/%m")
+    end_label = today.strftime("%d/%m")
+
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    # Busca usuários ativos (com nome e renda)
+    cur.execute("SELECT id, phone, name FROM users WHERE name != 'Usuário'")
+    users = cur.fetchall()
+
+    messages = []
+    for user_id, phone, name in users:
+        first_name = name.split()[0] if name else "amigo"
+
+        # Transações da semana
+        cur.execute(
+            """SELECT type, amount_cents, category, merchant
+               FROM transactions WHERE user_id = ? AND occurred_at >= ? AND occurred_at <= ?
+               ORDER BY amount_cents DESC""",
+            (user_id, monday_str, today_str + " 23:59:59"),
+        )
+        tx_rows = cur.fetchall()
+        if not tx_rows:
+            continue  # Sem atividade → não envia
+
+        expense_total = 0
+        income_total = 0
+        cat_totals = defaultdict(int)
+        merchant_counts = defaultdict(int)
+        tx_count = 0
+
+        for tx_type, amt, cat, merchant in tx_rows:
+            tx_count += 1
+            if tx_type == "EXPENSE":
+                expense_total += amt
+                cat_totals[cat or "Outros"] += amt
+                if merchant:
+                    merchant_counts[merchant] += 1
+            elif tx_type == "INCOME":
+                income_total += amt
+
+        balance = income_total - expense_total
+
+        # Top 3 categorias
+        sorted_cats = sorted(cat_totals.items(), key=lambda x: -x[1])[:3]
+
+        # Top merchant
+        top_merchant = max(merchant_counts, key=merchant_counts.get) if merchant_counts else None
+
+        # Semana anterior pra comparação
+        prev_monday = monday - timedelta(days=7)
+        prev_sunday = monday - timedelta(days=1)
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at >= ? AND occurred_at <= ?",
+            (user_id, prev_monday.strftime("%Y-%m-%d"), prev_sunday.strftime("%Y-%m-%d") + " 23:59:59"),
+        )
+        prev_expense = cur.fetchone()[0] or 0
+
+        # Monta mensagem
+        lines = [
+            f"📊 *Resumo Semanal* — {start_label} a {end_label}",
+            f"Oi, {first_name}! Aqui vai seu resumo da semana:",
+            "",
+        ]
+
+        # Gastos
+        lines.append(f"📤 Gastos: R${expense_total/100:,.2f}".replace(",", "."))
+        if prev_expense > 0:
+            change = ((expense_total - prev_expense) / prev_expense) * 100
+            arrow = "📈" if change > 0 else "📉"
+            lines.append(f"   {arrow} {'+'if change>0 else ''}{change:.0f}% vs semana anterior")
+
+        # Receitas
+        if income_total > 0:
+            lines.append(f"📥 Receitas: R${income_total/100:,.2f}".replace(",", "."))
+
+        # Saldo
+        sign = "+" if balance >= 0 else ""
+        lines.append(f"💰 Saldo: {sign}R${abs(balance)/100:,.2f}".replace(",", "."))
+        lines.append("")
+
+        # Top categorias
+        if sorted_cats:
+            lines.append("📋 Onde mais gastou:")
+            cat_emoji_map = {
+                "Alimentação": "🍽", "Transporte": "🚗", "Moradia": "🏠",
+                "Saúde": "💊", "Lazer": "🎮", "Assinaturas": "📱",
+                "Educação": "📚", "Vestuário": "👟", "Pets": "🐾", "Outros": "📦",
+            }
+            for cat, total in sorted_cats:
+                emoji = cat_emoji_map.get(cat, "💸")
+                pct = (total / expense_total * 100) if expense_total > 0 else 0
+                lines.append(f"  {emoji} {cat}: R${total/100:,.2f} ({pct:.0f}%)".replace(",", "."))
+            lines.append("")
+
+        # Top merchant
+        if top_merchant:
+            lines.append(f"📍 Lugar mais frequente: {top_merchant} ({merchant_counts[top_merchant]}x)")
+
+        # Registros
+        lines.append(f"✅ {tx_count} lançamentos na semana")
+        lines.append("")
+        lines.append("Boa semana! Diga \"como tá meu mês?\" pra ver o mensal. 🎯")
+
+        messages.append({"phone": phone, "message": "\n".join(lines)})
+
+    conn.close()
+    return {"messages": messages, "count": len(messages)}
+
+
 # ============================================================
 # FATURA ANALYZER — parse + import endpoints
 # ============================================================
