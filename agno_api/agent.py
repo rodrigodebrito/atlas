@@ -9491,32 +9491,58 @@ def _pre_route(message: str) -> dict | None:
         # Remove noise words do nome
         _pay_name_clean = _re_router.sub(r'\b(?:do|da|de|no|na|o|a|meu|minha|pelo|pela|cart[aã]o|cartao|fatura)\b', '', _pay_name).strip()
         if _pay_name_clean:
-            # Verifica se é cartão, compromisso existente, ou gasto novo
-            _pay_conn = _get_conn()
-            _pay_cur = _pay_conn.cursor()
-            _pay_uid = _get_user_id(_pay_cur, user_phone)
-            _is_card = False
-            _is_bill = False
-            if _pay_uid:
-                # 1. É cartão?
-                _pay_card = _find_card(_pay_cur, _pay_uid, _pay_name_clean)
-                if _pay_card:
-                    _is_card = True
-                else:
-                    # 2. É compromisso existente? (recurring_transactions ou bills)
-                    _pay_cur.execute(
-                        "SELECT id FROM recurring_transactions WHERE user_id = ? AND LOWER(name) LIKE ? AND active = 1 LIMIT 1",
-                        (_pay_uid, f"%{_pay_name_clean.lower()}%"),
-                    )
-                    if _pay_cur.fetchone():
-                        _is_bill = True
-            _pay_conn.close()
+            # GUARD: "paguei 35 mercado cartão caixa" = gasto no cartão, NÃO pagamento de fatura
+            # Se tem VALOR + texto com merchant E cartão junto, é gasto (cai no smart extractor)
+            _has_value_and_extra = False
+            if _val_first_m and _pay_val > 0:
+                # Checa se o nome limpo tem mais de 1 palavra-raiz (indica merchant + cartão)
+                _name_words = [w for w in _pay_name_clean.lower().split() if len(w) > 2]
+                if len(_name_words) >= 2:
+                    # Verifica se uma das palavras é cartão do usuário
+                    _check_conn = _get_conn()
+                    _check_cur = _check_conn.cursor()
+                    _check_uid = _get_user_id(_check_cur, user_phone)
+                    if _check_uid:
+                        _check_cur.execute("SELECT name FROM credit_cards WHERE user_id = ?", (_check_uid,))
+                        _card_names = [r[0].lower() for r in _check_cur.fetchall()]
+                        # Se alguma palavra-raiz é nome de cartão E sobram outras palavras → é gasto no cartão
+                        for _cname in _card_names:
+                            _remaining = _pay_name_clean.lower().replace(_cname, "").strip()
+                            _remaining = _re_router.sub(r'\b(?:do|da|de|no|na|o|a)\b', '', _remaining).strip()
+                            if _remaining and len(_remaining) > 2:
+                                _has_value_and_extra = True
+                                break
+                    _check_conn.close()
 
-            if _is_card:
-                return {"response": _call(close_bill, user_phone, _pay_name_clean)}
-            elif _is_bill:
-                return {"response": _call(pay_bill, user_phone, _pay_name_clean, _pay_val)}
-            # Não é cartão nem compromisso → cai no smart extractor como gasto normal
+            if _has_value_and_extra:
+                pass  # Cai no smart extractor como gasto no cartão
+            else:
+                # Verifica se é cartão, compromisso existente, ou gasto novo
+                _pay_conn = _get_conn()
+                _pay_cur = _pay_conn.cursor()
+                _pay_uid = _get_user_id(_pay_cur, user_phone)
+                _is_card = False
+                _is_bill = False
+                if _pay_uid:
+                    # 1. É cartão?
+                    _pay_card = _find_card(_pay_cur, _pay_uid, _pay_name_clean)
+                    if _pay_card:
+                        _is_card = True
+                    else:
+                        # 2. É compromisso existente? (recurring_transactions ou bills)
+                        _pay_cur.execute(
+                            "SELECT id FROM recurring_transactions WHERE user_id = ? AND LOWER(name) LIKE ? AND active = 1 LIMIT 1",
+                            (_pay_uid, f"%{_pay_name_clean.lower()}%"),
+                        )
+                        if _pay_cur.fetchone():
+                            _is_bill = True
+                _pay_conn.close()
+
+                if _is_card:
+                    return {"response": _call(close_bill, user_phone, _pay_name_clean)}
+                elif _is_bill:
+                    return {"response": _call(pay_bill, user_phone, _pay_name_clean, _pay_val)}
+                # Não é cartão nem compromisso → cai no smart extractor como gasto normal
 
     # ── GUARD: mensagens de agenda/lembrete NUNCA devem cair no smart extractor ──
     # Se chegou aqui com trigger de agenda, deixa o LLM processar (não é gasto)
