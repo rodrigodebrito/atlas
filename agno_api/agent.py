@@ -936,8 +936,8 @@ def save_transaction(
 
                 # Streak: dias consecutivos lançando gastos
                 _ctx_cur.execute(
-                    "SELECT DISTINCT DATE(occurred_at) FROM transactions "
-                    "WHERE user_id = ? AND type = 'EXPENSE' ORDER BY DATE(occurred_at) DESC LIMIT 30",
+                    "SELECT DISTINCT SUBSTRING(occurred_at, 1, 10) AS d FROM transactions "
+                    "WHERE user_id = ? AND type = 'EXPENSE' ORDER BY d DESC LIMIT 30",
                     (user_id,),
                 )
                 _dates = [r[0] for r in _ctx_cur.fetchall()]
