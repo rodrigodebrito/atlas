@@ -246,6 +246,15 @@ def _init_sqlite_tables():
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS category_budgets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            category TEXT NOT NULL,
+            budget_cents INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(user_id, category)
+        );
     """)
     conn.commit()
     conn.close()
@@ -443,6 +452,16 @@ def _init_postgres_tables():
             updated_at TEXT DEFAULT (now()::text)
         );
         CREATE INDEX IF NOT EXISTS idx_agenda_next_alert ON agenda_events(next_alert_at, status);
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS category_budgets (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            category TEXT NOT NULL,
+            budget_cents INTEGER NOT NULL,
+            created_at TEXT DEFAULT (now()::text),
+            UNIQUE(user_id, category)
+        );
     """)
     # Migração: normaliza type para UPPER (LLM pode ter salvo lowercase)
     cur.execute("UPDATE transactions SET type = UPPER(type) WHERE type != UPPER(type)")
@@ -967,6 +986,36 @@ def save_transaction(
                         result += f"\n🔥 {_streak} dias seguidos lançando!"
 
             _ctx_conn.close()
+        except Exception:
+            pass
+
+    # --- ALERTA DE ORÇAMENTO POR CATEGORIA ---
+    if transaction_type == "EXPENSE" and category:
+        try:
+            _bconn = _get_conn()
+            _bcur = _bconn.cursor()
+            _bcur.execute(
+                "SELECT budget_cents FROM category_budgets WHERE user_id = ? AND category = ?",
+                (user_id, category),
+            )
+            _brow = _bcur.fetchone()
+            if _brow and _brow[0] > 0:
+                _budget = _brow[0]
+                _bmonth = today_str[:7]
+                _bcur.execute(
+                    "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+                    "WHERE user_id = ? AND type = 'EXPENSE' AND category = ? AND occurred_at LIKE ?",
+                    (user_id, category, _bmonth + "%"),
+                )
+                _cat_spent = _bcur.fetchone()[0] or 0
+                _pct = round(_cat_spent / _budget * 100)
+                if _cat_spent > _budget:
+                    _over = _cat_spent - _budget
+                    result += f"\n🚨 *{category}* estourou o limite! {_fmt_brl(_cat_spent)} de {_fmt_brl(_budget)} ({_pct}%)"
+                elif _pct >= 80:
+                    _left = _budget - _cat_spent
+                    result += f"\n⚠️ *{category}* em {_pct}% do limite — restam {_fmt_brl(_left)}"
+            _bconn.close()
         except Exception:
             pass
 
@@ -4850,6 +4899,212 @@ def add_to_goal(user_phone: str, goal_name: str, amount: float) -> str:
     return "\n".join(lines)
 
 
+# ============================================================
+# ORÇAMENTO POR CATEGORIA
+# ============================================================
+
+@tool
+def set_category_budget(user_phone: str, category: str, amount: float) -> str:
+    """
+    Define limite de gasto mensal para uma categoria.
+    category: nome da categoria (Alimentação, Transporte, Lazer, etc.)
+    amount: limite em reais (ex: 500)
+    """
+    _VALID_CATS = [
+        "Alimentação", "Transporte", "Moradia", "Saúde", "Lazer",
+        "Assinaturas", "Educação", "Vestuário", "Pets", "Outros",
+    ]
+    # Normaliza categoria
+    cat_map = {c.lower(): c for c in _VALID_CATS}
+    cat_key = category.strip().lower()
+    matched = cat_map.get(cat_key)
+    if not matched:
+        for c in _VALID_CATS:
+            if cat_key in c.lower() or c.lower() in cat_key:
+                matched = c
+                break
+    if not matched:
+        return f"Categoria '{category}' não reconhecida.\nCategorias: {', '.join(_VALID_CATS)}"
+
+    budget_cents = round(amount * 100)
+    if budget_cents <= 0:
+        return "O limite precisa ser maior que R$0."
+
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "Usuário não encontrado."
+
+    if DB_TYPE == "sqlite":
+        cur.execute(
+            "INSERT OR REPLACE INTO category_budgets (user_id, category, budget_cents) VALUES (?, ?, ?)",
+            (user_id, matched, budget_cents),
+        )
+    else:
+        cur.execute(
+            "INSERT INTO category_budgets (user_id, category, budget_cents) VALUES (?, ?, ?) "
+            "ON CONFLICT (user_id, category) DO UPDATE SET budget_cents = EXCLUDED.budget_cents",
+            (user_id, matched, budget_cents),
+        )
+    conn.commit()
+
+    # Mostra gasto atual do mês nessa categoria
+    month_str = _now_br().strftime("%Y-%m")
+    cur.execute(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+        "WHERE user_id = ? AND type = 'EXPENSE' AND category = ? AND occurred_at LIKE ?",
+        (user_id, matched, month_str + "%"),
+    )
+    spent = cur.fetchone()[0] or 0
+    conn.close()
+
+    pct = round(spent / budget_cents * 100) if budget_cents > 0 else 0
+    bar = _budget_bar(spent, budget_cents)
+
+    lines = [
+        f"✅ Limite de *{matched}* definido: {_fmt_brl(budget_cents)}/mês",
+        "",
+        f"📊 Este mês: {_fmt_brl(spent)} de {_fmt_brl(budget_cents)}",
+        f"{bar}  {pct}%",
+    ]
+    if spent > budget_cents:
+        lines.append(f"🚨 Já estourou {_fmt_brl(spent - budget_cents)}!")
+    elif pct >= 80:
+        lines.append(f"⚠️ Restam apenas {_fmt_brl(budget_cents - spent)}")
+    else:
+        lines.append(f"💚 Restam {_fmt_brl(budget_cents - spent)}")
+    lines.append("")
+    lines.append("_Alterar: \"limite [categoria] [valor]\"_")
+    lines.append("_Remover: \"remover limite [categoria]\"_")
+    return "\n".join(lines)
+
+
+def _budget_bar(spent, budget, width=10):
+    """Barra de progresso visual para orçamento."""
+    pct = min(spent / budget, 1.0) if budget > 0 else 0
+    filled = round(pct * width)
+    empty = width - filled
+    if spent > budget:
+        return "🟥" * width
+    elif pct >= 0.8:
+        return "🟨" * filled + "⬜" * empty
+    else:
+        return "🟩" * filled + "⬜" * empty
+
+
+@tool
+def remove_category_budget(user_phone: str, category: str) -> str:
+    """Remove limite de gasto mensal de uma categoria."""
+    _VALID_CATS = [
+        "Alimentação", "Transporte", "Moradia", "Saúde", "Lazer",
+        "Assinaturas", "Educação", "Vestuário", "Pets", "Outros",
+    ]
+    cat_map = {c.lower(): c for c in _VALID_CATS}
+    cat_key = category.strip().lower()
+    matched = cat_map.get(cat_key)
+    if not matched:
+        for c in _VALID_CATS:
+            if cat_key in c.lower() or c.lower() in cat_key:
+                matched = c
+                break
+    if not matched:
+        return f"Categoria '{category}' não reconhecida."
+
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "Usuário não encontrado."
+
+    cur.execute(
+        "DELETE FROM category_budgets WHERE user_id = ? AND category = ?",
+        (user_id, matched),
+    )
+    affected = cur.rowcount
+    conn.commit()
+    conn.close()
+
+    if affected:
+        return f"✅ Limite de *{matched}* removido."
+    return f"Você não tinha limite definido pra *{matched}*."
+
+
+@tool
+def get_category_budgets(user_phone: str) -> str:
+    """Lista todos os limites de gasto por categoria com progresso atual."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "Usuário não encontrado."
+
+    cur.execute(
+        "SELECT category, budget_cents FROM category_budgets WHERE user_id = ? ORDER BY category",
+        (user_id,),
+    )
+    budgets = cur.fetchall()
+    if not budgets:
+        conn.close()
+        return (
+            "Você ainda não definiu limites por categoria.\n\n"
+            "Defina com: _\"limite alimentação 500\"_\n"
+            "Ou: _\"orçamento transporte 300\"_"
+        )
+
+    month_str = _now_br().strftime("%Y-%m")
+    cat_emoji_map = {
+        "Alimentação": "🍽", "Transporte": "🚗", "Moradia": "🏠",
+        "Saúde": "💊", "Lazer": "🎮", "Assinaturas": "📱",
+        "Educação": "📚", "Vestuário": "👟", "Pets": "🐾", "Outros": "📦",
+    }
+
+    lines = ["🎯 *Seus limites por categoria*", "", "─────────────────────"]
+
+    total_budget = 0
+    total_spent = 0
+
+    for cat, budget_cents in budgets:
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+            "WHERE user_id = ? AND type = 'EXPENSE' AND category = ? AND occurred_at LIKE ?",
+            (user_id, cat, month_str + "%"),
+        )
+        spent = cur.fetchone()[0] or 0
+        total_budget += budget_cents
+        total_spent += spent
+
+        pct = round(spent / budget_cents * 100) if budget_cents > 0 else 0
+        emoji = cat_emoji_map.get(cat, "💸")
+        bar = _budget_bar(spent, budget_cents)
+
+        if spent > budget_cents:
+            status = f"🚨 +{_fmt_brl(spent - budget_cents)}"
+        elif pct >= 80:
+            status = f"⚠️ {_fmt_brl(budget_cents - spent)} restam"
+        else:
+            status = f"💚 {_fmt_brl(budget_cents - spent)} restam"
+
+        lines.append("")
+        lines.append(f"{emoji} *{cat}*  —  {_fmt_brl(spent)} / {_fmt_brl(budget_cents)}")
+        lines.append(f"{bar}  {pct}%  {status}")
+
+    conn.close()
+
+    lines.append("")
+    lines.append("─────────────────────")
+    total_pct = round(total_spent / total_budget * 100) if total_budget > 0 else 0
+    lines.append(f"📊 *Total:* {_fmt_brl(total_spent)} / {_fmt_brl(total_budget)} ({total_pct}%)")
+    lines.append("")
+    lines.append("_Alterar: \"limite [categoria] [valor]\"_")
+    lines.append("_Remover: \"remover limite [categoria]\"_")
+
+    return "\n".join(lines)
+
+
 @tool
 def get_financial_score(user_phone: str) -> str:
     """
@@ -7055,7 +7310,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=5,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event, pause_agenda_event, resume_agenda_event, edit_agenda_event_time],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event, pause_agenda_event, resume_agenda_event, edit_agenda_event_time, set_category_budget, get_category_budgets, remove_category_budget],
     add_datetime_to_context=True,
     markdown=True,
 )
@@ -7352,6 +7607,19 @@ def _get_panel_data_inner(conn, user_id: str, month: str) -> dict:
     except Exception:
         pass  # tabela pode não existir ainda
 
+    # Category budgets
+    cat_budgets = []
+    try:
+        cur.execute(
+            "SELECT category, budget_cents FROM category_budgets WHERE user_id = ?",
+            (user_id,),
+        )
+        for _bc, _bv in cur.fetchall():
+            _bspent = cat_totals.get(_bc, 0)
+            cat_budgets.append({"category": _bc, "budget": _bv, "spent": _bspent})
+    except Exception:
+        pass
+
     return {
         "user_name": user_name, "month": month, "month_label": month_label,
         "income": income_total, "expenses": expense_total,
@@ -7362,6 +7630,7 @@ def _get_panel_data_inner(conn, user_id: str, month: str) -> dict:
         "daily_labels": daily_labels, "daily_values": daily_values, "daily_income_values": daily_income_values,
         "cards": cards,
         "agenda": agenda_events,
+        "budgets": cat_budgets,
         "score": score, "grade": grade, "savings_rate": savings_rate,
         "insights": insights,
         "prev_total": prev_total,
@@ -7446,6 +7715,31 @@ def _render_panel_html(data: dict, token: str) -> str:
 
     # Insights HTML
     insights_html = "".join(f'<div class="insight-item">💡 {i}</div>' for i in data["insights"])
+
+    # Budget HTML
+    budgets_html = ""
+    if data.get("budgets"):
+        _blines = []
+        for b in data["budgets"]:
+            _bcat = b["category"]
+            _bbudget = b["budget"]
+            _bspent = b["spent"]
+            _bpct = min(round(_bspent / _bbudget * 100), 100) if _bbudget > 0 else 0
+            _bcolor = "#ef5350" if _bspent > _bbudget else "#ffca28" if _bpct >= 80 else "#00e5a0"
+            _bemoji = cat_emoji.get(_bcat, "💸")
+            _blines.append(
+                f'<div style="margin-bottom:12px">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
+                f'<span>{_bemoji} {_bcat}</span>'
+                f'<span style="color:var(--text2);font-size:.85rem">{fmt(_bspent)} / {fmt(_bbudget)}</span>'
+                f'</div>'
+                f'<div style="background:var(--surface2);border-radius:6px;height:8px;overflow:hidden">'
+                f'<div style="width:{_bpct}%;height:100%;background:{_bcolor};border-radius:6px;transition:width .5s"></div>'
+                f'</div>'
+                f'<div style="text-align:right;font-size:.75rem;color:{_bcolor};margin-top:2px">{_bpct}%</div>'
+                f'</div>'
+            )
+        budgets_html = '<div class="section"><div class="section-title">📋 Limites por categoria</div>' + "".join(_blines) + '</div>'
 
     # Month navigation
     m_y, m_m = int(data["month"][:4]), int(data["month"][5:7])
@@ -7781,6 +8075,8 @@ body{{
 </div>
 
 {'<div class="section"><div class="section-title">Insights</div>' + insights_html + '</div>' if data['insights'] else ''}
+
+{budgets_html}
 
 <div class="section" id="txSection">
   <div class="section-title">
@@ -9657,6 +9953,41 @@ def _pre_route(message: str) -> dict | None:
                 _user_last_context[user_phone] = {"month": _ctx_month, "type": "merchant", "ts": _now_br()}
                 return {"response": _call(get_transactions_by_merchant, user_phone, _cont_query, _ctx_month)}
 
+    # --- ORÇAMENTO POR CATEGORIA ---
+    # "limite alimentação 500", "orçamento transporte 300", "budget lazer 200"
+    _budget_m = _re_router.match(
+        r'(?:limite|or[cç]amento|budget|teto)\s+'
+        r'(?:de\s+|d[aeo]\s+|pra\s+|para\s+)?'
+        r'([a-záéíóúãõç]+(?:\s+[a-záéíóúãõç]+)?)\s+'
+        r'(?:de\s+|em\s+)?(?:r\$?\s*)?(\d[\d.,]*)',
+        msg
+    )
+    if _budget_m:
+        _b_cat = _budget_m.group(1).strip()
+        _b_val = _budget_m.group(2).replace(".", "").replace(",", ".")
+        try:
+            _b_amount = float(_b_val)
+            if _b_amount > 0:
+                return {"response": _call(set_category_budget, user_phone, _b_cat, _b_amount)}
+        except ValueError:
+            pass
+
+    # "remover limite alimentação", "tirar orçamento transporte"
+    _rm_budget_m = _re_router.match(
+        r'(?:remover?|tirar?|apagar?|excluir?|deletar?)\s+'
+        r'(?:o?\s*)?(?:limite|or[cç]amento|budget|teto)\s+'
+        r'(?:de\s+|d[aeo]\s+)?'
+        r'([a-záéíóúãõç]+(?:\s+[a-záéíóúãõç]+)?)',
+        msg
+    )
+    if _rm_budget_m:
+        _rm_cat = _rm_budget_m.group(1).strip()
+        return {"response": _call(remove_category_budget, user_phone, _rm_cat)}
+
+    # "meus limites", "orçamentos", "ver limites"
+    if _re_router.match(r'(?:meus?\s+)?(?:limites?|or[cç]amentos?|budgets?|tetos?)(?:\s+por\s+categoria)?', msg):
+        return {"response": _call(get_category_budgets, user_phone)}
+
     # --- PARAR / ATIVAR RELATÓRIOS ---
     if _re_router.match(r'(parar?|desligar?|desativar?|cancelar?|tirar?)\s*(os?\s+)?relat[oó]rios?', msg):
         try:
@@ -10200,6 +10531,11 @@ _HELP_TEXT = """📋 *ATLAS — Manual Rápido*
 🎯 *Metas:*
   • _"quero guardar 5000 pra viagem"_
   • _"guardei 500 na meta"_
+
+📋 *Limites por categoria:*
+  • _"limite alimentação 500"_ — define teto mensal
+  • _"meus limites"_ — ver todos com progresso
+  • _"remover limite alimentação"_
 
 📅 *Agenda / Lembretes:*
   • _"me lembra amanhã às 14h reunião"_
@@ -11228,6 +11564,37 @@ def daily_report():
                 if tip:
                     lines.append("")
                     lines.append(f"💡 *Dica:* {tip}")
+        except Exception:
+            try:
+                conn.commit()
+            except Exception:
+                pass
+
+        # Alertas de orçamento por categoria
+        try:
+            cur.execute(
+                "SELECT category, budget_cents FROM category_budgets WHERE user_id = ?",
+                (user_id,),
+            )
+            _budgets = cur.fetchall()
+            if _budgets:
+                _budget_alerts = []
+                for _bcat, _blimit in _budgets:
+                    cur.execute(
+                        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+                        "WHERE user_id = ? AND type = 'EXPENSE' AND category = ? AND occurred_at LIKE ?",
+                        (user_id, _bcat, month_str + "%"),
+                    )
+                    _bspent = cur.fetchone()[0] or 0
+                    _bpct = round(_bspent / _blimit * 100) if _blimit > 0 else 0
+                    if _bspent > _blimit:
+                        _budget_alerts.append(f"🚨 *{_bcat}*: {_fmt_brl(_bspent)}/{_fmt_brl(_blimit)} — estourou!")
+                    elif _bpct >= 80:
+                        _budget_alerts.append(f"⚠️ *{_bcat}*: {_bpct}% — restam {_fmt_brl(_blimit - _bspent)}")
+                if _budget_alerts:
+                    lines.append("")
+                    lines.append("📋 *Limites:*")
+                    lines.extend(_budget_alerts)
         except Exception:
             try:
                 conn.commit()
