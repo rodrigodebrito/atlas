@@ -910,14 +910,29 @@ def save_transaction(
                 )
                 day_count, day_total = _ctx_cur.fetchone()
                 if day_count and day_count > 1:
-                    _cat_emoji = {
-                        "Alimentação": "🍽", "Transporte": "🚗", "Moradia": "🏠",
-                        "Saúde": "💊", "Lazer": "🎮", "Assinaturas": "📱",
-                        "Educação": "📚", "Vestuário": "👟", "Pets": "🐾", "Outros": "📦",
-                    }
-                    cat_icon = _cat_emoji.get(category, "💸")
                     day_fmt = f"R${day_total/100:,.2f}".replace(",", ".")
-                    result += f"\n{cat_icon} Hoje: {day_fmt} em {day_count} gastos"
+                    result += f"\n📆 Hoje: {day_fmt} em {day_count} gastos"
+
+                # Total do mês + saldo restante
+                _month_str = today_str[:7]
+                _ctx_cur.execute(
+                    "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+                    "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+                    (user_id, _month_str + "%"),
+                )
+                _month_total = _ctx_cur.fetchone()[0] or 0
+                _month_fmt = f"R${_month_total/100:,.2f}".replace(",", ".")
+                result += f"\n📊 Mês: {_month_fmt}"
+
+                _ctx_cur.execute("SELECT income_cents FROM users WHERE id = ?", (user_id,))
+                _inc_row = _ctx_cur.fetchone()
+                if _inc_row and _inc_row[0] and _inc_row[0] > 0:
+                    _remaining = _inc_row[0] - _month_total
+                    _rem_fmt = f"R${abs(_remaining)/100:,.2f}".replace(",", ".")
+                    if _remaining >= 0:
+                        result += f"  •  Restam {_rem_fmt}"
+                    else:
+                        result += f"  •  ⚠️ Estourou {_rem_fmt}"
 
                 # Streak: dias consecutivos lançando gastos
                 _ctx_cur.execute(
@@ -11023,6 +11038,85 @@ def reactivation_nudge():
                 "Bora registrar os gastos de hoje?\n"
                 "Ex: _\"almocei 35\"_ ou _\"uber 18\"_\n\n"
                 "Quanto mais lançar, melhor fico nos seus resumos! 💪"
+            )
+
+        messages.append({"phone": phone, "message": msg})
+
+    conn.close()
+    return {"messages": messages, "count": len(messages)}
+
+
+@app.get("/v1/reactivation/nudge")
+def reactivation_nudge():
+    """
+    Gera nudge para usuários inativos (3-14 dias sem lançar gasto).
+    Chamado pelo n8n via cron diário às 14h BRT.
+    Retorna: {"messages": [{"phone": ..., "message": ...}], "count": N}
+    """
+    today = _now_br()
+    today_str = today.strftime("%Y-%m-%d")
+    current_month = today.strftime("%Y-%m")
+
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id, phone, name FROM users WHERE name != 'Usuário'")
+    users = cur.fetchall()
+
+    messages = []
+    for user_id, phone, name in users:
+        first_name = name.split()[0] if name else "amigo"
+
+        # Última transação do usuário
+        cur.execute(
+            "SELECT MAX(occurred_at) FROM transactions WHERE user_id = ?",
+            (user_id,),
+        )
+        last_tx = cur.fetchone()[0]
+        if not last_tx:
+            continue
+
+        last_date = last_tx[:10]
+        from datetime import date as _date_react
+        try:
+            days_inactive = (today.date() - _date_react.fromisoformat(last_date)).days
+        except Exception:
+            continue
+
+        # Só envia pra inativos de 3 a 14 dias (depois disso é churn)
+        if days_inactive < 3 or days_inactive > 14:
+            continue
+
+        # Total do mês
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+            (user_id, current_month + "%"),
+        )
+        month_total = cur.fetchone()[0] or 0
+        month_fmt = f"R${month_total/100:,.2f}".replace(",", ".")
+
+        # Quantidade de gastos do mês
+        cur.execute(
+            "SELECT COUNT(*) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+            (user_id, current_month + "%"),
+        )
+        month_count = cur.fetchone()[0]
+
+        if month_total > 0:
+            msg = (
+                f"👋 Oi, {first_name}! Faz {days_inactive} dias que não te vejo por aqui.\n\n"
+                f"📊 Seu mês até agora: *{month_fmt}* em {month_count} gastos.\n\n"
+                "Gastou algo hoje? Manda pra eu registrar — basta digitar o valor e o lugar!\n\n"
+                "Ex: _\"almocei 35\"_ ou _\"uber 18\"_"
+            )
+        else:
+            msg = (
+                f"👋 Oi, {first_name}! Faz {days_inactive} dias que não te vejo.\n\n"
+                "Manda um gasto que fez hoje — é super rápido:\n"
+                "• _\"almocei 35\"_\n"
+                "• _\"mercado 120\"_\n\n"
+                "Eu organizo tudo pra você 😊"
             )
 
         messages.append({"phone": phone, "message": msg})
