@@ -11038,11 +11038,12 @@ def daily_report():
         try:
             insight = _generate_smart_insight(user_id, cur, today)
         except Exception:
-            try:
-                conn.commit()  # limpa transação abortada no PG
-            except Exception:
-                pass
             insight = None
+        # Sempre limpa transação PG (insight pode engolir erro internamente)
+        try:
+            conn.commit()
+        except Exception:
+            pass
         if insight:
             lines.append("")
             lines.append(insight)
