@@ -51,6 +51,15 @@ def _now_br() -> datetime:
     """Retorna datetime atual no fuso de Brasília (UTC-3)."""
     return datetime.now(timezone.utc) - timedelta(hours=3)
 
+
+def _fmt_brl(cents):
+    """Formata centavos como R$ no padrão BR: R$1.234,56"""
+    v = abs(cents) / 100
+    s = f"{v:,.2f}"
+    # swap: , → X → . e . → ,
+    return "R$" + s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 # ============================================================
 # TABELAS FINANCEIRAS — criadas automaticamente no SQLite
 # (No PostgreSQL do Render, rodar o script SQL uma vez)
@@ -10934,10 +10943,10 @@ def _generate_smart_insight(user_id, cur, today):
         top_m = cur.fetchone()
         if top_m and top_m[1] >= 4:
             m_name, m_count, m_total = top_m
-            m_fmt = f"R${m_total/100:,.2f}".replace(",", ".")
+            m_fmt = _fmt_brl(m_total)
             half_save = m_total // 2
             annual = half_save * 12
-            annual_fmt = f"R${annual/100:,.2f}".replace(",", ".")
+            annual_fmt = _fmt_brl(annual)
             insights.append(
                 f"Você foi no *{m_name}* {m_count}x este mês ({m_fmt}). "
                 f"Cortando metade, economiza {annual_fmt}/ano!"
@@ -11024,8 +11033,8 @@ def _generate_smart_insight(user_id, cur, today):
             if g_remaining > 0:
                 days_left = max(1, 30 - day_of_month)
                 daily_needed = g_remaining / days_left
-                daily_fmt = f"R${daily_needed/100:,.2f}".replace(",", ".")
-                rem_fmt = f"R${g_remaining/100:,.2f}".replace(",", ".")
+                daily_fmt = _fmt_brl(daily_needed)
+                rem_fmt = _fmt_brl(g_remaining)
                 insights.append(
                     f"Meta *{g_name}*: faltam {rem_fmt}. Precisa guardar {daily_fmt}/dia nos próximos {days_left} dias."
                 )
@@ -11124,52 +11133,53 @@ def daily_report():
                 elif tx_type == "INCOME":
                     income_today += amt
 
-            lines.append(f"📊 *Resumo do Dia* — {today_label}")
-            lines.append(f"Oi, {first_name}!")
+            cat_emoji_map = {
+                "Alimentação": "🍽", "Transporte": "🚗", "Moradia": "🏠",
+                "Saúde": "💊", "Lazer": "🎮", "Assinaturas": "📱",
+                "Educação": "📚", "Vestuário": "👟", "Pets": "🐾", "Outros": "📦",
+            }
+
+            lines.append(f"📊 *Resumo do Dia — {today_label}*")
+            lines.append(f"Oi, {first_name}! Aqui vai seu resumo de hoje:")
             lines.append("")
-            lines.append(f"📤 Gastos hoje: R${expense_today/100:,.2f}".replace(",", "."))
+            lines.append("─────────────────────")
+
+            # Categorias com valor
+            sorted_cats = sorted(cat_totals.items(), key=lambda x: -x[1])[:5]
+            for cat, total in sorted_cats:
+                emoji = cat_emoji_map.get(cat, "💸")
+                pct = round(total / expense_today * 100) if expense_today > 0 else 0
+                lines.append(f"{emoji} *{cat}* — {_fmt_brl(total)} ({pct}%)")
+            lines.append("─────────────────────")
+
+            # Totais
+            lines.append(f"💸 *Total hoje:* {_fmt_brl(expense_today)}")
             if income_today > 0:
-                lines.append(f"📥 Receitas hoje: R${income_today/100:,.2f}".replace(",", "."))
-
-            # Top categorias do dia
-            if cat_totals:
-                cat_emoji_map = {
-                    "Alimentação": "🍽", "Transporte": "🚗", "Moradia": "🏠",
-                    "Saúde": "💊", "Lazer": "🎮", "Assinaturas": "📱",
-                    "Educação": "📚", "Vestuário": "👟", "Pets": "🐾", "Outros": "📦",
-                }
-                sorted_cats = sorted(cat_totals.items(), key=lambda x: -x[1])[:3]
-                for cat, total in sorted_cats:
-                    emoji = cat_emoji_map.get(cat, "💸")
-                    lines.append(f"  {emoji} {cat}: R${total/100:,.2f}".replace(",", "."))
-
-            lines.append("")
-            lines.append(f"📆 Mês até agora: R${month_expense/100:,.2f}".replace(",", "."))
+                lines.append(f"💚 *Receitas:* {_fmt_brl(income_today)}")
+            lines.append(f"📆 *Mês:* {_fmt_brl(month_expense)}")
 
             # Se tem renda, mostra quanto resta
             if income_cents and income_cents > 0:
                 remaining = income_cents - month_expense
                 if remaining >= 0:
-                    lines.append(f"💰 Restam: R${remaining/100:,.2f}".replace(",", "."))
+                    lines.append(f"✅ *Sobra:* {_fmt_brl(remaining)}")
                 else:
-                    lines.append(f"⚠️ Estourou: R${abs(remaining)/100:,.2f}".replace(",", "."))
-
-            lines.append("")
-            lines.append(f"✅ {len(today_txs)} lançamento{'s' if len(today_txs) > 1 else ''} hoje")
+                    lines.append(f"🔴 *Acima do orçamento:* {_fmt_brl(abs(remaining))}")
 
         else:
             # Sem gastos hoje → nudge leve
-            lines.append(f"📊 *Seu dia* — {today_label}")
+            lines.append(f"📊 *Seu dia — {today_label}*")
             lines.append(f"Oi, {first_name}!")
             lines.append("")
             lines.append("Nenhum gasto registrado hoje.")
-            lines.append(f"📆 Mês até agora: R${month_expense/100:,.2f}".replace(",", "."))
+            lines.append("")
+            lines.append(f"📆 *Mês até agora:* {_fmt_brl(month_expense)}")
             if income_cents and income_cents > 0:
                 remaining = income_cents - month_expense
                 if remaining >= 0:
-                    lines.append(f"💰 Restam: R${remaining/100:,.2f}".replace(",", "."))
+                    lines.append(f"✅ *Sobra:* {_fmt_brl(remaining)}")
             lines.append("")
-            lines.append("Gastou algo? Manda pra eu registrar 😊")
+            lines.append("Gastou algo? Me manda que eu registro 😊")
 
         # Insight proativo inteligente (mentor) — best-effort, não quebra o relatório
         try:
@@ -11224,10 +11234,9 @@ def daily_report():
             except Exception:
                 pass
 
-        # Footer opt-out
+        # Footer opt-out (discreto)
         lines.append("")
-        lines.append("─────────────────────")
-        lines.append("_Não quer receber? Digite *parar relatórios*_")
+        lines.append("_Para desligar, diga \"parar relatórios\"_")
 
         messages.append({"phone": phone, "message": "\n".join(lines)})
 
