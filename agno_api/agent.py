@@ -10858,29 +10858,28 @@ def _generate_smart_insight(user_id, cur, today):
                     )
                     break
 
-        # 3. DIA DA SEMANA PERIGOSO
+        # 3. DIA DA SEMANA PERIGOSO (calcula em Python — compatível PG)
         cur.execute(
-            "SELECT CASE CAST(strftime('%%w', occurred_at) AS INTEGER) "
-            "WHEN 0 THEN 'dom' WHEN 1 THEN 'seg' WHEN 2 THEN 'ter' "
-            "WHEN 3 THEN 'qua' WHEN 4 THEN 'qui' WHEN 5 THEN 'sex' WHEN 6 THEN 'sáb' END AS dow, "
-            "SUM(amount_cents) FROM transactions "
-            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ? "
-            "GROUP BY dow ORDER BY SUM(amount_cents) DESC LIMIT 1",
+            "SELECT occurred_at, amount_cents FROM transactions "
+            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
             (user_id, month_str + "%"),
         )
-        dow_row = cur.fetchone()
-        if dow_row:
-            cur.execute(
-                "SELECT SUM(amount_cents) FROM transactions "
-                "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
-                (user_id, month_str + "%"),
-            )
-            total_month = (cur.fetchone()[0] or 1)
-            dow_name, dow_total = dow_row
-            dow_pct = round(dow_total / total_month * 100)
-            if dow_pct >= 25 and dow_name in ("sáb", "dom", "sex"):
+        _dow_totals = defaultdict(int)
+        _total_month_dow = 0
+        for _occ, _amt in cur.fetchall():
+            try:
+                from datetime import date as _d_dow
+                _dt = _d_dow.fromisoformat(_occ[:10])
+                _dow_totals[_dt.weekday()] += _amt
+                _total_month_dow += _amt
+            except Exception:
+                pass
+        if _dow_totals and _total_month_dow > 0:
+            _top_dow = max(_dow_totals, key=_dow_totals.get)
+            _dow_pct = round(_dow_totals[_top_dow] / _total_month_dow * 100)
+            if _dow_pct >= 25 and _top_dow in (4, 5, 6):  # sex=4, sab=5, dom=6
                 insights.append(
-                    f"*{dow_pct}%* dos seus gastos caem no fim de semana. Atenção nas sextas! 📅"
+                    f"*{_dow_pct}%* dos seus gastos caem no fim de semana. Atenção nas sextas! 📅"
                 )
 
         # 4. COMPARATIVO com mês passado (positivo)
@@ -11035,8 +11034,15 @@ def daily_report():
             lines.append("")
             lines.append("Gastou algo? Manda pra eu registrar 😊")
 
-        # Insight proativo inteligente (mentor)
-        insight = _generate_smart_insight(user_id, cur, today)
+        # Insight proativo inteligente (mentor) — best-effort, não quebra o relatório
+        try:
+            insight = _generate_smart_insight(user_id, cur, today)
+        except Exception:
+            try:
+                conn.commit()  # limpa transação abortada no PG
+            except Exception:
+                pass
+            insight = None
         if insight:
             lines.append("")
             lines.append(insight)
