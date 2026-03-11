@@ -598,29 +598,7 @@ def _generate_inline_alerts(cur, user_id: str, user_phone: str, category: str, a
                 cat_fmt = f"R${cat_this_month/100:,.2f}".replace(",", ".")
                 alerts.append(f"⚠️ _{category} já em {cat_fmt} — {pct}% acima do mês passado_")
 
-        # 2. ALERTA: Ritmo de gastos acelerado (projeção > renda)
-        cur.execute(
-            "SELECT monthly_income_cents FROM users WHERE id = ?", (user_id,)
-        )
-        income_row = cur.fetchone()
-        if income_row and income_row[0] and income_row[0] > 0:
-            income_cents = income_row[0]
-            day_of_month = today.day
-            # Só alerta após dia 8 e com gasto mínimo (evita projeções com poucos dados)
-            if day_of_month >= 8:
-                cur.execute(
-                    "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
-                    (user_id, f"{current_month}%"),
-                )
-                total_spent = cur.fetchone()[0]
-                if total_spent >= 10000:  # Mínimo R$100 gasto pra projetar
-                    days_in_month = calendar.monthrange(today.year, today.month)[1]
-                    projection = round(total_spent * days_in_month / day_of_month)
-                    if projection > income_cents * 1.2:  # 20% acima da renda
-                        proj_fmt = f"R${projection/100:,.2f}".replace(",", ".")
-                        over = projection - income_cents
-                        over_fmt = f"R${over/100:,.2f}".replace(",", ".")
-                        alerts.append(f"📊 _No ritmo atual, vai gastar {proj_fmt} — {over_fmt} acima da renda_")
+        # (projeção de ritmo removida — não era útil na confirmação de gasto)
     except Exception:
         pass  # Alertas são best-effort, nunca devem quebrar o save
 
@@ -966,8 +944,8 @@ def save_transaction(
         except Exception:
             pass
 
-    # "Errou?" sempre por último
-    result += '\n_Errou? → "errei" ou "apaga"_'
+    # "Errou?" sempre por último — direciona pro painel
+    result += '\n_Errou? Digite *painel* pra editar ou apagar_'
 
     return result
 
