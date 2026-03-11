@@ -6861,7 +6861,7 @@ statement_agent = Agent(
     name="statement_analyzer",
     description="Parser de faturas de cartão — extrai e classifica transações de imagens.",
     instructions=STATEMENT_INSTRUCTIONS,
-    model=OpenAIChat(id="gpt-4o", api_key=os.getenv("OPENAI_API_KEY")),
+    model=OpenAIChat(id="gpt-4.1", api_key=os.getenv("OPENAI_API_KEY")),
 )
 
 # ============================================================
@@ -9988,6 +9988,137 @@ def _pre_route(message: str) -> dict | None:
     if _re_router.match(r'(?:meus?\s+)?(?:limites?|or[cç]amentos?|budgets?|tetos?)(?:\s+por\s+categoria)?', msg):
         return {"response": _call(get_category_budgets, user_phone)}
 
+    # --- IMPORTAR FATURA (confirmação após parse-statement) ---
+    if _re_router.match(r'^importar?[\s\!\.\,]*$', msg):
+        try:
+            import json as _j_imp
+            conn = _get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+            _u = cur.fetchone()
+            if not _u:
+                conn.close()
+            else:
+                _uid = _u[0]
+                _now_imp = _now_br().strftime("%Y-%m-%dT%H:%M:%S")
+                cur.execute(
+                    "SELECT id, transactions_json, card_name, bill_month, expires_at "
+                    "FROM pending_statement_imports WHERE user_id = ? AND imported_at IS NULL "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (_uid,),
+                )
+                _prow = cur.fetchone()
+                if not _prow:
+                    conn.close()
+                else:
+                    _imp_id, _txns_json, _det_card, _bill_m, _exp_at = _prow
+                    if _now_imp > _exp_at:
+                        conn.close()
+                        return {"response": "⏰ O prazo expirou (30 min). Envie a fatura novamente."}
+
+                    _txns = _j_imp.loads(_txns_json)
+
+                    # Resolve card_id
+                    _card_id = None
+                    _card_created = False
+                    if _det_card:
+                        _card = _find_card(cur, _uid, _det_card)
+                        if _card:
+                            _card_id = _card[0]
+                        else:
+                            _card_id = str(uuid.uuid4())
+                            cur.execute(
+                                "INSERT INTO credit_cards (id, user_id, name, closing_day, due_day) VALUES (?, ?, ?, 0, 0)",
+                                (_card_id, _uid, _det_card),
+                            )
+                            _card_created = True
+
+                    # Aplica regras de categorização
+                    cur.execute(
+                        "SELECT merchant_pattern, category FROM merchant_category_rules WHERE user_id=?",
+                        (_uid,),
+                    )
+                    _rules = {r[0].upper(): r[1] for r in cur.fetchall()}
+                    if _rules:
+                        for _tx in _txns:
+                            _mu = _tx.get("merchant", "").upper()
+                            for _pat, _cat in _rules.items():
+                                if _pat in _mu:
+                                    _tx["category"] = _cat
+                                    break
+
+                    # Importa transações
+                    _imported = 0
+                    _skipped = 0
+                    _import_source = f"fatura:{_det_card}:{_bill_m}"
+                    for _tx in _txns:
+                        try:
+                            if _tx.get("type", "debit") == "credit":
+                                _skipped += 1
+                                continue
+                            _amt = round(_tx["amount"] * 100)
+                            if _amt <= 0:
+                                _skipped += 1
+                                continue
+                            # Duplicata check
+                            if _card_id:
+                                cur.execute(
+                                    "SELECT id FROM transactions WHERE user_id=? AND card_id=? AND amount_cents=? AND occurred_at LIKE ?",
+                                    (_uid, _card_id, _amt, f"{_tx['date']}%"),
+                                )
+                                if cur.fetchone():
+                                    _skipped += 1
+                                    continue
+                            cur.execute(
+                                "SELECT id FROM transactions WHERE user_id=? AND LOWER(merchant)=LOWER(?) AND amount_cents=? AND occurred_at LIKE ?",
+                                (_uid, _tx["merchant"], _amt, f"{_tx['date']}%"),
+                            )
+                            if cur.fetchone():
+                                _skipped += 1
+                                continue
+
+                            _tx_id = str(uuid.uuid4())
+                            _inst_t, _inst_n = 1, 1
+                            if _tx.get("installment") and "/" in _tx["installment"]:
+                                _parts = _tx["installment"].split("/")
+                                try:
+                                    _inst_n = int(_parts[0])
+                                    _inst_t = int(_parts[1])
+                                except Exception:
+                                    pass
+                            _group_id = None
+                            if _inst_t > 1:
+                                _gk = f"{_uid}:{_tx['merchant'].upper()}:{_inst_t}:{_bill_m}"
+                                _group_id = hashlib.md5(_gk.encode()).hexdigest()[:16]
+                            _total_amt = _amt * _inst_t if _inst_t > 1 else 0
+
+                            cur.execute(
+                                """INSERT INTO transactions
+                                   (id, user_id, type, amount_cents, total_amount_cents, installments, installment_number,
+                                    category, merchant, payment_method, occurred_at, card_id, import_source, installment_group_id)
+                                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                (_tx_id, _uid, "EXPENSE", _amt, _total_amt, _inst_t, _inst_n,
+                                 _tx["category"], _tx["merchant"], "CREDIT",
+                                 _tx["date"] + "T12:00:00", _card_id, _import_source, _group_id),
+                            )
+                            _imported += 1
+                        except Exception:
+                            _skipped += 1
+
+                    # Marca como importado
+                    cur.execute(
+                        "UPDATE pending_statement_imports SET imported_at=? WHERE id=?",
+                        (_now_imp, _imp_id),
+                    )
+                    conn.commit()
+                    conn.close()
+
+                    _card_note = f" _(cartão '{_det_card}' criado)_" if _card_created else f" _(cartão {_det_card})_" if _card_id else ""
+                    _skip_note = f"\n{_skipped} ignoradas (duplicatas/estornos)." if _skipped else ""
+                    return {"response": f"✅ *{_imported} transações importadas!*{_card_note}{_skip_note}\n\nDiga _\"como tá meu mês?\"_ pra ver o resumo atualizado."}
+        except Exception:
+            pass
+
     # --- PARAR / ATIVAR RELATÓRIOS ---
     if _re_router.match(r'(parar?|desligar?|desativar?|cancelar?|tirar?)\s*(os?\s+)?relat[oó]rios?', msg):
         try:
@@ -11979,25 +12110,29 @@ def _generate_statement_insights(transactions: list, user_id: str, bill_month: s
     except Exception:
         mo_label = bill_month
 
+    # Formatação BR para reais (recebe float, não centavos)
+    def _fb(v):
+        return _fmt_brl(round(v * 100))
+
     lines = [f"📊 *Fatura — {mo_label}*", ""]
     if credits:
-        lines.append(f"💸 *Total: R${total:,.2f}* (R${total_debits:,.2f} em débitos — R${total_credits:,.2f} em créditos) · {len(transactions)} transações".replace(",", "."))
+        lines.append(f"💸 *Total: {_fb(total)}* ({_fb(total_debits)} em débitos — {_fb(total_credits)} em créditos) · {len(transactions)} transações")
     else:
-        lines.append(f"💸 *Total: R${total:,.2f}* em {len(transactions)} transações".replace(",", "."))
+        lines.append(f"💸 *Total: {_fb(total)}* em {len(transactions)} transações")
     lines.append("")
 
     if top_merchants:
         lines.append("🏆 *Top estabelecimentos:*")
         for i, (m, v) in enumerate(top_merchants, 1):
             pct = v / total * 100 if total else 0
-            lines.append(f"  {i}. {m} — R${v:,.2f} ({pct:.0f}%)".replace(",", "."))
+            lines.append(f"  {i}. {m} — {_fb(v)} ({pct:.0f}%)")
         lines.append("")
 
     lines.append("📂 *Por categoria:*")
     for cat, val in top_cats:
         pct = val / total * 100 if total else 0
         emoji = cat_emoji.get(cat, "📦")
-        lines.append(f"  {emoji} {cat} — R${val:,.2f} ({pct:.0f}%)".replace(",", "."))
+        lines.append(f"  {emoji} {cat} — {_fb(val)} ({pct:.0f}%)")
     lines.append("")
 
     if history_lines:
@@ -12005,7 +12140,7 @@ def _generate_statement_insights(transactions: list, user_id: str, bill_month: s
         diff = total - avg
         sign = "+" if diff >= 0 else ""
         lines.append(f"📈 *vs. média dos últimos {len(history_lines)} meses:*")
-        lines.append(f"  Total: {sign}R${diff:,.2f} vs R${avg:,.2f} de média".replace(",", "."))
+        lines.append(f"  Total: {sign}{_fb(abs(diff))} vs {_fb(avg)} de média")
         lines.append("")
 
     # Destaca transações com categoria indefinida
@@ -12013,7 +12148,7 @@ def _generate_statement_insights(transactions: list, user_id: str, bill_month: s
     if indefinidos:
         lines.append(f"❓ *{len(indefinidos)} transação(ões) com categoria indefinida:*")
         for tx in indefinidos[:5]:
-            lines.append(f"  • {tx['merchant']} — R${tx['amount']:,.2f}".replace(",", "."))
+            lines.append(f"  • {tx['merchant']} — {_fb(tx['amount'])}")
         lines.append("_Você pode definir a categoria após importar._")
         lines.append("")
 
@@ -12079,31 +12214,59 @@ async def parse_statement_endpoint(
         or raw_bytes[:4] == b"%PDF"
     )
 
-    # Extrai transações via visão — OpenAI gpt-4o direto (imagem ou PDF)
+    # Extrai transações via visão — OpenAI gpt-4.1 (mais barato e capaz)
     try:
         import openai as _openai_lib
         import json as _json_vision
         _oai = _openai_lib.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+        _prompt_text = f"Extraia TODAS as transações desta fatura, incluindo TODAS as páginas. Não pare antes de processar o documento inteiro. Retorne JSON válido.\n\n{STATEMENT_INSTRUCTIONS}"
+
         if is_pdf:
-            media_type = "application/pdf"
-            file_content = {"type": "file", "file": {"filename": "fatura.pdf", "file_data": f"data:{media_type};base64,{file_b64}"}}
+            # PDF: upload via Files API e referencia no chat
+            import io as _io
+            _pdf_file = await _oai.files.create(
+                file=(_io.BytesIO(raw_bytes), "fatura.pdf"),
+                purpose="assistants",
+            )
+            file_content = {
+                "type": "file",
+                "file": {"file_id": _pdf_file.id},
+            }
+            completion = await _oai.chat.completions.create(
+                model="gpt-4.1",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": _prompt_text},
+                        file_content,
+                    ],
+                }],
+                response_format={"type": "json_object"},
+                max_tokens=16000,
+            )
+            # Limpa arquivo após uso
+            try:
+                await _oai.files.delete(_pdf_file.id)
+            except Exception:
+                pass
         else:
+            # Imagem: data URI inline
             media_type = content_type if content_type.startswith("image/") else "image/jpeg"
             file_content = {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{file_b64}"}}
+            completion = await _oai.chat.completions.create(
+                model="gpt-4.1",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": _prompt_text},
+                        file_content,
+                    ],
+                }],
+                response_format={"type": "json_object"},
+                max_tokens=16000,
+            )
 
-        completion = await _oai.chat.completions.create(
-            model="gpt-4o",
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": f"Extraia TODAS as transações desta fatura, incluindo TODAS as páginas. Não pare antes de processar o documento inteiro. Retorne JSON válido.\n\n{STATEMENT_INSTRUCTIONS}"},
-                    file_content,
-                ],
-            }],
-            response_format={"type": "json_object"},
-            max_tokens=16000,
-        )
         raw_json = completion.choices[0].message.content
         parsed = StatementParseResult.model_validate(_json_vision.loads(raw_json))
     except Exception as e:
@@ -12373,8 +12536,8 @@ async def import_statement_endpoint(
                 "UPDATE credit_cards SET current_bill_opening_cents=? WHERE id=?",
                 (total_imported_cents, card_id)
             )
-            old_fmt = f"R${old_bill/100:,.2f}".replace(",", ".")
-            new_fmt = f"R${total_imported_cents/100:,.2f}".replace(",", ".")
+            old_fmt = _fmt_brl(old_bill)
+            new_fmt = _fmt_brl(total_imported_cents)
             bill_update_note = f"\n💳 Valor da fatura do {det_card} atualizado: {old_fmt} → {new_fmt}\n_Errou? Diga \"fatura do {det_card} é {old_fmt}\" para desfazer._"
 
     # Marca como importado
@@ -12404,7 +12567,7 @@ async def import_statement_endpoint(
     if potential_duplicates:
         dup_note = f"\n\n⚠️ *{len(potential_duplicates)} possível(eis) duplicata(s)* com lançamentos manuais:"
         for d in potential_duplicates[:5]:
-            dup_note += f"\n  • {d['fatura']} vs '{d['atlas']}' — R${d['amount']:,.2f} em {d['date']}".replace(",", ".")
+            dup_note += f"\n  • {d['fatura']} vs '{d['atlas']}' — {_fmt_brl(round(d['amount'] * 100))} em {d['date']}"
         dup_note += "\n_Verifique e delete manualmente se necessário._"
 
     report_url = f"https://atlas-m3wb.onrender.com/v1/report/fatura?id={imp_id}"
