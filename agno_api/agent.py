@@ -10874,10 +10874,11 @@ def _generate_smart_insight(user_id, cur, today):
                 _total_month_dow += _amt
             except Exception:
                 pass
-        if _dow_totals and _total_month_dow > 0:
+        if _dow_totals and _total_month_dow > 0 and len(_dow_totals) >= 3:
+            # Só gera insight se tem dados em pelo menos 3 dias da semana distintos
             _top_dow = max(_dow_totals, key=_dow_totals.get)
             _dow_pct = round(_dow_totals[_top_dow] / _total_month_dow * 100)
-            if _dow_pct >= 25 and _top_dow in (4, 5, 6):  # sex=4, sab=5, dom=6
+            if _dow_pct >= 25 and _dow_pct < 100 and _top_dow in (4, 5, 6):  # sex=4, sab=5, dom=6
                 insights.append(
                     f"*{_dow_pct}%* dos seus gastos caem no fim de semana. Atenção nas sextas! 📅"
                 )
@@ -10968,11 +10969,11 @@ def daily_report():
     for user_id, phone, name, income_cents in users:
         first_name = name.split()[0] if name else "amigo"
 
-        # Transações do dia
+        # Transações do dia (occurred_at armazena com T: "2026-03-11T12:00:00")
         cur.execute(
             """SELECT type, amount_cents, category, merchant
-               FROM transactions WHERE user_id = ? AND occurred_at >= ? AND occurred_at <= ?""",
-            (user_id, today_str, today_str + " 23:59:59"),
+               FROM transactions WHERE user_id = ? AND occurred_at LIKE ?""",
+            (user_id, today_str + "%"),
         )
         today_txs = cur.fetchall()
 
