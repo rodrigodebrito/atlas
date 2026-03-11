@@ -152,6 +152,7 @@ def _init_sqlite_tables():
         "ALTER TABLE transactions ADD COLUMN installment_group_id TEXT DEFAULT NULL",
         "ALTER TABLE transactions ADD COLUMN import_source TEXT DEFAULT NULL",
         "ALTER TABLE credit_cards ADD COLUMN available_limit_cents INTEGER DEFAULT NULL",
+        "ALTER TABLE users ADD COLUMN daily_report_enabled INTEGER DEFAULT 1",
     ]:
         try:
             conn.execute(migration)
@@ -346,6 +347,7 @@ def _init_postgres_tables():
         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS installment_group_id TEXT DEFAULT NULL",
         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS import_source TEXT DEFAULT NULL",
         "ALTER TABLE credit_cards ADD COLUMN IF NOT EXISTS available_limit_cents INTEGER DEFAULT NULL",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_report_enabled INTEGER DEFAULT 1",
     ]:
         try:
             cur.execute(migration)
@@ -7805,6 +7807,25 @@ body{{
   <div id="agendaList"></div>
 </div>
 
+<div class="section" id="notifSection">
+  <div class="section-title">🔔 Notificações</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border)">
+    <div>
+      <div style="font-size:.95rem;font-weight:500">Relatório diário (20h)</div>
+      <div style="font-size:.8rem;color:var(--text2)">Resumo do dia com gastos e insights</div>
+    </div>
+    <label style="position:relative;display:inline-block;width:50px;height:28px;cursor:pointer">
+      <input type="checkbox" id="toggleDailyReport" checked onchange="toggleNotif(this.checked)"
+        style="opacity:0;width:0;height:0">
+      <span style="position:absolute;top:0;left:0;right:0;bottom:0;background:var(--surface2);border-radius:28px;transition:.3s"></span>
+      <span id="toggleDot" style="position:absolute;top:3px;left:3px;width:22px;height:22px;background:var(--green);border-radius:50%;transition:.3s"></span>
+    </label>
+  </div>
+  <div style="font-size:.75rem;color:var(--text3);margin-top:8px">
+    Pelo WhatsApp: diga <b>"parar relatórios"</b> para desligar ou <b>"ativar relatórios"</b> para voltar.
+  </div>
+</div>
+
 <div class="footer">
   ATLAS — Seu assistente financeiro · Link válido por 30 min
 </div>
@@ -8402,6 +8423,43 @@ async function deleteAgendaEvent(id, title) {{
   }} catch(e) {{ showToast('Erro de conexao', true); }}
 }}
 
+// ==================== NOTIFICAÇÕES ====================
+async function loadNotifSettings() {{
+  try {{
+    const r = await fetch(API + '/v1/api/notifications?t=' + TOKEN);
+    const d = await r.json();
+    const cb = document.getElementById('toggleDailyReport');
+    const dot = document.getElementById('toggleDot');
+    if (cb) {{
+      cb.checked = d.daily_report_enabled === 1;
+      updateToggleUI(cb.checked);
+    }}
+  }} catch(e) {{}}
+}}
+
+function updateToggleUI(on) {{
+  const dot = document.getElementById('toggleDot');
+  const bg = dot?.parentElement?.querySelector('span');
+  if (dot) {{
+    dot.style.left = on ? '25px' : '3px';
+    dot.style.background = on ? 'var(--green)' : '#666';
+  }}
+}}
+
+async function toggleNotif(enabled) {{
+  updateToggleUI(enabled);
+  try {{
+    const r = await fetch(API + '/v1/api/notifications?t=' + TOKEN, {{
+      method: 'PUT',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{ daily_report: enabled }})
+    }});
+    if (r.ok) {{
+      showToast(enabled ? 'Relatórios ativados ✅' : 'Relatórios desligados');
+    }} else {{ showToast('Erro ao salvar', true); }}
+  }} catch(e) {{ showToast('Erro de conexão', true); }}
+}}
+
 // ==================== TX CRUD ====================
 async function deleteTx(id) {{
   if (!confirm('Apagar esta transação?')) return;
@@ -8457,6 +8515,7 @@ document.addEventListener('DOMContentLoaded', () => {{
   renderCatBreakdown();
   renderCards();
   renderAgenda();
+  loadNotifSettings();
 
   pieChart = new Chart(document.getElementById('pieChart'), {{
     type: 'doughnut',
@@ -8732,6 +8791,43 @@ async def delete_agenda_event_api(event_id: str, t: str = ""):
     except Exception as exc:
         print(f"[PAINEL] Erro ao excluir evento {event_id}: {exc}")
         return _JSONResponse({"error": "Erro interno"}, status_code=500)
+
+
+@app.put("/v1/api/notifications")
+async def toggle_notifications_api(request: _Request, t: str = ""):
+    """Liga/desliga relatório diário via API do painel."""
+    user_id = _validate_panel_token(t)
+    if not user_id:
+        return _JSONResponse({"error": "Token inválido ou expirado"}, status_code=401)
+    try:
+        body = await request.json()
+        enabled = 1 if body.get("daily_report", True) else 0
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET daily_report_enabled = ? WHERE id = ?", (enabled, user_id))
+        conn.commit()
+        conn.close()
+        return _JSONResponse({"ok": True, "daily_report_enabled": enabled})
+    except Exception as exc:
+        print(f"[PAINEL] Erro ao alterar notificações: {exc}")
+        return _JSONResponse({"error": "Erro interno"}, status_code=500)
+
+
+@app.get("/v1/api/notifications")
+def get_notifications_api(t: str = ""):
+    """Retorna configuração de notificações do usuário."""
+    user_id = _validate_panel_token(t)
+    if not user_id:
+        return _JSONResponse({"error": "Token inválido ou expirado"}, status_code=401)
+    try:
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT COALESCE(daily_report_enabled, 1) FROM users WHERE id = ?", (user_id,))
+        row = cur.fetchone()
+        conn.close()
+        return _JSONResponse({"daily_report_enabled": row[0] if row else 1})
+    except Exception:
+        return _JSONResponse({"daily_report_enabled": 1})
 
 
 def get_panel_url(user_phone: str) -> str:
@@ -9551,6 +9647,29 @@ def _pre_route(message: str) -> dict | None:
                 _ctx_month = ctx.get("month", current_month)
                 _user_last_context[user_phone] = {"month": _ctx_month, "type": "merchant", "ts": _now_br()}
                 return {"response": _call(get_transactions_by_merchant, user_phone, _cont_query, _ctx_month)}
+
+    # --- PARAR / ATIVAR RELATÓRIOS ---
+    if _re_router.match(r'(parar?|desligar?|desativar?|cancelar?|tirar?)\s*(os?\s+)?relat[oó]rios?', msg):
+        try:
+            conn = _get_conn()
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET daily_report_enabled = 0 WHERE phone = ?", (user_phone,))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+        return {"response": "✅ Pronto! Você não vai mais receber o relatório diário.\n\nQuando quiser voltar, é só dizer *\"ativar relatórios\"*."}
+
+    if _re_router.match(r'(ativar?|ligar?|retomar?|voltar?)\s*(os?\s+)?relat[oó]rios?', msg):
+        try:
+            conn = _get_conn()
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET daily_report_enabled = 1 WHERE phone = ?", (user_phone,))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+        return {"response": "✅ Relatórios diários reativados! Você vai receber seu resumo toda noite às 20h. 📊"}
 
     # --- APAGAR ÚLTIMO / DESFAZER ---
     if _re_router.match(r'(errei|apaga|desfaz|desfazer|undo|apagar?\s*(?:o\s+)?[uú]ltim[oa]|apaga\s*(?:o\s+)?[uú]ltim[oa]|deleta\s*(?:o\s+)?[uú]ltim[oa]|remove\s*(?:o\s+)?[uú]ltim[oa]|exclui\s*(?:o\s+)?[uú]ltim[oa]|tira\s*(?:o\s+)?[uú]ltim[oa]|cancela\s*(?:o\s+)?[uú]ltim[oa])[\s\?\!\.]*$', msg):
@@ -10945,9 +11064,12 @@ def daily_report():
         pass
 
     try:
-        cur.execute("SELECT id, phone, name, monthly_income_cents FROM users WHERE name != 'Usuário'")
+        cur.execute(
+            "SELECT id, phone, name, monthly_income_cents FROM users "
+            "WHERE name != 'Usuário' AND COALESCE(daily_report_enabled, 1) = 1"
+        )
     except Exception:
-        # Se monthly_income_cents não existe, tenta sem
+        # Se colunas novas não existem, tenta sem filtro
         try:
             conn.commit()
         except Exception:
@@ -11101,6 +11223,11 @@ def daily_report():
                 conn.commit()
             except Exception:
                 pass
+
+        # Footer opt-out
+        lines.append("")
+        lines.append("─────────────────────")
+        lines.append("_Não quer receber? Digite *parar relatórios*_")
 
         messages.append({"phone": phone, "message": "\n".join(lines)})
 
