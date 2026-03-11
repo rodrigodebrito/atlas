@@ -924,7 +924,7 @@ def save_transaction(
                 _month_fmt = f"R${_month_total/100:,.2f}".replace(",", ".")
                 result += f"\n📊 Mês: {_month_fmt}"
 
-                _ctx_cur.execute("SELECT income_cents FROM users WHERE id = ?", (user_id,))
+                _ctx_cur.execute("SELECT monthly_income_cents FROM users WHERE id = ?", (user_id,))
                 _inc_row = _ctx_cur.fetchone()
                 if _inc_row and _inc_row[0] and _inc_row[0] > 0:
                     _remaining = _inc_row[0] - _month_total
@@ -10603,7 +10603,7 @@ def _build_drip_message(user_id, first_name, days_since, cur):
 
     elif days_since == 3:
         # Dia 3: painel + renda
-        cur.execute("SELECT income_cents FROM users WHERE id = ?", (user_id,))
+        cur.execute("SELECT monthly_income_cents FROM users WHERE id = ?", (user_id,))
         row = cur.fetchone()
         has_income = row and row[0] and row[0] > 0
 
@@ -10938,7 +10938,7 @@ def daily_report():
     conn = _get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT id, phone, name, income_cents FROM users WHERE name != 'Usuário'")
+    cur.execute("SELECT id, phone, name, monthly_income_cents FROM users WHERE name != 'Usuário'")
     users = cur.fetchall()
 
     # Pré-calcula features usadas por user para dicas contextuais
@@ -11214,7 +11214,7 @@ def monthly_recap():
     conn = _get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT id, phone, name, income_cents FROM users WHERE name != 'Usuário'")
+    cur.execute("SELECT id, phone, name, monthly_income_cents FROM users WHERE name != 'Usuário'")
     users = cur.fetchall()
 
     messages = []
