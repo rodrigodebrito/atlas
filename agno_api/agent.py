@@ -10797,6 +10797,131 @@ def weekly_report():
     return {"messages": messages, "count": len(messages)}
 
 
+def _generate_smart_insight(user_id, cur, today):
+    """Gera 1 insight inteligente baseado nos padrões do usuário."""
+    from collections import defaultdict
+    month_str = today.strftime("%Y-%m")
+    day_of_month = today.day
+    insights = []
+
+    try:
+        # 1. TOP MERCHANT por frequência — "Você foi no iFood Nx (R$X)"
+        cur.execute(
+            "SELECT merchant, COUNT(*), SUM(amount_cents) FROM transactions "
+            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ? AND merchant IS NOT NULL "
+            "GROUP BY merchant ORDER BY COUNT(*) DESC LIMIT 1",
+            (user_id, month_str + "%"),
+        )
+        top_m = cur.fetchone()
+        if top_m and top_m[1] >= 4:
+            m_name, m_count, m_total = top_m
+            m_fmt = f"R${m_total/100:,.2f}".replace(",", ".")
+            half_save = m_total // 2
+            annual = half_save * 12
+            annual_fmt = f"R${annual/100:,.2f}".replace(",", ".")
+            insights.append(
+                f"Você foi no *{m_name}* {m_count}x este mês ({m_fmt}). "
+                f"Cortando metade, economiza {annual_fmt}/ano!"
+            )
+
+        # 2. CATEGORIA ACELERANDO vs mês passado
+        prev_m = today.month - 1
+        prev_y = today.year
+        if prev_m <= 0:
+            prev_m = 12
+            prev_y -= 1
+        prev_month_str = f"{prev_y}-{prev_m:02d}"
+
+        cur.execute(
+            "SELECT category, SUM(amount_cents) FROM transactions "
+            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ? "
+            "GROUP BY category ORDER BY SUM(amount_cents) DESC",
+            (user_id, month_str + "%"),
+        )
+        cats_now = {r[0]: r[1] for r in cur.fetchall()}
+
+        cur.execute(
+            "SELECT category, SUM(amount_cents) FROM transactions "
+            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ? "
+            "GROUP BY category",
+            (user_id, prev_month_str + "%"),
+        )
+        cats_prev = {r[0]: r[1] for r in cur.fetchall()}
+
+        for cat, total_now in cats_now.items():
+            prev_total = cats_prev.get(cat, 0)
+            if prev_total >= 5000 and total_now > prev_total * 1.25:
+                pct = round((total_now / prev_total - 1) * 100)
+                if pct <= 200:
+                    insights.append(
+                        f"*{cat}* subiu {pct}% vs mês passado. Tá no radar? 👀"
+                    )
+                    break
+
+        # 3. DIA DA SEMANA PERIGOSO
+        cur.execute(
+            "SELECT CASE CAST(strftime('%%w', occurred_at) AS INTEGER) "
+            "WHEN 0 THEN 'dom' WHEN 1 THEN 'seg' WHEN 2 THEN 'ter' "
+            "WHEN 3 THEN 'qua' WHEN 4 THEN 'qui' WHEN 5 THEN 'sex' WHEN 6 THEN 'sáb' END AS dow, "
+            "SUM(amount_cents) FROM transactions "
+            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ? "
+            "GROUP BY dow ORDER BY SUM(amount_cents) DESC LIMIT 1",
+            (user_id, month_str + "%"),
+        )
+        dow_row = cur.fetchone()
+        if dow_row:
+            cur.execute(
+                "SELECT SUM(amount_cents) FROM transactions "
+                "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+                (user_id, month_str + "%"),
+            )
+            total_month = (cur.fetchone()[0] or 1)
+            dow_name, dow_total = dow_row
+            dow_pct = round(dow_total / total_month * 100)
+            if dow_pct >= 25 and dow_name in ("sáb", "dom", "sex"):
+                insights.append(
+                    f"*{dow_pct}%* dos seus gastos caem no fim de semana. Atenção nas sextas! 📅"
+                )
+
+        # 4. COMPARATIVO com mês passado (positivo)
+        if cats_prev:
+            total_prev = sum(cats_prev.values())
+            total_now_all = sum(cats_now.values())
+            if total_prev > 0 and total_now_all < total_prev * 0.95:
+                pct_less = round((1 - total_now_all / total_prev) * 100)
+                insights.append(
+                    f"Até agora, gastou *{pct_less}% menos* que o mês passado inteiro. Tá no caminho! 📉"
+                )
+
+        # 5. META EM RISCO
+        cur.execute(
+            "SELECT name, target_cents, saved_cents FROM goals WHERE user_id = ? AND status = 'active' LIMIT 1",
+            (user_id,),
+        )
+        goal = cur.fetchone()
+        if goal:
+            g_name, g_target, g_saved = goal
+            g_remaining = g_target - (g_saved or 0)
+            if g_remaining > 0:
+                days_left = max(1, 30 - day_of_month)
+                daily_needed = g_remaining / days_left
+                daily_fmt = f"R${daily_needed/100:,.2f}".replace(",", ".")
+                rem_fmt = f"R${g_remaining/100:,.2f}".replace(",", ".")
+                insights.append(
+                    f"Meta *{g_name}*: faltam {rem_fmt}. Precisa guardar {daily_fmt}/dia nos próximos {days_left} dias."
+                )
+
+    except Exception:
+        pass
+
+    if not insights:
+        return None
+
+    # Rotaciona entre insights disponíveis baseado no dia
+    idx = day_of_month % len(insights)
+    return f"💡 *Insight:* {insights[idx]}"
+
+
 @app.get("/v1/reports/daily")
 def daily_report():
     """
@@ -10910,6 +11035,12 @@ def daily_report():
             lines.append("")
             lines.append("Gastou algo? Manda pra eu registrar 😊")
 
+        # Insight proativo inteligente (mentor)
+        insight = _generate_smart_insight(user_id, cur, today)
+        if insight:
+            lines.append("")
+            lines.append(insight)
+
         # Dica contextual: detecta feature não usada e sugere
         cur.execute("SELECT COUNT(*) FROM cards WHERE user_id = ?", (user_id,))
         has_cards = cur.fetchone()[0] > 0
@@ -10932,15 +11063,16 @@ def daily_report():
         if not has_goals:
             unused.append("goals")
 
-        # Escolhe 1 dica aleatória das features não usadas
-        tip = None
-        for key, text in _TIPS:
-            if key in unused:
-                tip = text
-                break
-        if tip:
-            lines.append("")
-            lines.append(f"💡 *Dica:* {tip}")
+        # Só mostra dica se NÃO teve insight (não sobrecarrega)
+        if not insight:
+            tip = None
+            for key, text in _TIPS:
+                if key in unused:
+                    tip = text
+                    break
+            if tip:
+                lines.append("")
+                lines.append(f"💡 *Dica:* {tip}")
 
         messages.append({"phone": phone, "message": "\n".join(lines)})
 
@@ -11046,80 +11178,198 @@ def reactivation_nudge():
     return {"messages": messages, "count": len(messages)}
 
 
-@app.get("/v1/reactivation/nudge")
-def reactivation_nudge():
+@app.get("/v1/reports/monthly-recap")
+def monthly_recap():
     """
-    Gera nudge para usuários inativos (3-14 dias sem lançar gasto).
-    Chamado pelo n8n via cron diário às 14h BRT.
+    Gera retrospectiva mensal ("Atlas Wrapped") do mês anterior.
+    Chamado pelo n8n via cron dia 1 às 10h BRT.
     Retorna: {"messages": [{"phone": ..., "message": ...}], "count": N}
     """
+    from collections import defaultdict
     today = _now_br()
-    today_str = today.strftime("%Y-%m-%d")
-    current_month = today.strftime("%Y-%m")
+
+    # Mês anterior
+    prev_m = today.month - 1
+    prev_y = today.year
+    if prev_m <= 0:
+        prev_m = 12
+        prev_y -= 1
+    target_month = f"{prev_y}-{prev_m:02d}"
+
+    # Mês retrasado (pra comparativo)
+    prev2_m = prev_m - 1
+    prev2_y = prev_y
+    if prev2_m <= 0:
+        prev2_m = 12
+        prev2_y -= 1
+    prev2_month = f"{prev2_y}-{prev2_m:02d}"
+
+    _MONTH_NAMES = {
+        1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril",
+        5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
+        9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro",
+    }
+    month_label = _MONTH_NAMES.get(prev_m, str(prev_m))
 
     conn = _get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT id, phone, name FROM users WHERE name != 'Usuário'")
+    cur.execute("SELECT id, phone, name, income_cents FROM users WHERE name != 'Usuário'")
     users = cur.fetchall()
 
     messages = []
-    for user_id, phone, name in users:
+    for user_id, phone, name, income_cents in users:
         first_name = name.split()[0] if name else "amigo"
 
-        # Última transação do usuário
+        # Transações do mês alvo
         cur.execute(
-            "SELECT MAX(occurred_at) FROM transactions WHERE user_id = ?",
-            (user_id,),
+            "SELECT type, amount_cents, category, merchant, occurred_at FROM transactions "
+            "WHERE user_id = ? AND occurred_at LIKE ? ORDER BY occurred_at",
+            (user_id, target_month + "%"),
         )
-        last_tx = cur.fetchone()[0]
-        if not last_tx:
+        txs = cur.fetchall()
+        if not txs:
             continue
 
-        last_date = last_tx[:10]
-        from datetime import date as _date_react
-        try:
-            days_inactive = (today.date() - _date_react.fromisoformat(last_date)).days
-        except Exception:
+        expense_total = 0
+        income_total = 0
+        cat_totals = defaultdict(int)
+        merchant_totals = defaultdict(int)
+        merchant_counts = defaultdict(int)
+        day_totals = defaultdict(int)
+        tx_count = 0
+
+        for tx_type, amt, cat, merchant, occ_at in txs:
+            if tx_type == "EXPENSE":
+                tx_count += 1
+                expense_total += amt
+                cat_totals[cat or "Outros"] += amt
+                if merchant:
+                    merchant_totals[merchant] += amt
+                    merchant_counts[merchant] += 1
+                day_totals[occ_at[:10]] += amt
+            elif tx_type == "INCOME":
+                income_total += amt
+
+        if tx_count == 0:
             continue
 
-        # Só envia pra inativos de 3 a 14 dias (depois disso é churn)
-        if days_inactive < 3 or days_inactive > 14:
-            continue
+        exp_fmt = f"R${expense_total/100:,.2f}".replace(",", ".")
 
-        # Total do mês
+        # Top merchant por valor
+        top_merchant_val = max(merchant_totals, key=merchant_totals.get) if merchant_totals else None
+        # Top merchant por frequência
+        top_merchant_freq = max(merchant_counts, key=merchant_counts.get) if merchant_counts else None
+        # Dia mais caro
+        top_day = max(day_totals, key=day_totals.get) if day_totals else None
+
+        # Streak (dias consecutivos)
+        sorted_days = sorted(set(d for d in day_totals.keys()))
+        from datetime import date as _date_recap
+        best_streak = 1
+        current_streak = 1
+        for i in range(1, len(sorted_days)):
+            d1 = _date_recap.fromisoformat(sorted_days[i-1])
+            d2 = _date_recap.fromisoformat(sorted_days[i])
+            if (d2 - d1).days == 1:
+                current_streak += 1
+                best_streak = max(best_streak, current_streak)
+            else:
+                current_streak = 1
+
+        # Comparativo com mês retrasado
+        cur.execute(
+            "SELECT category, SUM(amount_cents) FROM transactions "
+            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ? GROUP BY category",
+            (user_id, prev2_month + "%"),
+        )
+        prev2_cats = {r[0]: r[1] for r in cur.fetchall()}
         cur.execute(
             "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
             "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
-            (user_id, current_month + "%"),
+            (user_id, prev2_month + "%"),
         )
-        month_total = cur.fetchone()[0] or 0
-        month_fmt = f"R${month_total/100:,.2f}".replace(",", ".")
+        prev2_total = cur.fetchone()[0] or 0
 
-        # Quantidade de gastos do mês
-        cur.execute(
-            "SELECT COUNT(*) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
-            (user_id, current_month + "%"),
-        )
-        month_count = cur.fetchone()[0]
+        # Monta mensagem
+        lines = [
+            f"🏆 *Retrospectiva de {month_label}*",
+            "─────────────────────",
+            "",
+            f"📊 Você registrou *{tx_count} gastos* totalizando *{exp_fmt}*",
+            "",
+        ]
 
-        if month_total > 0:
-            msg = (
-                f"👋 Oi, {first_name}! Faz {days_inactive} dias que não te vejo por aqui.\n\n"
-                f"📊 Seu mês até agora: *{month_fmt}* em {month_count} gastos.\n\n"
-                "Gastou algo hoje? Manda pra eu registrar — basta digitar o valor e o lugar!\n\n"
-                "Ex: _\"almocei 35\"_ ou _\"uber 18\"_"
-            )
+        if top_merchant_val:
+            tm_val = f"R${merchant_totals[top_merchant_val]/100:,.2f}".replace(",", ".")
+            tm_pct = round(merchant_totals[top_merchant_val] / expense_total * 100)
+            lines.append(f"🥇 *Campeão de gastos:* {top_merchant_val} ({tm_val} — {tm_pct}%)")
+
+        if top_merchant_freq and top_merchant_freq != top_merchant_val:
+            lines.append(f"🏪 *Mais visitado:* {top_merchant_freq} ({merchant_counts[top_merchant_freq]}x)")
+        elif top_merchant_freq:
+            lines.append(f"🏪 *Visitas:* {merchant_counts[top_merchant_freq]}x no {top_merchant_freq}")
+
+        if top_day:
+            td_fmt = f"R${day_totals[top_day]/100:,.2f}".replace(",", ".")
+            td_label = f"{top_day[8:10]}/{top_day[5:7]}"
+            lines.append(f"📅 *Dia mais caro:* {td_label} ({td_fmt})")
+
+        if best_streak >= 2:
+            lines.append(f"🔥 *Maior sequência:* {best_streak} dias seguidos lançando!")
+
+        # Comparativo
+        if prev2_total > 0:
+            lines.append("")
+            prev2_month_label = _MONTH_NAMES.get(prev2_m, str(prev2_m))
+            lines.append(f"📈 *vs {prev2_month_label}:*")
+            if expense_total < prev2_total:
+                pct_less = round((1 - expense_total / prev2_total) * 100)
+                lines.append(f"  📉 Gastou {pct_less}% menos — parabéns!")
+            elif expense_total > prev2_total:
+                pct_more = round((expense_total / prev2_total - 1) * 100)
+                lines.append(f"  📈 Gastou {pct_more}% mais — atenção!")
+
+            # Top 2 categorias que mais mudaram
+            cat_emoji_map = {
+                "Alimentação": "🍽", "Transporte": "🚗", "Moradia": "🏠",
+                "Saúde": "💊", "Lazer": "🎮", "Assinaturas": "📱",
+                "Educação": "📚", "Vestuário": "👟", "Pets": "🐾", "Outros": "📦",
+            }
+            cat_changes = []
+            for cat, total in cat_totals.items():
+                prev2_cat = prev2_cats.get(cat, 0)
+                if prev2_cat >= 2000:
+                    change_pct = round((total / prev2_cat - 1) * 100)
+                    if abs(change_pct) >= 10:
+                        cat_changes.append((cat, change_pct))
+            cat_changes.sort(key=lambda x: x[1])
+            for cat, pct in cat_changes[:2]:
+                emoji = cat_emoji_map.get(cat, "💸")
+                sign = "+" if pct > 0 else ""
+                comment = "mandou bem!" if pct < 0 else "ficou de olho"
+                lines.append(f"  {emoji} {cat}: {sign}{pct}% ({comment})")
+
+        # Score financeiro (simplificado)
+        if income_cents and income_cents > 0:
+            savings_rate = max(0, (income_cents - expense_total) / income_cents)
+            score = min(100, round(savings_rate * 100 + 20))
+            grade = "A+" if score >= 90 else "A" if score >= 80 else "B+" if score >= 70 else "B" if score >= 60 else "C" if score >= 40 else "D"
+            lines.append("")
+            lines.append(f"💰 *Score financeiro: {score}/100 ({grade})*")
+
+        # Desafio do próximo mês
+        lines.append("")
+        lines.append("─────────────────────")
+        next_month_name = _MONTH_NAMES.get(today.month, str(today.month))
+        if top_merchant_val and merchant_counts.get(top_merchant_val, 0) >= 5:
+            half_val = f"R${merchant_totals[top_merchant_val]/200:,.2f}".replace(",", ".")
+            lines.append(f"🎯 *Desafio de {next_month_name}:* gastar menos de {half_val} no {top_merchant_val}. Aceita?")
         else:
-            msg = (
-                f"👋 Oi, {first_name}! Faz {days_inactive} dias que não te vejo.\n\n"
-                "Manda um gasto que fez hoje — é super rápido:\n"
-                "• _\"almocei 35\"_\n"
-                "• _\"mercado 120\"_\n\n"
-                "Eu organizo tudo pra você 😊"
-            )
+            target_10 = f"R${expense_total * 0.9 / 100:,.2f}".replace(",", ".")
+            lines.append(f"🎯 *Desafio de {next_month_name}:* gastar menos de {target_10}. Aceita?")
 
-        messages.append({"phone": phone, "message": msg})
+        messages.append({"phone": phone, "message": "\n".join(lines)})
 
     conn.close()
     return {"messages": messages, "count": len(messages)}
