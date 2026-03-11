@@ -10937,7 +10937,21 @@ def daily_report():
     conn = _get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT id, phone, name, monthly_income_cents FROM users WHERE name != 'Usuário'")
+    # Limpa qualquer transação residual (segurança PG)
+    try:
+        conn.commit()
+    except Exception:
+        pass
+
+    try:
+        cur.execute("SELECT id, phone, name, monthly_income_cents FROM users WHERE name != 'Usuário'")
+    except Exception:
+        # Se monthly_income_cents não existe, tenta sem
+        try:
+            conn.commit()
+        except Exception:
+            pass
+        cur.execute("SELECT id, phone, name, 0 FROM users WHERE name != 'Usuário'")
     users = cur.fetchall()
 
     # Pré-calcula features usadas por user para dicas contextuais
@@ -11049,37 +11063,43 @@ def daily_report():
             lines.append(insight)
 
         # Dica contextual: detecta feature não usada e sugere
-        cur.execute("SELECT COUNT(*) FROM cards WHERE user_id = ?", (user_id,))
-        has_cards = cur.fetchone()[0] > 0
-        cur.execute("SELECT COUNT(*) FROM commitments WHERE user_id = ?", (user_id,))
-        has_commitments = cur.fetchone()[0] > 0
-        cur.execute("SELECT COUNT(*) FROM agenda_events WHERE user_id = ?", (user_id,))
-        has_agenda = cur.fetchone()[0] > 0
-        cur.execute("SELECT COUNT(*) FROM goals WHERE user_id = ?", (user_id,))
-        has_goals = cur.fetchone()[0] > 0
+        try:
+            cur.execute("SELECT COUNT(*) FROM cards WHERE user_id = ?", (user_id,))
+            has_cards = cur.fetchone()[0] > 0
+            cur.execute("SELECT COUNT(*) FROM commitments WHERE user_id = ?", (user_id,))
+            has_commitments = cur.fetchone()[0] > 0
+            cur.execute("SELECT COUNT(*) FROM agenda_events WHERE user_id = ?", (user_id,))
+            has_agenda = cur.fetchone()[0] > 0
+            cur.execute("SELECT COUNT(*) FROM goals WHERE user_id = ?", (user_id,))
+            has_goals = cur.fetchone()[0] > 0
 
-        unused = []
-        if not has_cards:
-            unused.append("cards")
-        if not has_commitments:
-            unused.append("commitments")
-        if not (income_cents and income_cents > 0):
-            unused.append("income")
-        if not has_agenda:
-            unused.append("agenda")
-        if not has_goals:
-            unused.append("goals")
+            unused = []
+            if not has_cards:
+                unused.append("cards")
+            if not has_commitments:
+                unused.append("commitments")
+            if not (income_cents and income_cents > 0):
+                unused.append("income")
+            if not has_agenda:
+                unused.append("agenda")
+            if not has_goals:
+                unused.append("goals")
 
-        # Só mostra dica se NÃO teve insight (não sobrecarrega)
-        if not insight:
-            tip = None
-            for key, text in _TIPS:
-                if key in unused:
-                    tip = text
-                    break
-            if tip:
-                lines.append("")
-                lines.append(f"💡 *Dica:* {tip}")
+            # Só mostra dica se NÃO teve insight (não sobrecarrega)
+            if not insight:
+                tip = None
+                for key, text in _TIPS:
+                    if key in unused:
+                        tip = text
+                        break
+                if tip:
+                    lines.append("")
+                    lines.append(f"💡 *Dica:* {tip}")
+        except Exception:
+            try:
+                conn.commit()
+            except Exception:
+                pass
 
         messages.append({"phone": phone, "message": "\n".join(lines)})
 
