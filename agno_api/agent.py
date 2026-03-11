@@ -941,12 +941,33 @@ def save_transaction(
                     day_fmt = f"R${day_total/100:,.2f}".replace(",", ".")
                     result += f"\n{cat_icon} Hoje: {day_fmt} em {day_count} gastos"
 
+                # Streak: dias consecutivos lançando gastos
+                _ctx_cur.execute(
+                    "SELECT DISTINCT DATE(occurred_at) FROM transactions "
+                    "WHERE user_id = ? AND type = 'EXPENSE' ORDER BY DATE(occurred_at) DESC LIMIT 30",
+                    (user_id,),
+                )
+                _dates = [r[0] for r in _ctx_cur.fetchall()]
+                if _dates:
+                    from datetime import date as _date_streak
+                    _streak = 1
+                    _today_d = today.date() if hasattr(today, 'date') else _date_streak.fromisoformat(today_str)
+                    for i in range(1, len(_dates)):
+                        _d = _date_streak.fromisoformat(_dates[i]) if isinstance(_dates[i], str) else _dates[i]
+                        _prev = _date_streak.fromisoformat(_dates[i-1]) if isinstance(_dates[i-1], str) else _dates[i-1]
+                        if (_prev - _d).days == 1:
+                            _streak += 1
+                        else:
+                            break
+                    if _streak >= 2:
+                        result += f"\n🔥 {_streak} dias seguidos lançando!"
+
             _ctx_conn.close()
         except Exception:
             pass
 
     # "Errou?" sempre por último
-    result += '\n_Errou? → "corrige" ou "apaga"_'
+    result += '\n_Errou? → "errei" ou "apaga"_'
 
     return result
 
@@ -9538,6 +9559,24 @@ def _pre_route(message: str) -> dict | None:
                 _user_last_context[user_phone] = {"month": _ctx_month, "type": "merchant", "ts": _now_br()}
                 return {"response": _call(get_transactions_by_merchant, user_phone, _cont_query, _ctx_month)}
 
+    # --- APAGAR ÚLTIMO / DESFAZER ---
+    if _re_router.match(r'(errei|apaga|desfaz|desfazer|undo|apagar?\s*(?:o\s+)?[uú]ltim[oa]|apaga\s*(?:o\s+)?[uú]ltim[oa]|deleta\s*(?:o\s+)?[uú]ltim[oa]|remove\s*(?:o\s+)?[uú]ltim[oa]|exclui\s*(?:o\s+)?[uú]ltim[oa]|tira\s*(?:o\s+)?[uú]ltim[oa]|cancela\s*(?:o\s+)?[uú]ltim[oa])[\s\?\!\.]*$', msg):
+        return {"response": _call(delete_last_transaction, user_phone)}
+
+    # --- MENU RÁPIDO POR NÚMERO ---
+    if _re_router.match(r'^[1-6][\s\.\)]*$', msg):
+        _menu_map = {
+            "1": lambda: _call(get_month_summary, user_phone, current_month, "ALL"),
+            "2": lambda: _call(get_cards, user_phone),
+            "3": lambda: _call(get_bills, user_phone),
+            "4": lambda: _call(get_today_total, user_phone),
+            "5": lambda: _call(get_goals, user_phone),
+            "6": lambda: _HELP_TEXT,
+        }
+        num = msg.strip().rstrip(".)")
+        if num in _menu_map:
+            return {"response": _menu_map[num]()}
+
     # --- RESUMO MENSAL ---
     if _re_router.match(r'(como t[aá] (?:o )?meu m[eê]s|resumo (?:do |mensal|deste |desse )?m[eê]s|meus gastos(?: do m[eê]s)?|como (?:foi|esta|está|tá|ta|anda|andou)(?: (?:o )?meu| o)? m[eê]s|me d[aá] (?:o )?resumo|resumo geral|vis[aã]o geral|saldo do m[eê]s|saldo mensal|quanto (?:eu )?(?:j[aá] )?gastei (?:esse|este|no) m[eê]s|total do m[eê]s|balan[çc]o do m[eê]s|extrato do m[eê]s|extrato mensal|como (?:est[aá]|tá|ta|anda) (?:minhas? )?finan[çc]as)[\s\?\!\.]*$', msg):
         summary = _call(get_month_summary, user_phone, current_month, "ALL")
@@ -9734,7 +9773,7 @@ def _pre_route(message: str) -> dict | None:
         except Exception:
             pass
         greeting = f"Fala, {_uname}! 👋" if _uname else "Fala! 👋"
-        return {"response": f"{greeting} Sou o *ATLAS*, seu copiloto financeiro.\n\nMe diz o que precisa — lança um gasto, pede o resumo do mês, ou digita *ajuda* pra ver tudo que eu faço. 🎯"}
+        return {"response": f"{greeting} Sou o *ATLAS*, seu copiloto financeiro.\n\nMe diz o que precisa ou escolhe:\n1️⃣ Resumo do mês\n2️⃣ Meus cartões\n3️⃣ Compromissos\n4️⃣ Gastos de hoje\n5️⃣ Metas\n6️⃣ Ajuda"}
 
     # ── DETECÇÃO DE PAGAMENTO DE FATURA / COMPROMISSO ───────────────
     # "pagamento cartão caixa 4867", "paguei fatura nubank", "paguei o aluguel 1500"
@@ -10049,7 +10088,7 @@ _HELP_TEXT = """📋 *ATLAS — Manual Rápido*
   • _"feito"_ — marcar lembrete como concluído
 
 ✏️ *Corrigir / Apagar:*
-  • _"corrige"_ ou _"apaga"_
+  • _"errei"_ ou _"apaga"_ — apaga o último
   • _"apaga todos do iFood"_
   • _"iFood é Lazer"_ — muda categoria
 
@@ -10064,8 +10103,16 @@ _HELP_TEXT = """📋 *ATLAS — Manual Rápido*
   • _"adia 30 min"_ — adia lembrete recente
 
 ─────────────────────
-💡 Dica: digite *"como faço pra..."* pra ajuda detalhada sobre um tema.
-👉 Manual completo: https://atlas-m3wb.onrender.com/manual"""
+⚡ *Menu rápido — digite o número:*
+  1️⃣ Resumo do mês
+  2️⃣ Meus cartões
+  3️⃣ Compromissos
+  4️⃣ Gastos de hoje
+  5️⃣ Minhas metas
+  6️⃣ Ajuda
+
+─────────────────────
+💡 Dica: digite _"como faço pra..."_ pra ajuda sobre um tema."""
 
 # ── HELP INTERATIVO — responde dúvidas específicas ──
 _HELP_TOPICS = {
