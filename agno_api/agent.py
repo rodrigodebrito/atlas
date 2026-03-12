@@ -928,7 +928,7 @@ def save_transaction(
                 # Primeiro gasto de todos!
                 result += (
                     "\n\n🎉 *Esse é seu primeiro gasto registrado!*"
-                    "\nA partir de agora, todo dia às 20h te mando um resumo."
+                    "\nA partir de agora, todo dia às 9h te mando um resumo do dia anterior."
                     "\nContinua lançando — quanto mais registrar, melhor fico! 😊"
                 )
             else:
@@ -8116,7 +8116,7 @@ body{{
   <div class="section-title">🔔 Notificações</div>
   <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border)">
     <div>
-      <div style="font-size:.95rem;font-weight:500">Relatório diário (20h)</div>
+      <div style="font-size:.95rem;font-weight:500">Relatório diário (09h)</div>
       <div style="font-size:.8rem;color:var(--text2)">Resumo do dia com gastos e insights</div>
     </div>
     <label style="position:relative;display:inline-block;width:50px;height:28px;cursor:pointer">
@@ -11521,14 +11521,16 @@ def _generate_smart_insight(user_id, cur, today):
 def daily_report():
     """
     Gera relatório diário personalizado para usuários ativos.
-    Chamado pelo n8n via cron diário às 20h BRT (23h UTC).
+    Chamado pelo n8n via cron diário às 09h BRT (12h UTC).
+    Mostra os gastos do dia anterior (ontem).
     Retorna: {"messages": [{"phone": ..., "message": ...}], "count": N}
     """
     from collections import defaultdict
-    today = _now_br()
-    today_str = today.strftime("%Y-%m-%d")
-    today_label = today.strftime("%d/%m")
-    month_str = today.strftime("%Y-%m")
+    now = _now_br()
+    yesterday = now - timedelta(days=1)
+    yesterday_str = yesterday.strftime("%Y-%m-%d")
+    yesterday_label = yesterday.strftime("%d/%m")
+    month_str = yesterday.strftime("%Y-%m")
 
     conn = _get_conn()
     cur = conn.cursor()
@@ -11567,11 +11569,11 @@ def daily_report():
     for user_id, phone, name, income_cents in users:
         first_name = name.split()[0] if name else "amigo"
 
-        # Transações do dia (occurred_at armazena com T: "2026-03-11T12:00:00")
+        # Transações de ontem (occurred_at armazena com T: "2026-03-11T12:00:00")
         cur.execute(
             """SELECT type, amount_cents, category, merchant
                FROM transactions WHERE user_id = ? AND occurred_at LIKE ?""",
-            (user_id, today_str + "%"),
+            (user_id, yesterday_str + "%"),
         )
         today_txs = cur.fetchall()
 
@@ -11606,8 +11608,8 @@ def daily_report():
                 "Educação": "📚", "Vestuário": "👟", "Pets": "🐾", "Outros": "📦",
             }
 
-            lines.append(f"📊 *Resumo do Dia — {today_label}*")
-            lines.append(f"Oi, {first_name}! Aqui vai seu resumo de hoje:")
+            lines.append(f"📊 *Ontem — {yesterday_label}*")
+            lines.append(f"Oi, {first_name}!")
             lines.append("")
             lines.append("─────────────────────")
 
@@ -11620,7 +11622,7 @@ def daily_report():
             lines.append("─────────────────────")
 
             # Totais
-            lines.append(f"💸 *Total hoje:* {_fmt_brl(expense_today)}")
+            lines.append(f"💸 *Total ontem:* {_fmt_brl(expense_today)}")
             if income_today > 0:
                 lines.append(f"💚 *Receitas:* {_fmt_brl(income_today)}")
             lines.append(f"📆 *Mês:* {_fmt_brl(month_expense)}")
@@ -11634,11 +11636,11 @@ def daily_report():
                     lines.append(f"🔴 *Acima do orçamento:* {_fmt_brl(abs(remaining))}")
 
         else:
-            # Sem gastos hoje → nudge leve
-            lines.append(f"📊 *Seu dia — {today_label}*")
+            # Sem gastos ontem → nudge leve
+            lines.append(f"📊 *Ontem — {yesterday_label}*")
             lines.append(f"Oi, {first_name}!")
             lines.append("")
-            lines.append("Nenhum gasto registrado hoje.")
+            lines.append("Nenhum gasto registrado ontem.")
             lines.append("")
             lines.append(f"📆 *Mês até agora:* {_fmt_brl(month_expense)}")
             if income_cents and income_cents > 0:
@@ -11646,11 +11648,11 @@ def daily_report():
                 if remaining >= 0:
                     lines.append(f"✅ *Sobra:* {_fmt_brl(remaining)}")
             lines.append("")
-            lines.append("Gastou algo? Me manda que eu registro 😊")
+            lines.append("Gastou algo ontem? Me manda que eu registro 😊")
 
         # Insight proativo inteligente (mentor) — best-effort, não quebra o relatório
         try:
-            insight = _generate_smart_insight(user_id, cur, today)
+            insight = _generate_smart_insight(user_id, cur, yesterday)
         except Exception:
             insight = None
         # Sempre limpa transação PG (insight pode engolir erro internamente)
