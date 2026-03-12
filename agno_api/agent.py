@@ -1019,6 +1019,51 @@ def save_transaction(
         except Exception:
             pass
 
+    # --- AUTO-MATCH: marca bill como pago se transação bate ---
+    if transaction_type == "EXPENSE" and merchant:
+        try:
+            _bill_conn = _get_conn()
+            _bill_cur = _bill_conn.cursor()
+            _bill_month = _now_br().strftime("%Y-%m")
+            _bill_cur.execute(
+                "SELECT id, name, amount_cents FROM bills WHERE user_id = ? AND paid = 0 AND due_date LIKE ?",
+                (user_id, f"{_bill_month}%"),
+            )
+            _pending_bills = _bill_cur.fetchall()
+            _merchant_lower = merchant.lower().strip()
+            _best_bill = None
+            _best_score = 0
+            for _bid, _bname, _bamt in _pending_bills:
+                _bname_lower = _bname.lower()
+                _score = 0
+                # Match por palavras do merchant no nome do bill
+                for _w in _merchant_lower.split():
+                    if len(_w) >= 3 and _w in _bname_lower:
+                        _score += 3
+                # Match inverso: palavras do bill no merchant
+                for _w in _bname_lower.split():
+                    if len(_w) >= 3 and _w in _merchant_lower:
+                        _score += 2
+                # Match por valor (tolerância 10%)
+                if _bamt > 0 and abs(_bamt - amount_cents) < _bamt * 0.10:
+                    _score += 5
+                elif _bamt > 0 and abs(_bamt - amount_cents) < _bamt * 0.25:
+                    _score += 2
+                if _score > _best_score:
+                    _best_score = _score
+                    _best_bill = (_bid, _bname, _bamt)
+
+            if _best_bill and _best_score >= 5:
+                _bill_cur.execute(
+                    "UPDATE bills SET paid = 1, paid_at = ?, transaction_id = ? WHERE id = ?",
+                    (_now_br().strftime("%Y-%m-%d"), tx_id, _best_bill[0]),
+                )
+                _bill_conn.commit()
+                result += f"\n✅ Compromisso *{_best_bill[1]}* marcado como pago!"
+            _bill_conn.close()
+        except Exception:
+            pass
+
     # "Errou?" sempre por último — direciona pro painel
     result += '\n_Errou? Digite *painel* pra editar ou apagar_'
 
@@ -3509,12 +3554,21 @@ def _get_bills_impl(user_phone: str, month: str = "") -> str:
     recs = cur.fetchall()
     for r_id, r_name, r_amt, r_day, r_cat in recs:
         due = f"{month}-{r_day:02d}"
+        # Verifica se já existe bill com este recurring_id
         cur.execute(
             "SELECT id FROM bills WHERE user_id = ? AND recurring_id = ? AND due_date LIKE ?",
             (user_id, r_id, f"{month}%"),
         )
-        if not cur.fetchone():
-            bill_id = str(uuid.uuid4())
+        if cur.fetchone():
+            continue
+        # Dedup: verifica se já existe bill com mesmo nome e valor (evita duplicatas de recurrings parecidos)
+        cur.execute(
+            "SELECT id FROM bills WHERE user_id = ? AND LOWER(name) = LOWER(?) AND amount_cents = ? AND due_date LIKE ?",
+            (user_id, r_name, r_amt, f"{month}%"),
+        )
+        if cur.fetchone():
+            continue
+        bill_id = str(uuid.uuid4())
             cur.execute(
                 "INSERT INTO bills (id, user_id, name, amount_cents, due_date, category, recurring_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (bill_id, user_id, r_name, r_amt, due, r_cat, r_id),
@@ -3595,6 +3649,47 @@ def _get_bills_impl(user_phone: str, month: str = "") -> str:
                     (bill_id, user_id, f"Fatura {card_name}", fatura_total, due, "Cartão", card_bill_ref),
                 )
 
+    # Auto-reconcilia: verifica transações do mês que batem com bills pendentes
+    cur.execute(
+        "SELECT id, name, amount_cents FROM bills WHERE user_id = ? AND paid = 0 AND due_date LIKE ?",
+        (user_id, f"{month}%"),
+    )
+    _unpaid_bills = cur.fetchall()
+    if _unpaid_bills:
+        cur.execute(
+            "SELECT id, merchant, amount_cents, occurred_at FROM transactions "
+            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+            (user_id, f"{month}%"),
+        )
+        _month_txs = cur.fetchall()
+        _used_tx_ids = set()
+        for _ub_id, _ub_name, _ub_amt in _unpaid_bills:
+            _ub_name_lower = _ub_name.lower()
+            for _tx_id_r, _tx_merchant, _tx_amt, _tx_date in _month_txs:
+                if _tx_id_r in _used_tx_ids:
+                    continue
+                _tx_m_lower = (_tx_merchant or "").lower()
+                _score = 0
+                # Match por palavras
+                for _w in _tx_m_lower.split():
+                    if len(_w) >= 3 and _w in _ub_name_lower:
+                        _score += 3
+                for _w in _ub_name_lower.split():
+                    if len(_w) >= 3 and _w in _tx_m_lower:
+                        _score += 2
+                # Match por valor (tolerância 10%)
+                if _ub_amt > 0 and abs(_ub_amt - _tx_amt) < _ub_amt * 0.10:
+                    _score += 5
+                elif _ub_amt > 0 and abs(_ub_amt - _tx_amt) < _ub_amt * 0.25:
+                    _score += 2
+                if _score >= 5:
+                    cur.execute(
+                        "UPDATE bills SET paid = 1, paid_at = ?, transaction_id = ? WHERE id = ?",
+                        (_tx_date[:10] if _tx_date else today.strftime("%Y-%m-%d"), _tx_id_r, _ub_id),
+                    )
+                    _used_tx_ids.add(_tx_id_r)
+                    break
+
     # Busca todas as bills do mês
     cur.execute(
         "SELECT name, amount_cents, due_date, paid, paid_at, category FROM bills WHERE user_id = ? AND due_date LIKE ? ORDER BY due_date",
@@ -3617,27 +3712,24 @@ def _get_bills_impl(user_phone: str, month: str = "") -> str:
     m_num = int(month.split("-")[1])
     month_label = months_pt.get(m_num, month)
 
-    total_fmt = f"R${total/100:,.2f}".replace(",", ".")
-    pending_fmt = f"R${pending_total/100:,.2f}".replace(",", ".")
     lines = [
         f"📋 *Contas a pagar — {month_label}*",
         f"",
-        f"💰 *Total:* {total_fmt}  •  ⬜ *Pendente:* {pending_fmt}",
+        f"💰 *Total:* {_fmt_brl(total)}  •  ⬜ *Pendente:* {_fmt_brl(pending_total)}",
         f"─────────────────────",
     ]
 
     for name, amt, due, paid, paid_at, cat in rows:
         d = due[8:10] + "/" + due[5:7]
-        amt_fmt = f"R${amt/100:,.2f}".replace(",", ".")
         if paid:
-            lines.append(f"  ✅ {d} — *{name}*: {amt_fmt} _(pago)_")
+            lines.append(f"  ✅ {d} — *{name}*: {_fmt_brl(amt)} _(pago)_")
         else:
-            lines.append(f"  ⬜ {d} — *{name}*: {amt_fmt}")
+            lines.append(f"  ⬜ {d} — *{name}*: {_fmt_brl(amt)}")
 
     lines.append("")
     lines.append(f"─────────────────────")
-    lines.append(f"✅ *Pago:* {f'R${paid_total/100:,.2f}'.replace(',', '.')}  ({paid_count}/{len(rows)})")
-    lines.append(f"⬜ *Falta:* {pending_fmt}")
+    lines.append(f"✅ *Pago:* {_fmt_brl(paid_total)}  ({paid_count}/{len(rows)})")
+    lines.append(f"⬜ *Falta:* {_fmt_brl(pending_total)}")
 
     return "\n".join(lines)
 
