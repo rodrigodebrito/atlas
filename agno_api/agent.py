@@ -3569,10 +3569,10 @@ def _get_bills_impl(user_phone: str, month: str = "") -> str:
         if cur.fetchone():
             continue
         bill_id = str(uuid.uuid4())
-            cur.execute(
-                "INSERT INTO bills (id, user_id, name, amount_cents, due_date, category, recurring_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (bill_id, user_id, r_name, r_amt, due, r_cat, r_id),
-            )
+        cur.execute(
+            "INSERT INTO bills (id, user_id, name, amount_cents, due_date, category, recurring_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (bill_id, user_id, r_name, r_amt, due, r_cat, r_id),
+        )
 
     # Limpa bills de cartão não pagas para regenerar com due_date correto
     cur.execute(
