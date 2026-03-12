@@ -11248,7 +11248,7 @@ def _build_drip_message(user_id, first_name, days_since, cur):
 
     elif days_since == 2:
         # Dia 2: verificar se tem cartões cadastrados
-        cur.execute("SELECT COUNT(*) FROM cards WHERE user_id = ?", (user_id,))
+        cur.execute("SELECT COUNT(*) FROM credit_cards WHERE user_id = ?", (user_id,))
         has_cards = cur.fetchone()[0] > 0
         cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id = ? AND type = 'EXPENSE'", (user_id,))
         tx_count = cur.fetchone()[0]
@@ -11758,9 +11758,9 @@ def daily_report():
 
         # Dica contextual: detecta feature não usada e sugere
         try:
-            cur.execute("SELECT COUNT(*) FROM cards WHERE user_id = ?", (user_id,))
+            cur.execute("SELECT COUNT(*) FROM credit_cards WHERE user_id = ?", (user_id,))
             has_cards = cur.fetchone()[0] > 0
-            cur.execute("SELECT COUNT(*) FROM commitments WHERE user_id = ?", (user_id,))
+            cur.execute("SELECT COUNT(*) FROM recurring_transactions WHERE user_id = ? AND active = 1", (user_id,))
             has_commitments = cur.fetchone()[0] > 0
             cur.execute("SELECT COUNT(*) FROM agenda_events WHERE user_id = ?", (user_id,))
             has_agenda = cur.fetchone()[0] > 0
