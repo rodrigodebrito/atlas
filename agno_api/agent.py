@@ -478,7 +478,7 @@ if DB_TYPE == "postgres":
 # ============================================================
 
 def get_model():
-    return OpenAIChat(id="gpt-4.1", api_key=os.getenv("OPENAI_API_KEY"), temperature=0.4, max_tokens=1500)
+    return OpenAIChat(id="gpt-4.1", api_key=os.getenv("OPENAI_API_KEY"), temperature=0.4, max_tokens=2500)
 
 def get_fast_model():
     return OpenAIChat(id="gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY"))
@@ -7343,13 +7343,512 @@ Antes de enviar qualquer resposta de consulta (filtro, resumo, análise):
 
 4. Minha resposta termina com uma pergunta ("Quer que eu...?", "Posso...?")?
    SIM → Delete a pergunta. Pare no conteúdo. Sem exceções para filtros.
+   EXCEÇÃO: No Modo Mentor, perguntas diagnósticas são permitidas.
 
 5. Resumi o output da tool em uma frase em vez de copiar o bloco inteiro?
    SIM → Errado. Copie o bloco inteiro. Cada linha da tool = uma linha na resposta.
 
 6. Troquei algum emoji? (💸 → 💰, ou qualquer outra troca)?
    SIM → Errado. Copie os emojis exatamente como vieram da tool.
+
+## ═══════════════════════════════════════
+## MODO MENTOR FINANCEIRO (Agente Neural)
+## ═══════════════════════════════════════
+
+Quando o usuário pedir ajuda financeira, conselho sobre dívidas, investimentos,
+economia, planejamento, aposentadoria, ou disser coisas como "me ajuda",
+"estou endividado", "o que faço?", "como sair das dívidas", "onde investir",
+"quero juntar dinheiro" — você ativa o MODO MENTOR.
+
+### PERSONALIDADE DO MENTOR
+Você é um mentor financeiro de elite. Direto, provocativo, estratégico.
+Não é um robô que cospe fórmulas. É um mentor que TRANSFORMA a relação
+da pessoa com dinheiro.
+
+- Seja DIRETO e sem rodeios. Não enrole, não seja político.
+- PROVOQUE reflexão com dados reais: "Você gasta R$X no iFood. São R$Y por ano. Isso é uma viagem."
+- NÃO aceite desculpas ou vitimismo. Seja empático mas firme.
+- DÊ uma direção CLARA. Nunca diga "depende". Diga "faça isso, por isso".
+- USE metáforas e analogias que grudam na cabeça.
+- CELEBRE vitórias com emoção genuína quando o usuário progride.
+- COBRE o compromisso — "Lembra do plano? Já pagou este mês?"
+
+### REGRA DE OURO
+SEMPRE chame get_user_financial_snapshot ANTES de dar qualquer conselho.
+Nunca dê conselho genérico. Personalize com os dados reais do usuário.
+Se precisa de mais informação, PERGUNTE (exceção à regra de zero perguntas).
+
+### FLUXO DO MENTOR
+1. DIAGNÓSTICO — chame get_user_financial_snapshot, analise os números
+2. PROVOCAÇÃO — mostre a realidade crua com dados ("no seu ritmo, leva X anos")
+3. PLANO — monte um plano concreto com fases e valores específicos
+4. AÇÃO — sugira criar compromisso/meta no Atlas pra acompanhar
+5. ACOMPANHAMENTO — em conversas futuras, pergunte sobre o progresso
+
+### CONHECIMENTO: DÍVIDAS E CRÉDITO
+- Cartão rotativo: ~14%/mês = 435%/ano. É a pior dívida do Brasil.
+- Cheque especial: ~8%/mês. Segunda pior.
+- Empréstimo pessoal: ~3-5%/mês. Melhor que rotativo.
+- Consignado: ~1.5-2%/mês. Melhor opção de crédito.
+- REGRA: quite primeiro o de maior taxa (método avalanche).
+- Ou quite o menor saldo primeiro pra motivação (bola de neve).
+- NUNCA pague só o mínimo do cartão — vira bola de neve exponencial.
+- Renegociação: bancos preferem receber menos que não receber. SEMPRE negocie.
+- Portabilidade: se o banco não negociar, transfira a dívida pro mais barato.
+
+### CONHECIMENTO: INVESTIMENTOS BRASIL
+- Poupança: ~0.5%/mês quando Selic > 8.5%. Segura mas rende pouco.
+- CDB: 100%+ CDI, FGC garantido até R$250k. Melhor que poupança.
+- Tesouro Selic: liquidez D+1, risco soberano. Ideal pra reserva de emergência.
+- Tesouro IPCA+: protege contra inflação. Ideal pra longo prazo (aposentadoria).
+- Tesouro Prefixado: aposta em queda de juros. Mais arriscado.
+- FIIs: renda passiva mensal, isento de IR pra pessoa física. Bom após reserva.
+- Ações BR: só após reserva + dívidas zeradas. Comece por ETFs (BOVA11, IVVB11).
+- Chame get_market_rates pra mostrar taxas REAIS e atualizadas.
+
+### CONHECIMENTO: INVESTIMENTOS INTERNACIONAIS
+- Muitos brasileiros investem fora — é legítimo e inteligente pra diversificar.
+- BDRs na B3: ações americanas (Apple, Tesla, Nvidia) sem abrir conta fora.
+- ETFs internacionais: IVVB11 (S&P 500 na B3), ou VOO/SPY direto nos EUA.
+- Corretoras internacionais: Avenue, Nomad, Interactive Brokers.
+- Crypto: Bitcoin como reserva de valor (não especulação). HASH11 na B3 ou exchanges.
+- Dólar: proteção cambial. Parte do patrimônio em moeda forte faz sentido.
+- Quando investir fora: já tem reserva + sem dívidas + investe no BR.
+- Riscos: câmbio, declaração IR (GCAP), IOF 0.38%, spread do câmbio.
+- Regra: no máximo 20-30% do patrimônio fora (diversificação, não especulação).
+
+### CONHECIMENTO: FRAMEWORKS DE MENTORIA
+- Regra 50/30/20: 50% necessidades, 30% desejos, 20% investir/poupar.
+- Pague-se primeiro: antes de qualquer gasto, separe o investimento.
+- Reserva de emergência: 6x despesas mensais em Tesouro Selic ou CDB 100% CDI.
+- Baby steps: 1) R$1000 emergência rápida 2) Quite todas as dívidas
+  3) Reserva completa (6 meses) 4) Invista 15% da renda 5) Aposentadoria.
+- Método envelope: orçamento por categoria (o Atlas já faz isso com limites!).
+- Juros compostos: "Investir R$500/mês a 1%/mês = R$115.000 em 10 anos."
+
+### SIMULAÇÕES
+- Para dívidas: chame simulate_debt_payoff com os números do usuário.
+- Para investimentos: chame simulate_investment com o aporte mensal.
+- SEMPRE mostre o cenário pessimista E otimista.
+- SEMPRE compare: "Se colocar no Tesouro Selic rende X. No CDB rende Y. Na poupança Z."
+
+### COMO RESPONDER NO MODO MENTOR
+- Resposta longa é OK no modo mentor (até 2000 tokens). O usuário quer orientação completa.
+- Use emojis com moderação — 📋 para planos, 🏆 para vitórias, 💡 para insights.
+- Divida em fases claras com headers bold.
+- Termine com uma AÇÃO concreta: "Quer que eu crie uma meta de R$X?" ou "Ligue pro banco hoje."
+- Se o usuário já tem um plano ativo, pergunte sobre o progresso antes de dar novo conselho.
 """
+
+
+# ═══════════════════════════════════════
+# TOOLS DO MENTOR FINANCEIRO
+# ═══════════════════════════════════════
+
+@tool
+def get_user_financial_snapshot(user_phone: str) -> str:
+    """Retorna visão financeira completa do usuário para o Modo Mentor.
+    Chame SEMPRE antes de dar conselhos financeiros.
+    Inclui: gastos médios, top categorias, dívidas em cartões, compromissos fixos, metas, padrões."""
+    from collections import defaultdict
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, monthly_income_cents FROM users WHERE phone=?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return "Usuário não encontrado."
+    user_id, name, income = row
+    first_name = name.split()[0] if name else "amigo"
+    now = _now_br()
+
+    lines = [f"📊 *Snapshot Financeiro — {first_name}*", ""]
+
+    # Gasto médio mensal (últimos 3 meses)
+    monthly_totals = []
+    for i in range(1, 4):
+        m = now.month - i
+        y = now.year
+        if m <= 0:
+            m += 12
+            y -= 1
+        ms = f"{y}-{m:02d}"
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+            (user_id, ms + "%"),
+        )
+        total = cur.fetchone()[0] or 0
+        if total > 0:
+            monthly_totals.append(total)
+
+    if monthly_totals:
+        avg = sum(monthly_totals) // len(monthly_totals)
+        lines.append(f"💸 *Gasto médio mensal:* {_fmt_brl(avg)} (últimos {len(monthly_totals)} meses)")
+    else:
+        lines.append("💸 *Gasto médio mensal:* sem dados suficientes")
+
+    # Mês atual
+    current_month = now.strftime("%Y-%m")
+    cur.execute(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+        "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+        (user_id, current_month + "%"),
+    )
+    month_total = cur.fetchone()[0] or 0
+    lines.append(f"📆 *Mês atual ({now.strftime('%b')}):* {_fmt_brl(month_total)}")
+    lines.append("")
+
+    # Top 5 categorias (mês atual)
+    cur.execute(
+        "SELECT category, SUM(amount_cents), COUNT(*) FROM transactions "
+        "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ? "
+        "GROUP BY category ORDER BY SUM(amount_cents) DESC LIMIT 5",
+        (user_id, current_month + "%"),
+    )
+    cats = cur.fetchall()
+    if cats:
+        lines.append("📂 *Top categorias (mês):*")
+        for cat, total, count in cats:
+            lines.append(f"  • {cat or 'Outros'}: {_fmt_brl(total)} ({count}x)")
+        lines.append("")
+
+    # Top merchants por frequência (últimos 3 meses)
+    three_months_ago = now - timedelta(days=90)
+    cur.execute(
+        "SELECT merchant, COUNT(*), SUM(amount_cents) FROM transactions "
+        "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at >= ? AND merchant IS NOT NULL "
+        "GROUP BY merchant ORDER BY COUNT(*) DESC LIMIT 5",
+        (user_id, three_months_ago.strftime("%Y-%m-%d")),
+    )
+    merchants = cur.fetchall()
+    if merchants:
+        lines.append("🏪 *Top estabelecimentos (3 meses):*")
+        for m_name, m_count, m_total in merchants:
+            annual = m_total * 4  # extrapolação para 12 meses
+            lines.append(f"  • {m_name}: {m_count}x ({_fmt_brl(m_total)}) — ~{_fmt_brl(annual)}/ano")
+        lines.append("")
+
+    # Cartões de crédito (saldo devedor)
+    cur.execute(
+        "SELECT id, name, current_bill_opening_cents, closing_day, due_day "
+        "FROM credit_cards WHERE user_id = ?",
+        (user_id,),
+    )
+    cards = cur.fetchall()
+    total_card_debt = 0
+    if cards:
+        lines.append("💳 *Cartões de crédito:*")
+        for card_id, card_name, opening, closing, due in cards:
+            period_start = _bill_period_start(closing or 0)
+            cur.execute(
+                "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+                "WHERE user_id = ? AND card_id = ? AND occurred_at >= ?",
+                (user_id, card_id, period_start),
+            )
+            new_purchases = cur.fetchone()[0] or 0
+            bill_total = (opening or 0) + new_purchases
+            total_card_debt += bill_total
+            if bill_total > 0:
+                lines.append(f"  • {card_name}: {_fmt_brl(bill_total)} (vence dia {due or '?'})")
+        if total_card_debt > 0:
+            lines.append(f"  💰 *Total em cartões:* {_fmt_brl(total_card_debt)}")
+        lines.append("")
+
+    # Compromissos fixos mensais
+    cur.execute(
+        "SELECT name, amount_cents FROM recurring_transactions WHERE user_id = ? AND active = 1 ORDER BY amount_cents DESC",
+        (user_id,),
+    )
+    recurrings = cur.fetchall()
+    if recurrings:
+        total_fixed = sum(r[1] for r in recurrings)
+        lines.append(f"📋 *Compromissos fixos:* {_fmt_brl(total_fixed)}/mês")
+        for r_name, r_amt in recurrings[:5]:
+            lines.append(f"  • {r_name}: {_fmt_brl(r_amt)}")
+        if len(recurrings) > 5:
+            lines.append(f"  ... e mais {len(recurrings) - 5}")
+        lines.append("")
+
+    # Metas ativas
+    cur.execute(
+        "SELECT name, target_cents, saved_cents FROM goals WHERE user_id = ? AND status = 'active'",
+        (user_id,),
+    )
+    goals = cur.fetchall()
+    if goals:
+        lines.append("🎯 *Metas ativas:*")
+        for g_name, g_target, g_saved in goals:
+            pct = round((g_saved or 0) / g_target * 100) if g_target > 0 else 0
+            lines.append(f"  • {g_name}: {_fmt_brl(g_saved or 0)}/{_fmt_brl(g_target)} ({pct}%)")
+        lines.append("")
+
+    # Renda (se cadastrada)
+    if income and income > 0:
+        lines.append(f"💰 *Renda declarada:* {_fmt_brl(income)}")
+        if monthly_totals:
+            savings_rate = round((1 - avg / income) * 100)
+            lines.append(f"📈 *Taxa de poupança:* {savings_rate}%")
+    else:
+        lines.append("💰 *Renda:* não cadastrada")
+
+    conn.close()
+    return "\n".join(lines)
+
+
+@tool
+def get_market_rates(user_phone: str) -> str:
+    """Busca taxas de mercado atuais (Selic, CDI, IPCA, dólar, S&P 500, Bitcoin).
+    Use para dar conselhos de investimento com dados reais e atualizados."""
+    import urllib.request
+    import json as _json_mr
+
+    lines = ["📈 *Taxas de Mercado — Atualizadas*", ""]
+
+    def _fetch_bcb(serie, label):
+        try:
+            url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{serie}/dados/ultimos/1?formato=json"
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = _json_mr.loads(resp.read())
+                if data:
+                    return f"{label}: {data[0]['valor']}% (em {data[0]['data']})"
+        except Exception:
+            return f"{label}: indisponível"
+
+    # Taxas BR (BCB)
+    lines.append("🇧🇷 *Brasil:*")
+    lines.append("  " + (_fetch_bcb(432, "Selic meta") or "Selic: indisponível"))
+    lines.append("  " + (_fetch_bcb(12, "CDI") or "CDI: indisponível"))
+    lines.append("  " + (_fetch_bcb(433, "IPCA (12m)") or "IPCA: indisponível"))
+
+    # Dólar
+    try:
+        url = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.1/dados/ultimos/1?formato=json"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = _json_mr.loads(resp.read())
+            if data:
+                lines.append(f"  Dólar (PTAX): R${data[0]['valor']}")
+    except Exception:
+        lines.append("  Dólar: indisponível")
+
+    # Poupança (cálculo baseado na Selic)
+    try:
+        url = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.432/dados/ultimos/1?formato=json"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = _json_mr.loads(resp.read())
+            selic = float(data[0]["valor"].replace(",", "."))
+            if selic > 8.5:
+                poup = 6.17 + 0.5  # ~6.17% TR + 0.5%/mês × 12
+                lines.append(f"  Poupança: ~{poup:.1f}%/ano (Selic > 8.5%)")
+            else:
+                poup = selic * 0.7
+                lines.append(f"  Poupança: ~{poup:.1f}%/ano (70% da Selic)")
+    except Exception:
+        pass
+
+    lines.append("")
+
+    # Bitcoin (CoinGecko)
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=brl&include_24hr_change=true"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = _json_mr.loads(resp.read())
+            btc = data["bitcoin"]
+            price = btc["brl"]
+            change = btc.get("brl_24h_change", 0)
+            sign = "+" if change >= 0 else ""
+            lines.append("🌍 *Internacional:*")
+            lines.append(f"  Bitcoin: R${price:,.0f} ({sign}{change:.1f}% 24h)".replace(",", "."))
+    except Exception:
+        lines.append("🌍 *Internacional:*")
+        lines.append("  Bitcoin: indisponível")
+
+    lines.append("")
+    lines.append("_Dados do Banco Central e CoinGecko. Atualizados em tempo real._")
+
+    return "\n".join(lines)
+
+
+@tool
+def simulate_debt_payoff(
+    user_phone: str,
+    debt_amount: float,
+    monthly_rate: float = 14.0,
+    monthly_payment: float = 0,
+) -> str:
+    """Simula quitação de dívida. Use para mostrar cenários ao usuário.
+    debt_amount: valor total da dívida em reais
+    monthly_rate: taxa de juros mensal (default 14% = rotativo de cartão)
+    monthly_payment: parcela mensal em reais (se 0, calcula mínimo)"""
+    if debt_amount <= 0:
+        return "Valor da dívida deve ser maior que zero."
+
+    rate = monthly_rate / 100
+    debt_cents = round(debt_amount * 100)
+
+    # Se não informou parcela, calcula sugestões
+    if monthly_payment <= 0:
+        min_payment = max(debt_amount * 0.04, 50)  # ~4% do saldo ou R$50
+        monthly_payment = min_payment
+
+    payment_cents = round(monthly_payment * 100)
+
+    lines = [f"📊 *Simulação de Quitação*", ""]
+    lines.append(f"Dívida: {_fmt_brl(debt_cents)}")
+    lines.append(f"Juros: {monthly_rate:.1f}%/mês ({((1+rate)**12 - 1)*100:.0f}%/ano)")
+    lines.append("")
+
+    # Cenário 1: pagamento informado
+    def _simulate(payment):
+        balance = debt_amount
+        months = 0
+        total_paid = 0
+        while balance > 0 and months < 360:
+            interest = balance * rate
+            balance += interest
+            effective = min(payment, balance)
+            balance -= effective
+            total_paid += effective
+            months += 1
+            if payment <= interest:
+                return None, None, None  # Nunca quita
+        return months, round(total_paid * 100), round((total_paid - debt_amount) * 100)
+
+    months, total_paid, total_interest = _simulate(monthly_payment)
+
+    if months is None:
+        lines.append(f"⚠️ *Pagando {_fmt_brl(payment_cents)}/mês:*")
+        lines.append(f"❌ NUNCA quita! A parcela nem cobre os juros ({_fmt_brl(round(debt_amount * rate * 100))}/mês).")
+    else:
+        lines.append(f"📋 *Pagando {_fmt_brl(payment_cents)}/mês:*")
+        years = months // 12
+        remaining_months = months % 12
+        time_str = f"{years} ano{'s' if years > 1 else ''}" if years > 0 else ""
+        if remaining_months > 0:
+            time_str += f" e {remaining_months} mes{'es' if remaining_months > 1 else ''}" if time_str else f"{remaining_months} mes{'es' if remaining_months > 1 else ''}"
+        lines.append(f"  ⏱ Prazo: {time_str} ({months} meses)")
+        lines.append(f"  💰 Total pago: {_fmt_brl(total_paid)}")
+        lines.append(f"  🔥 Juros pagos: {_fmt_brl(total_interest)}")
+
+    # Cenário otimista: +50%
+    optimistic_payment = monthly_payment * 1.5
+    opt_cents = round(optimistic_payment * 100)
+    months2, total2, interest2 = _simulate(optimistic_payment)
+    if months2 is not None and months is not None:
+        saved = total_paid - total2 if total_paid and total2 else 0
+        lines.append("")
+        lines.append(f"🚀 *Se aumentar pra {_fmt_brl(opt_cents)}/mês:*")
+        lines.append(f"  ⏱ Prazo: {months2} meses")
+        lines.append(f"  💰 Total pago: {_fmt_brl(total2)}")
+        lines.append(f"  ✅ Economia de {_fmt_brl(saved)} em juros!")
+
+    # Cenário negociado (taxa menor)
+    if monthly_rate > 5:
+        lines.append("")
+        lines.append("💡 *Se negociar a taxa pra 3%/mês:*")
+        months3, total3, interest3 = _simulate(monthly_payment)
+        # Recalcula com taxa menor
+        balance = debt_amount
+        m3 = 0
+        tp3 = 0
+        r3 = 0.03
+        while balance > 0 and m3 < 360:
+            interest = balance * r3
+            balance += interest
+            effective = min(monthly_payment, balance)
+            balance -= effective
+            tp3 += effective
+            m3 += 1
+        tp3_cents = round(tp3 * 100)
+        ti3_cents = round((tp3 - debt_amount) * 100)
+        if months:
+            saved3 = total_paid - tp3_cents if total_paid else 0
+            lines.append(f"  ⏱ Prazo: {m3} meses")
+            lines.append(f"  ✅ Economia: {_fmt_brl(saved3)} em juros!")
+            lines.append(f"  📞 *Ligue pro banco e negocie!*")
+
+    return "\n".join(lines)
+
+
+@tool
+def simulate_investment(
+    user_phone: str,
+    monthly_amount: float,
+    months: int = 12,
+    investment_type: str = "all",
+) -> str:
+    """Simula investimento com aporte mensal. Compara diferentes tipos.
+    monthly_amount: aporte mensal em reais
+    months: prazo em meses (default 12)
+    investment_type: 'poupanca', 'cdb', 'tesouro_selic', 'tesouro_ipca', 'sp500', 'all'"""
+    if monthly_amount <= 0:
+        return "Valor do aporte deve ser maior que zero."
+
+    aporte_cents = round(monthly_amount * 100)
+
+    # Taxas anuais aproximadas (serão atualizadas via get_market_rates se quiser dados exatos)
+    types = {
+        "poupanca": ("Poupança", 0.006),          # ~0.6%/mês
+        "cdb": ("CDB 100% CDI", 0.0095),          # ~0.95%/mês (~12%/ano)
+        "tesouro_selic": ("Tesouro Selic", 0.0093),  # ~0.93%/mês
+        "tesouro_ipca": ("Tesouro IPCA+", 0.0085),   # ~0.85%/mês (~10.5%+IPCA)
+        "sp500": ("S&P 500 (BDR)", 0.01),           # ~12%/ano histórico
+    }
+
+    if investment_type != "all" and investment_type in types:
+        selected = {investment_type: types[investment_type]}
+    else:
+        selected = types
+
+    lines = [f"📈 *Simulação de Investimento*", ""]
+    lines.append(f"Aporte: {_fmt_brl(aporte_cents)}/mês × {months} meses")
+    lines.append(f"Total investido: {_fmt_brl(round(monthly_amount * months * 100))}")
+    lines.append("")
+
+    results = []
+    for key, (label, monthly_rate) in selected.items():
+        balance = 0
+        for _ in range(months):
+            balance += monthly_amount
+            balance *= (1 + monthly_rate)
+        balance_cents = round(balance * 100)
+        invested_cents = round(monthly_amount * months * 100)
+        profit_cents = balance_cents - invested_cents
+        results.append((label, balance_cents, profit_cents, monthly_rate))
+
+    results.sort(key=lambda x: -x[1])
+
+    for label, balance, profit, rate in results:
+        annual_rate = ((1 + rate) ** 12 - 1) * 100
+        lines.append(f"💰 *{label}* (~{annual_rate:.1f}%/ano)")
+        lines.append(f"  Acumulado: {_fmt_brl(balance)}")
+        lines.append(f"  Rendimento: {_fmt_brl(profit)}")
+        lines.append("")
+
+    # Comparativo com poupança
+    if len(results) > 1:
+        best = results[0]
+        worst = results[-1]
+        diff = best[1] - worst[1]
+        lines.append(f"📊 *Diferença:* {best[0]} rende {_fmt_brl(diff)} a mais que {worst[0]} em {months} meses!")
+
+    # Longo prazo (10 anos)
+    if months < 120:
+        lines.append("")
+        lines.append(f"🔮 *Projeção 10 anos ({_fmt_brl(aporte_cents)}/mês):*")
+        for key, (label, monthly_rate) in list(selected.items())[:3]:
+            balance = 0
+            for _ in range(120):
+                balance += monthly_amount
+                balance *= (1 + monthly_rate)
+            lines.append(f"  {label}: {_fmt_brl(round(balance * 100))}")
+
+    return "\n".join(lines)
+
 
 @tool(description="Consulta fatura pendente (imagem/PDF enviada). Use quando: 'desta fatura', 'no pdf', 'na imagem'. category='' para todas ou 'Alimentação' para filtrar.")
 def get_pending_statement(user_phone: str, category: str = "") -> str:
@@ -7411,7 +7910,7 @@ atlas_agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=5,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event, pause_agenda_event, resume_agenda_event, edit_agenda_event_time, set_category_budget, get_category_budgets, remove_category_budget],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event, pause_agenda_event, resume_agenda_event, edit_agenda_event_time, set_category_budget, get_category_budgets, remove_category_budget, get_user_financial_snapshot, get_market_rates, simulate_debt_payoff, simulate_investment],
     add_datetime_to_context=True,
     markdown=True,
 )
