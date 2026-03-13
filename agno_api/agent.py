@@ -9765,6 +9765,19 @@ def get_panel_url(user_phone: str) -> str:
 # ============================================================
 import re as _re_router
 
+# Palavras-chave que indicam pedido de mentoria financeira (bypass help/keyword router → vai pro LLM)
+_MENTOR_KEYWORDS = ("endividad", "divida", "dívida", "investir", "investimento", "mentor",
+                    "planejamento", "aposentadoria", "economizar", "juntar dinheiro",
+                    "sair do buraco", "não sobra", "nao sobra", "nunca sobra",
+                    "me ajuda com", "pode me ajudar", "preciso de ajuda",
+                    "como sair", "o que faço", "o que faco", "onde investir",
+                    "quero investir", "como economizar", "como poupar",
+                    "tô endividad", "to endividad", "devo muito", "cartão estourad",
+                    "cheque especial", "empréstimo", "emprestimo", "renegociar",
+                    "pagar dívida", "pagar divida", "quitar", "financeiro",
+                    "sobrar", "sobra dinheiro", "falta dinheiro", "sem dinheiro",
+                    "me orienta", "me guia", "preciso de um mentor")
+
 def _extract_user_phone(message: str) -> str:
     """Extrai user_phone do header [user_phone: +55...]."""
     m = _re_router.search(r'\[user_phone:\s*(\+?\d+)\]', message)
@@ -10923,6 +10936,10 @@ def _pre_route(message: str) -> dict | None:
         if panel_url:
             return {"response": f"📊 *Seu painel está pronto!*\n\n👉 {panel_url}\n\nLá você pode editar cartões, ver transações e muito mais.\n_Link válido por 30 minutos._"}
 
+    # --- MENTOR: detecta pedidos de ajuda financeira/mentoria → deixa pro LLM ---
+    if any(k in n for k in _MENTOR_KEYWORDS):
+        return None  # Vai direto pro LLM (modo mentor)
+
     # --- AJUDA INTERATIVA (tema específico) ---
     _help_topic_m = _re_router.match(
         r'(?:como (?:eu )?(?:fa[çc]o|lan[çc]o|registro|uso|funciona|vejo|configuro)|'
@@ -11211,9 +11228,10 @@ def _keyword_route(user_phone: str, msg: str) -> dict | None:
         if _topic_resp:
             return {"response": _topic_resp}
 
-    # --- AJUDA ---
+    # --- AJUDA (keyword) — não captura se tem palavras de mentoria ---
     if any(k in n for k in ("ajuda", "help", "menu", "comando", "o que voce faz", "o que você faz", "o que vc faz")):
-        return {"response": _HELP_TEXT}
+        if not any(k in n for k in _MENTOR_KEYWORDS):
+            return {"response": _HELP_TEXT}
 
     return None  # Fallback ao LLM
 
