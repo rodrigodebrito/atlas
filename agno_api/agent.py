@@ -11286,9 +11286,9 @@ def _build_drip_message(user_id, first_name, days_since, cur):
         return (
             f"🚀 Dia 3, {first_name}! Últimas dicas:\n\n"
             "💡 *Recursos avançados:*\n"
-            "• _\"limite alimentação 500\"_ → alerta quando chegar perto\n"
             "• _\"meta viagem 5000\"_ → acompanhe seu progresso\n"
-            "• Mande uma *foto da fatura* → importo tudo de uma vez\n\n"
+            "• Mande uma *foto da fatura* → importo tudo de uma vez\n"
+            "• _\"me lembra amanhã 14h reunião\"_ → agenda integrada\n\n"
             "📊 E tem o painel visual:\n"
             "• _\"painel\"_ → gráficos, filtros e edição\n\n"
             "Aproveita! 😊"
