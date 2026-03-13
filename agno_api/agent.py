@@ -940,8 +940,7 @@ def save_transaction(
                 )
                 day_count, day_total = _ctx_cur.fetchone()
                 if day_count and day_count > 1:
-                    day_fmt = f"R${day_total/100:,.2f}".replace(",", ".")
-                    result += f"\n📆 Hoje: {day_fmt} em {day_count} gastos"
+                    result += f"\n📆 Hoje: {_fmt_brl(day_total)} em {day_count} gastos"
 
                 # Total do mês + saldo restante
                 _month_str = today_str[:7]
@@ -951,18 +950,16 @@ def save_transaction(
                     (user_id, _month_str + "%"),
                 )
                 _month_total = _ctx_cur.fetchone()[0] or 0
-                _month_fmt = f"R${_month_total/100:,.2f}".replace(",", ".")
-                result += f"\n📊 Mês: {_month_fmt}"
+                result += f"\n📊 Mês: {_fmt_brl(_month_total)}"
 
                 _ctx_cur.execute("SELECT monthly_income_cents FROM users WHERE id = ?", (user_id,))
                 _inc_row = _ctx_cur.fetchone()
                 if _inc_row and _inc_row[0] and _inc_row[0] > 0:
                     _remaining = _inc_row[0] - _month_total
-                    _rem_fmt = f"R${abs(_remaining)/100:,.2f}".replace(",", ".")
                     if _remaining >= 0:
-                        result += f"  •  Restam {_rem_fmt}"
+                        result += f"  •  Restam {_fmt_brl(_remaining)}"
                     else:
-                        result += f"  •  ⚠️ Estourou {_rem_fmt}"
+                        result += f"  •  ⚠️ Acima {_fmt_brl(abs(_remaining))}"
 
                 # Streak: dias consecutivos lançando gastos
                 _ctx_cur.execute(
@@ -1061,6 +1058,27 @@ def save_transaction(
                 _bill_conn.commit()
                 result += f"\n✅ Compromisso *{_best_bill[1]}* marcado como pago!"
             _bill_conn.close()
+        except Exception:
+            pass
+
+    # --- DISCOVERY TIPS pós-ação (baseado no total de transações) ---
+    _DISCOVERY_TIPS = {
+        5: '💡 _Sabia que pode criar limites? Diga "limite alimentação 500"_',
+        10: '💡 _Quer ver gráficos dos seus gastos? Diga "painel"_',
+        20: "💡 _Tem foto de fatura do cartão? Me manda que importo tudo!_",
+        30: '💡 _Crie metas de economia: "meta viagem 5000"_',
+        50: '💡 _Diga "como tá meu mês?" pra um resumo completo_',
+    }
+    if transaction_type == "EXPENSE":
+        try:
+            _disc_conn = _get_conn()
+            _disc_cur = _disc_conn.cursor()
+            _disc_cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id = ? AND type = 'EXPENSE'", (user_id,))
+            _tx_total = _disc_cur.fetchone()[0]
+            _disc_conn.close()
+            _disc_tip = _DISCOVERY_TIPS.get(_tx_total)
+            if _disc_tip:
+                result += f"\n\n{_disc_tip}"
         except Exception:
             pass
 
@@ -11484,7 +11502,7 @@ def _generate_smart_insight(user_id, cur, today):
             (user_id, month_str + "%"),
         )
         top_m = cur.fetchone()
-        if top_m and top_m[1] >= 4:
+        if top_m and top_m[1] >= 3:
             m_name, m_count, m_total = top_m
             m_fmt = _fmt_brl(m_total)
             half_save = m_total // 2
@@ -11521,7 +11539,8 @@ def _generate_smart_insight(user_id, cur, today):
 
         for cat, total_now in cats_now.items():
             prev_total = cats_prev.get(cat, 0)
-            if prev_total >= 5000 and total_now > prev_total * 1.25:
+            # Só compara se ambos meses têm valor relevante (>R$50)
+            if prev_total >= 5000 and total_now > prev_total * 1.25 and len(cats_prev) >= 2:
                 pct = round((total_now / prev_total - 1) * 100)
                 if pct <= 200:
                     insights.append(
@@ -11545,8 +11564,9 @@ def _generate_smart_insight(user_id, cur, today):
                 _total_month_dow += _amt
             except Exception:
                 pass
-        if _dow_totals and _total_month_dow > 0 and len(_dow_totals) >= 3:
-            # Só gera insight se tem dados em pelo menos 3 dias da semana distintos
+        _tx_count_dow = sum(_dow_totals.values())
+        if _dow_totals and _total_month_dow > 0 and len(_dow_totals) >= 4:
+            # Só gera insight se tem dados em pelo menos 4 dias da semana distintos
             _top_dow = max(_dow_totals, key=_dow_totals.get)
             _dow_pct = round(_dow_totals[_top_dow] / _total_month_dow * 100)
             if _dow_pct >= 25 and _dow_pct < 100 and _top_dow in (4, 5, 6):  # sex=4, sab=5, dom=6
@@ -11590,7 +11610,7 @@ def _generate_smart_insight(user_id, cur, today):
 
     # Rotaciona entre insights disponíveis baseado no dia
     idx = day_of_month % len(insights)
-    return f"💡 *Insight:* {insights[idx]}"
+    return insights[idx]
 
 
 @app.get("/v1/reports/daily")
@@ -11666,8 +11686,14 @@ def daily_report():
 
         lines = []
 
+        cat_emoji_map = {
+            "Alimentação": "🍽", "Transporte": "🚗", "Moradia": "🏠",
+            "Saúde": "💊", "Lazer": "🎮", "Assinaturas": "📱",
+            "Educação": "📚", "Vestuário": "👟", "Pets": "🐾", "Outros": "📦",
+        }
+
         if today_txs:
-            # Tem gastos hoje → resumo do dia
+            # Tem gastos ontem → resumo do dia
             expense_today = 0
             income_today = 0
             cat_totals = defaultdict(int)
@@ -11678,53 +11704,49 @@ def daily_report():
                 elif tx_type == "INCOME":
                     income_today += amt
 
-            cat_emoji_map = {
-                "Alimentação": "🍽", "Transporte": "🚗", "Moradia": "🏠",
-                "Saúde": "💊", "Lazer": "🎮", "Assinaturas": "📱",
-                "Educação": "📚", "Vestuário": "👟", "Pets": "🐾", "Outros": "📦",
-            }
-
-            lines.append(f"📊 *Ontem — {yesterday_label}*")
-            lines.append(f"Oi, {first_name}!")
+            lines.append(f"📊 *Resumo de ontem — {yesterday_label}*")
             lines.append("")
-            lines.append("─────────────────────")
+            lines.append(f"Oi, {first_name}! Aqui vai o que rolou ontem:")
+            lines.append("")
 
-            # Categorias com valor
+            # Categorias com valor (sem porcentagem, sem bold)
             sorted_cats = sorted(cat_totals.items(), key=lambda x: -x[1])[:5]
             for cat, total in sorted_cats:
                 emoji = cat_emoji_map.get(cat, "💸")
-                pct = round(total / expense_today * 100) if expense_today > 0 else 0
-                lines.append(f"{emoji} *{cat}* — {_fmt_brl(total)} ({pct}%)")
-            lines.append("─────────────────────")
+                lines.append(f"{emoji} {cat} — {_fmt_brl(total)}")
 
-            # Totais
-            lines.append(f"💸 *Total ontem:* {_fmt_brl(expense_today)}")
+            lines.append("")
+            lines.append("─────────────")
+
+            # Totais agrupados
+            lines.append(f"💸 Total: *{_fmt_brl(expense_today)}*")
             if income_today > 0:
-                lines.append(f"💚 *Receitas:* {_fmt_brl(income_today)}")
-            lines.append(f"📆 *Mês:* {_fmt_brl(month_expense)}")
+                lines.append(f"💚 Receitas: *{_fmt_brl(income_today)}*")
+            lines.append(f"📆 Mês: {_fmt_brl(month_expense)}")
 
             # Se tem renda, mostra quanto resta
             if income_cents and income_cents > 0:
                 remaining = income_cents - month_expense
                 if remaining >= 0:
-                    lines.append(f"✅ *Sobra:* {_fmt_brl(remaining)}")
+                    lines.append(f"✅ Sobra: {_fmt_brl(remaining)}")
                 else:
-                    lines.append(f"🔴 *Acima do orçamento:* {_fmt_brl(abs(remaining))}")
+                    lines.append(f"🔴 Acima da renda: {_fmt_brl(abs(remaining))}")
+
+            lines.append("─────────────")
 
         else:
             # Sem gastos ontem → nudge leve
-            lines.append(f"📊 *Ontem — {yesterday_label}*")
-            lines.append(f"Oi, {first_name}!")
+            lines.append(f"📊 *Resumo de ontem — {yesterday_label}*")
             lines.append("")
-            lines.append("Nenhum gasto registrado ontem.")
+            lines.append(f"Oi, {first_name}! Ontem tudo tranquilo, nenhum gasto registrado.")
             lines.append("")
-            lines.append(f"📆 *Mês até agora:* {_fmt_brl(month_expense)}")
+            lines.append(f"📆 Mês até agora: {_fmt_brl(month_expense)}")
             if income_cents and income_cents > 0:
                 remaining = income_cents - month_expense
                 if remaining >= 0:
-                    lines.append(f"✅ *Sobra:* {_fmt_brl(remaining)}")
+                    lines.append(f"✅ Sobra: {_fmt_brl(remaining)}")
             lines.append("")
-            lines.append("Gastou algo ontem? Me manda que eu registro 😊")
+            lines.append("Gastou algo? Me manda que eu registro 😊")
 
         # Insight proativo inteligente (mentor) — best-effort, não quebra o relatório
         try:
@@ -11736,9 +11758,10 @@ def daily_report():
             conn.commit()
         except Exception:
             pass
+        # Insight proativo (em itálico, sem prefix "Insight:")
         if insight:
             lines.append("")
-            lines.append(insight)
+            lines.append(f"💡 _{insight}_" if not insight.startswith("💡") else insight.replace("💡 *Insight:* ", "💡 _").rstrip() + "_")
 
         # Dica contextual: detecta feature não usada e sugere
         try:
@@ -11764,15 +11787,14 @@ def daily_report():
                 unused.append("goals")
 
             # Só mostra dica se NÃO teve insight (não sobrecarrega)
-            if not insight:
-                tip = None
-                for key, text in _TIPS:
-                    if key in unused:
-                        tip = text
-                        break
-                if tip:
+            # Rotaciona por dia para não repetir
+            if not insight and unused:
+                _filtered_tips = [(k, t) for k, t in _TIPS if k in unused]
+                if _filtered_tips:
+                    _tip_idx = yesterday.toordinal() % len(_filtered_tips)
+                    _, tip = _filtered_tips[_tip_idx]
                     lines.append("")
-                    lines.append(f"💡 *Dica:* {tip}")
+                    lines.append(f"💡 {tip}")
         except Exception:
             try:
                 conn.commit()
@@ -11797,12 +11819,11 @@ def daily_report():
                     _bspent = cur.fetchone()[0] or 0
                     _bpct = round(_bspent / _blimit * 100) if _blimit > 0 else 0
                     if _bspent > _blimit:
-                        _budget_alerts.append(f"🚨 *{_bcat}*: {_fmt_brl(_bspent)}/{_fmt_brl(_blimit)} — estourou!")
+                        _budget_alerts.append(f"🚨 {_bcat}: {_fmt_brl(_bspent)}/{_fmt_brl(_blimit)} — estourou!")
                     elif _bpct >= 80:
-                        _budget_alerts.append(f"⚠️ *{_bcat}*: {_bpct}% — restam {_fmt_brl(_blimit - _bspent)}")
+                        _budget_alerts.append(f"⚠️ {_bcat}: {_bpct}% — restam {_fmt_brl(_blimit - _bspent)}")
                 if _budget_alerts:
                     lines.append("")
-                    lines.append("📋 *Limites:*")
                     lines.extend(_budget_alerts)
         except Exception:
             try:
@@ -11812,7 +11833,7 @@ def daily_report():
 
         # Footer opt-out (discreto)
         lines.append("")
-        lines.append("_Para desligar, diga \"parar relatórios\"_")
+        lines.append("_Não quer receber? Diga *parar relatórios*_")
 
         messages.append({"phone": phone, "message": "\n".join(lines)})
 
