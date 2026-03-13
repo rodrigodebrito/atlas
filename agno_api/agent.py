@@ -11075,42 +11075,26 @@ def get_daily_reminders():
     for user_id, phone, name, reminder_days in users:
         reminder_days = reminder_days or 3
 
-        # Dia alvo = hoje + reminder_days (com rollover de mês)
-        target_day = today_day + reminder_days
-        if target_day > days_in_month:
-            target_day = target_day - days_in_month
+        # Data alvo = hoje + reminder_days
+        target_date = today + timedelta(days=reminder_days)
+        target_str = target_date.strftime("%Y-%m-%d")
+        target_day = target_date.day
 
         items = []
 
-        # Gastos fixos com vencimento no dia alvo
+        # Busca bills NÃO PAGAS que vencem na data alvo
         cur.execute(
-            "SELECT name, amount_cents FROM recurring_transactions WHERE user_id = ? AND active = 1 AND day_of_month = ?",
-            (user_id, target_day)
+            "SELECT name, amount_cents FROM bills WHERE user_id = ? AND due_date = ? AND paid = 0",
+            (user_id, target_str),
         )
-        for rec_name, amount_cents in cur.fetchall():
-            items.append(f"📋 {rec_name} — R${amount_cents/100:.2f}")
-
-        # Faturas de cartão com vencimento no dia alvo
-        cur.execute(
-            "SELECT id, name, closing_day, current_bill_opening_cents FROM credit_cards WHERE user_id = ? AND due_day = ?",
-            (user_id, target_day)
-        )
-        for card_id, card_name, closing_day, opening_cents in cur.fetchall():
-            if not closing_day or closing_day <= 0:
-                continue
-            period_start = _bill_period_start(closing_day)
-            cur.execute(
-                "SELECT SUM(amount_cents) FROM transactions WHERE user_id = ? AND card_id = ? AND occurred_at >= ?",
-                (user_id, card_id, period_start)
-            )
-            new_purchases = cur.fetchone()[0] or 0
-            bill_total = (opening_cents or 0) + new_purchases
-            if bill_total > 0:
-                items.append(f"💳 Fatura {card_name} — R${bill_total/100:.2f}")
+        for bill_name, amount_cents in cur.fetchall():
+            emoji = "💳" if "fatura" in bill_name.lower() else "📋"
+            items.append(f"{emoji} {bill_name} — {_fmt_brl(amount_cents)}")
 
         if items:
             days_label = "amanhã" if reminder_days == 1 else f"em {reminder_days} dias"
-            header = f"🔔 Oi, {name}! Seus compromissos que vencem {days_label} (dia {target_day:02d}):"
+            first_name = name.split()[0] if name else "amigo"
+            header = f"🔔 Oi, {first_name}! Seus compromissos que vencem {days_label} (dia {target_day:02d}):"
             message = header + "\n\n" + "\n".join(items) + "\n\nJá planejou? 😊"
             results.append({"phone": phone, "message": message, "user_id": user_id})
 
