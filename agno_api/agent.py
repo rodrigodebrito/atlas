@@ -11564,8 +11564,23 @@ async def chat_endpoint(
     # Injeta hora BRT no contexto pra o LLM saber o horário correto
     _now_ctx = _now_br()
     _time_ctx = f"[CONTEXTO: Agora são {_now_ctx.strftime('%H:%M')} do dia {_now_ctx.strftime('%d/%m/%Y')} (horário de Brasília). Use SEMPRE este horário como referência.]"
+
+    # Detecta se é pedido de mentoria → injeta instrução forte
+    _body_lower = body.lower() if body else ""
+    _is_mentor = any(k in _body_lower for k in _MENTOR_KEYWORDS)
+    _mentor_ctx = ""
+    if _is_mentor:
+        _mentor_ctx = (
+            "\n\n[MODO MENTOR ATIVADO] O usuário está pedindo ajuda financeira/mentoria. "
+            "ATIVE o Modo Mentor descrito nas suas instruções. "
+            "PRIMEIRO chame get_user_financial_snapshot para ter os dados reais. "
+            "Depois responda como um mentor financeiro de elite: direto, provocativo, estratégico. "
+            "NÃO diga 'sou especialista em anotar finanças'. Você É um mentor financeiro completo. "
+            "Personalize com os dados do usuário. Dê uma direção clara. Monte um plano se necessário."
+        )
+
     response = await atlas_agent.arun(
-        input=f"{_time_ctx}\n\n{full_message}",
+        input=f"{_time_ctx}{_mentor_ctx}\n\n{full_message}",
         session_id=session_id,
     )
     content = response.content if hasattr(response, 'content') else str(response)
