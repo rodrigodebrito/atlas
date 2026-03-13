@@ -7384,9 +7384,12 @@ ANTES de responder qualquer coisa no modo mentor, chame IMEDIATAMENTE:
 1. get_user_financial_snapshot(user_phone) — pega gastos, categorias, cartões, compromissos
 2. get_market_rates(user_phone) — pega Selic, CDI, IPCA, dólar (se falar de investimento)
 
-NUNCA peça dados que você já tem. O snapshot tem tudo: gastos médios, top categorias,
-compromissos, metas, padrões. USE ESSES DADOS na sua resposta.
-Só pergunte o que o snapshot NÃO retorna (ex: valor exato de dívida externa, renda).
+NUNCA peça dados que você já tem. O snapshot tem: gastos médios, top categorias,
+compromissos, metas, cartões, padrões de consumo. USE ESSES DADOS na resposta.
+Mesmo que o snapshot tenha poucos dados, APRESENTE O QUE TEM e analise.
+Ex: se tem gastos mas não tem renda, analise os gastos e só pergunte a renda.
+NUNCA diga "não consegui puxar" ou "não tenho dados". Se a tool retornou algo, USE.
+Só pergunte o que o snapshot NÃO retorna (ex: valor exato de dívida externa ao Atlas).
 
 ### FLUXO DO MENTOR
 1. TOOL CALLS — chame get_user_financial_snapshot (e get_market_rates se relevante). FAÇA ISSO PRIMEIRO.
@@ -7497,7 +7500,7 @@ def get_user_financial_snapshot(user_phone: str) -> str:
         avg = sum(monthly_totals) // len(monthly_totals)
         lines.append(f"💸 *Gasto médio mensal:* {_fmt_brl(avg)} (últimos {len(monthly_totals)} meses)")
     else:
-        lines.append("💸 *Gasto médio mensal:* sem dados suficientes")
+        lines.append("💸 *Gasto médio mensal:* ainda sem histórico (usuário novo ou poucos lançamentos)")
 
     # Mês atual
     current_month = now.strftime("%Y-%m")
@@ -7594,6 +7597,24 @@ def get_user_financial_snapshot(user_phone: str) -> str:
             lines.append(f"  • {g_name}: {_fmt_brl(g_saved or 0)}/{_fmt_brl(g_target)} ({pct}%)")
         lines.append("")
 
+    # Bills (contas a pagar do mês)
+    cur.execute(
+        "SELECT name, amount_cents, due_date, paid FROM bills "
+        "WHERE user_id = ? AND due_date LIKE ? ORDER BY due_date",
+        (user_id, current_month + "%"),
+    )
+    bills = cur.fetchall()
+    if bills:
+        total_bills = sum(b[1] for b in bills)
+        paid_bills = sum(b[1] for b in bills if b[3])
+        pending_bills = total_bills - paid_bills
+        lines.append(f"🧾 *Contas do mês:* {_fmt_brl(total_bills)} total")
+        lines.append(f"  ✅ Pago: {_fmt_brl(paid_bills)} | ⬜ Pendente: {_fmt_brl(pending_bills)}")
+        for b_name, b_amt, b_due, b_paid in bills:
+            status = "✅" if b_paid else "⬜"
+            lines.append(f"  {status} {b_due[8:10]}/{b_due[5:7]} — {b_name}: {_fmt_brl(b_amt)}")
+        lines.append("")
+
     # Renda (se cadastrada)
     if income and income > 0:
         lines.append(f"💰 *Renda declarada:* {_fmt_brl(income)}")
@@ -7601,7 +7622,7 @@ def get_user_financial_snapshot(user_phone: str) -> str:
             savings_rate = round((1 - avg / income) * 100)
             lines.append(f"📈 *Taxa de poupança:* {savings_rate}%")
     else:
-        lines.append("💰 *Renda:* não cadastrada")
+        lines.append("💰 *Renda:* não cadastrada (pergunte ao usuário)")
 
     conn.close()
     return "\n".join(lines)
