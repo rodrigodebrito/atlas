@@ -10937,7 +10937,7 @@ def _pre_route(message: str) -> dict | None:
             return {"response": f"📊 *Seu painel está pronto!*\n\n👉 {panel_url}\n\nLá você pode editar cartões, ver transações e muito mais.\n_Link válido por 30 minutos._"}
 
     # --- MENTOR: detecta pedidos de ajuda financeira/mentoria → deixa pro LLM ---
-    if any(k in n for k in _MENTOR_KEYWORDS):
+    if any(k in msg for k in _MENTOR_KEYWORDS):
         return None  # Vai direto pro LLM (modo mentor)
 
     # --- AJUDA INTERATIVA (tema específico) ---
