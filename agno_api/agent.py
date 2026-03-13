@@ -952,15 +952,6 @@ def save_transaction(
                 _month_total = _ctx_cur.fetchone()[0] or 0
                 result += f"\n📊 Mês: {_fmt_brl(_month_total)}"
 
-                _ctx_cur.execute("SELECT monthly_income_cents FROM users WHERE id = ?", (user_id,))
-                _inc_row = _ctx_cur.fetchone()
-                if _inc_row and _inc_row[0] and _inc_row[0] > 0:
-                    _remaining = _inc_row[0] - _month_total
-                    if _remaining >= 0:
-                        result += f"  •  Restam {_fmt_brl(_remaining)}"
-                    else:
-                        result += f"  •  ⚠️ Acima {_fmt_brl(abs(_remaining))}"
-
                 # Streak: dias consecutivos lançando gastos
                 _ctx_cur.execute(
                     "SELECT DISTINCT SUBSTRING(occurred_at, 1, 10) AS d FROM transactions "
@@ -11291,35 +11282,17 @@ def _build_drip_message(user_id, first_name, days_since, cur):
             )
 
     elif days_since == 3:
-        # Dia 3: painel + renda
-        cur.execute("SELECT monthly_income_cents FROM users WHERE id = ?", (user_id,))
-        row = cur.fetchone()
-        has_income = row and row[0] and row[0] > 0
-
-        if has_income:
-            return (
-                f"🚀 Dia 3, {first_name}! Tá tudo configurado.\n\n"
-                "Agora você pode perguntar:\n"
-                "• _\"posso comprar um tênis de 200?\"_\n"
-                "• _\"meu score financeiro\"_\n"
-                "• _\"vai sobrar até o fim do mês?\"_\n\n"
-                "📊 E tem o painel visual:\n"
-                "• _\"painel\"_ → gráficos, filtros e edição\n\n"
-                "Aproveita! 😊"
-            )
-        else:
-            return (
-                f"🚀 Dia 3, {first_name}! Uma última dica importante.\n\n"
-                "💡 *Cadastre sua renda:*\n"
-                "_\"minha renda é 5000\"_\n\n"
-                "Com a renda eu desbloqueio:\n"
-                "• 📊 Score financeiro (nota de 0-100)\n"
-                "• 🔮 Projeção de sobra no mês\n"
-                "• 🛒 Análise de compras (\"posso comprar X?\")\n\n"
-                "📊 E tem o painel visual:\n"
-                "• _\"painel\"_ → gráficos completos\n\n"
-                "🎯 *Tenta agora:* diz quanto ganha por mês!"
-            )
+        # Dia 3: painel + features avançadas
+        return (
+            f"🚀 Dia 3, {first_name}! Últimas dicas:\n\n"
+            "💡 *Recursos avançados:*\n"
+            "• _\"limite alimentação 500\"_ → alerta quando chegar perto\n"
+            "• _\"meta viagem 5000\"_ → acompanhe seu progresso\n"
+            "• Mande uma *foto da fatura* → importo tudo de uma vez\n\n"
+            "📊 E tem o painel visual:\n"
+            "• _\"painel\"_ → gráficos, filtros e edição\n\n"
+            "Aproveita! 😊"
+        )
 
     return None
 
@@ -11653,12 +11626,12 @@ def daily_report():
 
     # Pré-calcula features usadas por user para dicas contextuais
     _TIPS = [
-        ("cards", "💳 Sabia que pode cadastrar cartões? Diga: _\"tenho Nubank\"_"),
-        ("commitments", "📅 Cadastre contas fixas: _\"aluguel 1500 todo dia 5\"_"),
-        ("income", "💰 Cadastre sua renda pra eu calcular projeções: _\"minha renda é 5000\"_"),
-        ("agenda", "⏰ Crie lembretes: _\"me lembra amanhã 14h reunião\"_"),
-        ("goals", "🎯 Crie uma meta: _\"meta viagem 5000\"_"),
-        ("panel", "📊 Veja seu painel visual: diga _\"painel\"_"),
+        ("cards", '💳 Cadastre seus cartões: _"tenho Nubank"_'),
+        ("commitments", '📅 Cadastre contas fixas: _"aluguel 1500 todo dia 5"_'),
+        ("agenda", '⏰ Crie lembretes: _"me lembra amanhã 14h reunião"_'),
+        ("goals", '🎯 Crie uma meta: _"meta viagem 5000"_'),
+        ("panel", '📊 Veja seu painel visual: diga _"painel"_'),
+        ("budgets", '📋 Defina limites por categoria: _"limite alimentação 500"_'),
     ]
 
     messages = []
@@ -11723,15 +11696,6 @@ def daily_report():
             if income_today > 0:
                 lines.append(f"💚 Receitas: *{_fmt_brl(income_today)}*")
             lines.append(f"📆 Mês: {_fmt_brl(month_expense)}")
-
-            # Se tem renda, mostra quanto resta
-            if income_cents and income_cents > 0:
-                remaining = income_cents - month_expense
-                if remaining >= 0:
-                    lines.append(f"✅ Sobra: {_fmt_brl(remaining)}")
-                else:
-                    lines.append(f"🔴 Acima da renda: {_fmt_brl(abs(remaining))}")
-
             lines.append("─────────────")
 
         else:
@@ -11741,10 +11705,6 @@ def daily_report():
             lines.append(f"Oi, {first_name}! Ontem tudo tranquilo, nenhum gasto registrado.")
             lines.append("")
             lines.append(f"📆 Mês até agora: {_fmt_brl(month_expense)}")
-            if income_cents and income_cents > 0:
-                remaining = income_cents - month_expense
-                if remaining >= 0:
-                    lines.append(f"✅ Sobra: {_fmt_brl(remaining)}")
             lines.append("")
             lines.append("Gastou algo? Me manda que eu registro 😊")
 
@@ -11774,17 +11734,20 @@ def daily_report():
             cur.execute("SELECT COUNT(*) FROM goals WHERE user_id = ?", (user_id,))
             has_goals = cur.fetchone()[0] > 0
 
+            cur.execute("SELECT COUNT(*) FROM category_budgets WHERE user_id = ?", (user_id,))
+            has_budgets = cur.fetchone()[0] > 0
+
             unused = []
             if not has_cards:
                 unused.append("cards")
             if not has_commitments:
                 unused.append("commitments")
-            if not (income_cents and income_cents > 0):
-                unused.append("income")
             if not has_agenda:
                 unused.append("agenda")
             if not has_goals:
                 unused.append("goals")
+            if not has_budgets:
+                unused.append("budgets")
 
             # Só mostra dica se NÃO teve insight (não sobrecarrega)
             # Rotaciona por dia para não repetir
