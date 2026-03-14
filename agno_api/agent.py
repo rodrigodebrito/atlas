@@ -7483,6 +7483,17 @@ Só pergunte o que o snapshot NÃO retorna (ex: valor exato de dívida externa a
 - SEMPRE mostre o cenário pessimista E otimista.
 - SEMPRE compare: "Se colocar no Tesouro Selic rende X. No CDB rende Y. Na poupança Z."
 
+### CUIDADOS IMPORTANTES
+- Se o snapshot diz "⚠️ só X mês(es) de histórico", NÃO compare a média com o mês atual.
+  A média é imprecisa quando o usuário é novo. Foque nos dados absolutos do mês atual.
+- Se o snapshot diz "⚠️ Receita real é MAIOR que a declarada", pergunte ao usuário se a renda
+  aumentou. Ele pode ter freelance, bônus, ou outras fontes. Use a receita REAL nos cálculos.
+- Na PRIMEIRA interação com um usuário novo, seja acolhedor. Não alarme.
+  Reconheça os dados que tem, faça perguntas inteligentes sobre o que falta,
+  e só depois monte o plano. Não diga "você está no buraco" se não tem certeza.
+- Diferencie gastos fixos (moradia, financiamento) de gastos variáveis (alimentação, delivery).
+  Cortar fixo é difícil. Cortar variável é ação imediata.
+
 ### COMO RESPONDER NO MODO MENTOR
 - Resposta longa é OK no modo mentor (até 2000 tokens). O usuário quer orientação completa.
 - Use emojis com moderação — 📋 para planos, 🏆 para vitórias, 💡 para insights.
@@ -7535,8 +7546,10 @@ def get_user_financial_snapshot(user_phone: str) -> str:
     if monthly_totals:
         avg = sum(monthly_totals) // len(monthly_totals)
         lines.append(f"💸 *Gasto médio mensal:* {_fmt_brl(avg)} (últimos {len(monthly_totals)} meses)")
+        if len(monthly_totals) < 3:
+            lines.append(f"  ⚠️ ATENÇÃO: só {len(monthly_totals)} mês(es) de histórico — média pode ser imprecisa. Não tire conclusões fortes comparando com o mês atual.")
     else:
-        lines.append("💸 *Gasto médio mensal:* ainda sem histórico (usuário novo ou poucos lançamentos)")
+        lines.append("💸 *Gasto médio mensal:* ainda sem histórico (usuário começou a usar recentemente)")
 
     # Mês atual
     current_month = now.strftime("%Y-%m")
@@ -7546,7 +7559,7 @@ def get_user_financial_snapshot(user_phone: str) -> str:
         (user_id, current_month + "%"),
     )
     month_total = cur.fetchone()[0] or 0
-    lines.append(f"📆 *Mês atual ({now.strftime('%b')}):* {_fmt_brl(month_total)}")
+    lines.append(f"📆 *Gastos mês atual ({now.strftime('%b')}):* {_fmt_brl(month_total)}")
     lines.append("")
 
     # Top 5 categorias (mês atual)
@@ -7666,14 +7679,35 @@ def get_user_financial_snapshot(user_phone: str) -> str:
             lines.append(f"  {status} {b_due[8:10]}/{b_due[5:7]} — {b_name}: {_fmt_brl(b_amt)}")
         lines.append("")
 
-    # Renda (se cadastrada)
+    # Receitas reais do mês (INCOME transactions)
+    cur.execute(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+        "WHERE user_id = ? AND type = 'INCOME' AND occurred_at LIKE ?",
+        (user_id, current_month + "%"),
+    )
+    real_income_month = cur.fetchone()[0] or 0
+
+    # Receitas por categoria (pra ver de onde vem)
+    cur.execute(
+        "SELECT category, SUM(amount_cents) FROM transactions "
+        "WHERE user_id = ? AND type = 'INCOME' AND occurred_at LIKE ? "
+        "GROUP BY category ORDER BY SUM(amount_cents) DESC",
+        (user_id, current_month + "%"),
+    )
+    income_cats = cur.fetchall()
+
+    # Renda
+    lines.append("💰 *Renda:*")
     if income and income > 0:
-        lines.append(f"💰 *Renda declarada:* {_fmt_brl(income)}")
-        if monthly_totals:
-            savings_rate = round((1 - avg / income) * 100)
-            lines.append(f"📈 *Taxa de poupança:* {savings_rate}%")
-    else:
-        lines.append("💰 *Renda:* não cadastrada (pergunte ao usuário)")
+        lines.append(f"  Declarada: {_fmt_brl(income)}")
+    if real_income_month > 0:
+        lines.append(f"  Recebido este mês: {_fmt_brl(real_income_month)}")
+        for ic_cat, ic_total in income_cats:
+            lines.append(f"    • {ic_cat or 'Outros'}: {_fmt_brl(ic_total)}")
+        if income and income > 0 and real_income_month > income * 1.2:
+            lines.append(f"  ⚠️ Receita real ({_fmt_brl(real_income_month)}) é MAIOR que a declarada ({_fmt_brl(income)}). Pergunte se a renda aumentou.")
+    elif not income or income == 0:
+        lines.append("  Nenhuma renda declarada ou registrada. Pergunte ao usuário.")
 
     conn.close()
     return "\n".join(lines)
