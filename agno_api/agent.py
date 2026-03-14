@@ -7401,11 +7401,14 @@ Antes de enviar qualquer resposta de consulta (filtro, resumo, análise):
 
 Quando a mensagem contém [MODO MENTOR ATIVADO] ou o usuário pede ajuda financeira,
 conselho, orientação sobre dívidas, investimentos, economia, planejamento,
-aposentadoria — você se transforma no MENTOR ATLAS.
+aposentadoria — ou menciona "Pri"/"Priscila" — você se transforma na PRISCILA NAVES.
 
-## ═══ QUEM VOCÊ É NO MODO MENTOR ═══
+## ═══ QUEM VOCÊ É NO MODO MENTOR: PRISCILA NAVES ═══
 
-Você é um *mentor financeiro de elite* com 6 áreas de domínio:
+Você é a *Priscila Naves* (Pri), consultora financeira do Atlas.
+O usuário pode te chamar digitando "pri", "priscila", "falar com a pri", "mentor".
+
+Você é uma *consultora financeira de elite* com 6 áreas de domínio:
 1. *Educação financeira* — ensina do zero, sem jargão
 2. *Gestão de dívidas* — diagnóstico, negociação, plano de quitação
 3. *Investimentos* — do Tesouro Selic ao S&P 500, com dados reais
@@ -10011,7 +10014,18 @@ import re as _re_router
 
 # Palavras-chave que indicam pedido de mentoria financeira (bypass help/keyword router → vai pro LLM)
 # Keywords que ATIVAM o mentor (pedidos explícitos de ajuda/orientação financeira)
-_MENTOR_KEYWORDS = ("endividad", "divida", "dívida", "investir", "investimento", "mentor",
+# Comando explícito para ativar mentor (match exato, curto)
+_MENTOR_COMMANDS = ("mentor", "/mentor", "modo mentor", "quero mentor", "quero mentoria",
+                    "falar com mentor", "ativar mentor", "preciso de um mentor",
+                    # Priscila Naves — persona da consultora financeira
+                    "pri", "priscila", "oi pri", "oi priscila",
+                    "falar com a pri", "falar com a priscila",
+                    "chama a pri", "chama a priscila",
+                    )
+
+# Keywords que ATIVAM o mentor (match parcial dentro da mensagem)
+# Inclui "pri"/"priscila" como trigger parcial também
+_MENTOR_KEYWORDS = ("endividad", "divida", "dívida", "investir", "investimento",
                     "planejamento financeiro", "aposentadoria", "juntar dinheiro",
                     "sair do buraco", "não sobra nada", "nao sobra nada", "nunca sobra",
                     "me ajuda com minhas finanças", "preciso de ajuda financeira",
@@ -10021,8 +10035,18 @@ _MENTOR_KEYWORDS = ("endividad", "divida", "dívida", "investir", "investimento"
                     "cheque especial", "empréstimo", "emprestimo", "renegociar",
                     "pagar dívida", "pagar divida", "quitar dívida",
                     "falta dinheiro", "sem dinheiro",
-                    "me orienta", "me guia", "preciso de um mentor",
-                    "modo mentor", "falar com mentor", "quero mentoria")
+                    "me orienta", "me guia",
+                    # Pedidos de ajuda com contexto financeiro
+                    "me ajudar com", "pode me ajudar", "preciso de ajuda",
+                    "preocupado com", "preocupada com",
+                    "ajuda com meus gastos", "ajuda com minhas finanças",
+                    "ajuda com as contas", "ajuda com minha dívida",
+                    "orientação financeira", "orientacao financeira",
+                    "conselho financeiro", "dica financeira",
+                    # Priscila Naves — trigger parcial
+                    " pri ", " pri,", "pri me", "pri,",
+                    "priscila", "a pri",
+                    )
 
 # Padrões que indicam que o user está registrando gasto/receita (NÃO é mentor)
 _TRANSACTION_PATTERNS = (
@@ -10128,24 +10152,25 @@ def _onboard_if_new(user_phone: str, message: str) -> dict | None:
 
     welcome = (
         f"E aí, {first_name}! Prazer, eu sou o *Atlas* 🧠\n\n"
-        "Não sou mais um app de finanças. Sou seu *mentor financeiro* "
-        "direto no WhatsApp — e vou te ajudar a *virar o jogo* com seu dinheiro.\n\n"
+        "Seu assistente financeiro direto no WhatsApp — "
+        "e vou te ajudar a *virar o jogo* com seu dinheiro.\n\n"
         "📌 *O que eu faço:*\n\n"
         "💸 Anoto seus gastos na hora — digita que eu entendo\n"
         "💳 Controlo cartões, faturas e parcelas\n"
         "📊 Mando resumo diário pra você ver pra onde tá indo\n"
-        "🔔 Aviso antes das contas vencerem\n"
-        "🧠 *E o principal:* sou seu mentor — me pede orientação "
-        "sobre dívidas, investimentos, planejamento, o que precisar\n\n"
+        "🔔 Aviso antes das contas vencerem\n\n"
+        "🧠 *E tem mais:* conheça a *Pri* — sua consultora financeira\n"
+        "Ela te ajuda com dívidas, investimentos, planejamento, economia.\n"
+        "É só digitar *\"pri\"* quando precisar dela!\n\n"
         "⚡ *Como funciona?*\n\n"
         "Manda natural, como se tivesse falando comigo:\n"
         "• _\"almocei 35\"_\n"
         "• _\"uber 18\"_\n"
         "• _\"mercado 120 no Nubank\"_\n\n"
         "E quando precisar de orientação:\n"
-        "• _\"tô endividado, me ajuda\"_\n"
-        "• _\"onde investir 500 por mês?\"_\n"
-        "• _\"quero um plano pra sair do vermelho\"_\n\n"
+        "• _\"pri, me ajuda\"_\n"
+        "• _\"pri, onde investir 500 por mês?\"_\n"
+        "• _\"pri, quero sair do vermelho\"_\n\n"
         f"🎯 *Bora, {first_name}?*\n\n"
         "Me manda o primeiro gasto que fez hoje!"
     )
@@ -11777,6 +11802,10 @@ def _classify_message_intent(body: str, in_mentor: bool) -> _Intent:
     """Classifica intenção da mensagem: transação, mentor, query, ou ambíguo."""
     low = body.lower().strip()
 
+    # Comando explícito de mentor — prioridade máxima
+    if low in _MENTOR_COMMANDS or any(low == c for c in _MENTOR_COMMANDS):
+        return _Intent.CLEAR_MENTOR
+
     has_mentor_kw = any(k in low for k in _MENTOR_KEYWORDS)
     has_tx_signal = any(k in low for k in _TRANSACTION_PATTERNS) and bool(_VALUE_PATTERN.search(low))
     has_analytical = any(k in low for k in _ANALYTICAL_PATTERNS)
@@ -11936,7 +11965,7 @@ async def chat_endpoint(
         # Saída do mentor (msg curta com padrão de despedida)
         if _is_mentor_exit(body):
             _mentor_sessions.pop(user_phone, None)
-            return {"content": "Beleza! Quando precisar do mentor de novo, é só chamar. 💪", "routed": True}
+            return {"content": "Beleza! Quando precisar da Pri de novo, é só digitar *pri*. 💪", "routed": True}
 
         # Classifica intenção dentro da sessão
         _intent = _classify_message_intent(body, True)
@@ -12005,13 +12034,22 @@ async def chat_endpoint(
         )
         _mentor_ctx = (
             "\n\n⚠️ INSTRUÇÃO PRIORITÁRIA — SOBRESCREVE TODAS AS OUTRAS REGRAS ⚠️\n"
-            "[MODO MENTOR ATIVADO]\n"
+            "[MODO MENTOR ATIVADO — PERSONA: PRISCILA NAVES]\n"
+            "Você agora é a *Priscila Naves*, consultora financeira do Atlas.\n"
+            "PERSONALIDADE:\n"
+            "- Direta, sem rodeios, estratégica — não enrola\n"
+            "- Provocativa e motivacional — desafia o usuário a agir\n"
+            "- Empática mas firme — entende a dor, não aceita vitimismo\n"
+            "- Usa comparações de impacto (R$480/mês iFood = uma viagem por ano)\n"
+            "- Celebra vitórias com emoção genuína\n"
+            "- Fala como amiga próxima que manja de finanças, NÃO como robô\n"
+            "- Se apresente como 'Pri' na primeira interação\n\n"
             "NÃO responda com 'Não entendi', 'Sou especialista em anotar', ou qualquer recusa.\n"
             "NÃO peça dados ao usuário que você pode buscar com tools.\n"
             "AÇÃO OBRIGATÓRIA:\n"
             "1. Chame get_user_financial_snapshot(user_phone) AGORA\n"
             "2. Use os dados reais na resposta\n"
-            "3. Seja direto, provocativo, estratégico\n"
+            "3. Seja direta, provocativa, estratégica\n"
             "4. Máximo 1-2 perguntas sobre o que NÃO tem no snapshot\n"
             + _fmt_rules
         )
@@ -12024,8 +12062,9 @@ async def chat_endpoint(
             "- Termine com UMA pergunta ou ação.\n"
         )
         _mentor_ctx = (
-            "\n\n[MODO MENTOR ATIVO — CONVERSA EM ANDAMENTO]\n"
-            "Continue a conversa de mentoria naturalmente.\n"
+            "\n\n[MODO MENTOR ATIVO — PRISCILA NAVES — CONVERSA EM ANDAMENTO]\n"
+            "Continue como Priscila Naves (Pri), consultora financeira.\n"
+            "Mantenha o tom: direta, provocativa, empática, motivacional.\n"
             "Se o usuário deu informação nova, USE para refinar o plano.\n"
             "Pode chamar tools se precisar.\n"
             + _fmt_rules
