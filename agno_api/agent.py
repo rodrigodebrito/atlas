@@ -11843,13 +11843,9 @@ async def chat_endpoint(
         _in_mentor_session = False
         return {"content": "Beleza! Quando precisar do mentor de novo, é só chamar. 💪", "routed": True}
 
-    # 5. Se em sessão mentor e user manda transação → registra E mantém sessão
-    if _in_mentor_session and _is_transaction:
-        # Deixa o pre-router processar a transação
-        routed = _pre_route(full_message)
-        if routed:
-            _mentor_sessions[user_phone] = time.time()  # renova sessão
-            return {"content": _strip_whatsapp_bold(routed["response"]), "routed": True}
+    # 5. Em sessão mentor → TUDO vai pro LLM (ele tem save_transaction como tool)
+    # Não passa pelo pre-router que pode interpretar "esse gasto de 4867" como nova transação
+    # O LLM entende contexto: "esse gasto foi no cartão X" ≠ nova transação
 
     # 6. Rota normal (sem mentor)
     if not _in_mentor_session and not _is_mentor:
