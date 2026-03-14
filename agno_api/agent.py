@@ -11205,6 +11205,21 @@ def _pre_route(message: str) -> dict | None:
     if any(k in msg for k in _MENTOR_KEYWORDS):
         return None  # Vai direto pro LLM (modo mentor)
 
+    # --- PERGUNTAS ANALÍTICAS → LLM (não são pedidos de dados, são pedidos de análise) ---
+    # "quanto está sendo meu gasto médio com alimentação" → LLM analisa + pergunta contexto
+    # "isso é normal?", "tô gastando muito?", "como reduzir meus gastos?"
+    _analytical_patterns = (
+        "é normal", "tá normal", "ta normal", "isso é muito", "isso é pouco",
+        "tô gastando muito", "to gastando muito", "gasto muito", "gasto pouco",
+        "como reduzir", "como diminuir", "como economizar", "como cortar",
+        "o que acha", "o que vc acha", "o que você acha",
+        "me analisa", "analisa meus", "avalia meus", "avalia minhas",
+        "gasto médio", "gasto medio", "média de gasto", "media de gasto",
+        "tá bom isso", "ta bom isso", "tô bem", "to bem financeiramente",
+    )
+    if any(k in msg for k in _analytical_patterns):
+        return None  # Vai pro LLM pra análise inteligente
+
     # --- AJUDA INTERATIVA (tema específico) ---
     _help_topic_m = _re_router.match(
         r'(?:como (?:eu )?(?:fa[çc]o|lan[çc]o|registro|uso|funciona|vejo|configuro)|'
