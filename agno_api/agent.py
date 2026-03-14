@@ -10050,6 +10050,12 @@ _ANALYTICAL_PATTERNS = (
     "me analisa", "analisa meus", "avalia meus", "avalia minhas",
     "gasto médio", "gasto medio", "média de gasto", "media de gasto",
     "tá bom isso", "ta bom isso", "tô bem", "to bem financeiramente",
+    "está alto", "esta alto", "tá alto", "ta alto", "alto demais", "muito alto",
+    "é padrão", "é padrao", "é normal pra", "é normal para",
+    "tá caro", "ta caro", "caro demais",
+    "estou gastando muito", "gastando demais", "gastando muito",
+    "ou é padrão", "ou é padrao", "ou é normal",
+    "pra quantas pessoas", "pra 2", "pra 3", "pra duas", "pra tres",
 )
 
 # Marcadores referenciais — indicam que o user fala de algo existente, NÃO registrando novo
@@ -11763,7 +11769,9 @@ class _Intent(str, _Enum):
     AMBIGUOUS = "ambiguous"
 
 # Regex simples para detectar valor monetário na mensagem
-_VALUE_PATTERN = _re_router.compile(r'(?:r\$\s?)?\d+(?:[.,]\d{2})?')
+# Valor monetário: R$X, ou número >= 2 dígitos, ou número + "reais"/"conto"
+# NÃO casa "2 adultos", "1 criança" etc.
+_VALUE_PATTERN = _re_router.compile(r'(?:r\$\s?\d+(?:[.,]\d{2})?|\d{2,}(?:[.,]\d{2})?|\d+\s*(?:reais|conto|pila))')
 
 def _classify_message_intent(body: str, in_mentor: bool) -> _Intent:
     """Classifica intenção da mensagem: transação, mentor, query, ou ambíguo."""
