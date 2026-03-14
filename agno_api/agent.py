@@ -10012,25 +10012,27 @@ def _onboard_if_new(user_phone: str, message: str) -> dict | None:
     fn(user_phone, first_name)
 
     welcome = (
-        f"Oi, {first_name}! Eu sou o *ATLAS* 🎉\n"
-        "Seu assistente financeiro direto no WhatsApp.\n\n"
-        "─────────────────────\n"
-        "📌 *O que eu faço por você:*\n\n"
-        "💸 Registro seus gastos automaticamente\n"
+        f"E aí, {first_name}! Prazer, eu sou o *Atlas* 🧠\n\n"
+        "Não sou mais um app de finanças. Sou seu *mentor financeiro* "
+        "direto no WhatsApp — e vou te ajudar a *virar o jogo* com seu dinheiro.\n\n"
+        "📌 *O que eu faço:*\n\n"
+        "💸 Anoto seus gastos na hora — digita que eu entendo\n"
         "💳 Controlo cartões, faturas e parcelas\n"
-        "📊 Monto resumos diários, semanais e mensais\n"
-        "🔔 Aviso quando tem conta pra pagar\n"
-        "🧠 Analiso se você pode comprar algo\n\n"
-        "─────────────────────\n"
-        "🚀 *Como funciona?*\n\n"
-        "Basta digitar naturalmente:\n"
-        "• _\"almocei 35\"_ → registro + categoria automática\n"
-        "• _\"uber 18\"_ → entendo na hora\n"
-        "• _\"mercado 120 no Nubank\"_ → já vinculo ao cartão\n\n"
-        "─────────────────────\n"
+        "📊 Mando resumo diário pra você ver pra onde tá indo\n"
+        "🔔 Aviso antes das contas vencerem\n"
+        "🧠 *E o principal:* sou seu mentor — me pede orientação "
+        "sobre dívidas, investimentos, planejamento, o que precisar\n\n"
+        "⚡ *Como funciona?*\n\n"
+        "Manda natural, como se tivesse falando comigo:\n"
+        "• _\"almocei 35\"_\n"
+        "• _\"uber 18\"_\n"
+        "• _\"mercado 120 no Nubank\"_\n\n"
+        "E quando precisar de orientação:\n"
+        "• _\"tô endividado, me ajuda\"_\n"
+        "• _\"onde investir 500 por mês?\"_\n"
+        "• _\"quero um plano pra sair do vermelho\"_\n\n"
         f"🎯 *Bora, {first_name}?*\n\n"
-        "Me manda um gasto que você fez hoje!\n"
-        "Pode ser qualquer coisa — eu entendo 😊"
+        "Me manda o primeiro gasto que fez hoje!"
     )
     return {"response": welcome}
 
@@ -11157,8 +11159,8 @@ def _pre_route(message: str) -> dict | None:
                 _uname = _urow[0]
         except Exception:
             pass
-        greeting = f"Fala, {_uname}! 👋" if _uname else "Fala! 👋"
-        return {"response": f"{greeting} Sou o *ATLAS*, seu copiloto financeiro.\n\nMe diz o que precisa ou escolhe:\n1️⃣ Resumo do mês\n2️⃣ Meus cartões\n3️⃣ Compromissos\n4️⃣ Gastos de hoje\n5️⃣ Metas\n6️⃣ Ajuda"}
+        greeting = f"E aí, {_uname}!" if _uname else "E aí!"
+        return {"response": f"{greeting} 👋\n\nMe diz o que precisa:\n\n💸 Manda um gasto ou receita\n📊 _\"resumo\"_ — como tá seu mês\n💳 _\"cartões\"_ — faturas e vencimentos\n📋 _\"compromissos\"_ — contas a pagar\n🧠 _\"mentor\"_ — orientação financeira\n❓ _\"ajuda\"_ — tudo que sei fazer"}
 
     # ── DETECÇÃO DE PAGAMENTO DE FATURA / COMPROMISSO ───────────────
     # "pagamento cartão caixa 4867", "paguei fatura nubank", "paguei o aluguel 1500"
@@ -12005,78 +12007,75 @@ def _build_drip_message(user_id, first_name, days_since, cur):
 
         if tx_count > 0:
             return (
-                f"💪 Oi, {first_name}! Vi que você já lançou {tx_count} gasto{'s' if tx_count > 1 else ''}. Parabéns!\n\n"
-                "Agora experimenta perguntar:\n"
-                "• _\"gastos de hoje\"_\n"
-                "• _\"como tá meu mês?\"_\n\n"
-                "Eu monto o resumo pra você na hora 😊\n\n"
-                "Amanhã tem mais dicas!"
+                f"💪 {first_name}, vi que já lançou {tx_count} gasto{'s' if tx_count > 1 else ''}! Tá no caminho certo.\n\n"
+                "Agora experimenta:\n"
+                "• _\"como tá meu mês?\"_ — resumo completo\n"
+                "• _\"gastos de hoje\"_ — o que saiu hoje\n\n"
+                "_Clareza é o primeiro passo pra controlar o dinheiro._\n\n"
+                "Amanhã tem mais!"
             )
         else:
             return (
-                f"👋 Oi, {first_name}! Aqui é o ATLAS.\n\n"
-                "Vi que você ainda não lançou nenhum gasto — sem stress!\n\n"
-                "É super simples, basta digitar:\n"
+                f"👋 {first_name}, aqui é o Atlas!\n\n"
+                "Ainda não lançou nenhum gasto — bora começar?\n\n"
+                "É só digitar natural:\n"
                 "• _\"almocei 35\"_\n"
                 "• _\"uber 18\"_\n"
                 "• _\"mercado 120\"_\n\n"
-                "Eu entendo tudo automaticamente.\n\n"
-                "🎯 *Tenta agora:* manda um gasto que fez hoje!"
+                "_Eu entendo e categorizo tudo._\n\n"
+                "🎯 Manda o primeiro gasto de hoje!"
             )
 
     elif days_since == 2:
-        # Dia 2: verificar se tem cartões cadastrados
+        # Dia 2: cartões + compromissos
         cur.execute("SELECT COUNT(*) FROM credit_cards WHERE user_id = ?", (user_id,))
         has_cards = cur.fetchone()[0] > 0
         cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id = ? AND type = 'EXPENSE'", (user_id,))
         tx_count = cur.fetchone()[0]
 
         if has_cards:
-            # Já tem cartão → ensina compromissos fixos
             return (
-                f"🌟 Dia 2, {first_name}! Vi que já cadastrou seu cartão — show!\n\n"
-                "💡 *Dica: Compromissos fixos*\n\n"
-                "Cadastre suas contas mensais:\n"
+                f"🌟 {first_name}, vi que já tem cartão cadastrado!\n\n"
+                "💡 *Agora cadastra suas contas fixas:*\n"
                 "• _\"aluguel 1500 todo dia 5\"_\n"
                 "• _\"internet 120 todo dia 15\"_\n\n"
-                "Eu aviso automaticamente quando vencer!\n\n"
-                "🎯 *Tenta agora:* cadastra 1 conta fixa."
+                "_Eu aviso antes de vencer — nunca mais esquece._\n\n"
+                "🎯 Cadastra 1 conta fixa agora!"
             )
         elif tx_count >= 3:
-            # Tem gastos mas sem cartão → ensina cartão
             return (
-                f"🌟 Dia 2, {first_name}! Você tá mandando bem com {tx_count} gastos!\n\n"
-                "💡 *Dica: Cartão de crédito*\n\n"
-                "Lance gastos no cartão:\n"
+                f"🌟 {first_name}, {tx_count} gastos lançados — tá ficando craque!\n\n"
+                "💡 *Próximo passo: seu cartão de crédito*\n"
                 "• _\"tênis 300 no Nubank\"_\n"
                 "• _\"notebook 3000 em 6x no Inter\"_\n\n"
                 "Configure o fechamento:\n"
                 "• _\"Nubank fecha dia 3 vence dia 10\"_\n\n"
-                "🎯 *Tenta agora:* cadastra um cartão!"
+                "🎯 Cadastra seu cartão principal!"
             )
         else:
-            # Pouco uso → reforça o básico
             return (
-                f"🌟 Dia 2, {first_name}!\n\n"
-                "Sabia que eu entendo gastos escritos naturalmente?\n\n"
+                f"🌟 {first_name}!\n\n"
+                "Sabia que eu entendo gastos naturalmente?\n\n"
                 "• _\"almocei 35\"_ → Alimentação ✅\n"
                 "• _\"uber 18\"_ → Transporte ✅\n"
                 "• _\"50 farmácia\"_ → Saúde ✅\n\n"
-                "Pode mandar vários de uma vez, um por linha!\n\n"
-                "🎯 *Tenta agora:* manda 2 ou 3 gastos de hoje."
+                "_Pode mandar vários de uma vez, um por linha!_\n\n"
+                "🎯 Manda 2 ou 3 gastos de hoje!"
             )
 
     elif days_since == 3:
-        # Dia 3: painel + features avançadas
+        # Dia 3: mentor + features avançadas
         return (
-            f"🚀 Dia 3, {first_name}! Últimas dicas:\n\n"
-            "💡 *Recursos avançados:*\n"
-            "• _\"meta viagem 5000\"_ → acompanhe seu progresso\n"
-            "• Mande uma *foto da fatura* → importo tudo de uma vez\n"
-            "• _\"me lembra amanhã 14h reunião\"_ → agenda integrada\n\n"
-            "📊 E tem o painel visual:\n"
-            "• _\"painel\"_ → gráficos, filtros e edição\n\n"
-            "Aproveita! 😊"
+            f"🧠 {first_name}, sabia que eu sou mais que um anotador de gastos?\n\n"
+            "💡 *Sou seu mentor financeiro:*\n"
+            "• _\"tô endividado, me ajuda\"_ → monto um plano de resgate\n"
+            "• _\"onde investir 500 por mês?\"_ → comparo opções reais\n"
+            "• _\"quero sair do vermelho\"_ → diagnóstico + estratégia\n\n"
+            "📸 *E mais:*\n"
+            "• Manda *foto da fatura* → importo tudo de uma vez\n"
+            "• _\"meta viagem 5000\"_ → acompanho seu progresso\n"
+            "• _\"painel\"_ → gráficos e visão completa\n\n"
+            "_Tô aqui pra te ajudar a virar o jogo._ 💪"
         )
 
     return None
