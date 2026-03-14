@@ -7577,12 +7577,16 @@ def get_user_financial_snapshot(user_phone: str) -> str:
         lines.append("")
 
     # Cartões de crédito (saldo devedor)
-    cur.execute(
-        "SELECT id, name, current_bill_opening_cents, closing_day, due_day "
-        "FROM credit_cards WHERE user_id = ?",
-        (user_id,),
-    )
-    cards = cur.fetchall()
+    try:
+        cur.execute(
+            "SELECT id, name, current_bill_opening_cents, closing_day, due_day "
+            "FROM credit_cards WHERE user_id = ?",
+            (user_id,),
+        )
+        cards = cur.fetchall()
+    except Exception:
+        conn.rollback()
+        cards = []
     total_card_debt = 0
     if cards:
         lines.append("💳 *Cartões de crédito:*")
@@ -7603,11 +7607,15 @@ def get_user_financial_snapshot(user_phone: str) -> str:
         lines.append("")
 
     # Compromissos fixos mensais
-    cur.execute(
-        "SELECT name, amount_cents FROM recurring_transactions WHERE user_id = ? AND active = 1 ORDER BY amount_cents DESC",
-        (user_id,),
-    )
-    recurrings = cur.fetchall()
+    try:
+        cur.execute(
+            "SELECT name, amount_cents FROM recurring_transactions WHERE user_id = ? AND active = 1 ORDER BY amount_cents DESC",
+            (user_id,),
+        )
+        recurrings = cur.fetchall()
+    except Exception:
+        conn.rollback()
+        recurrings = []
     if recurrings:
         total_fixed = sum(r[1] for r in recurrings)
         lines.append(f"📋 *Compromissos fixos:* {_fmt_brl(total_fixed)}/mês")
@@ -7618,25 +7626,32 @@ def get_user_financial_snapshot(user_phone: str) -> str:
         lines.append("")
 
     # Metas ativas
-    cur.execute(
-        "SELECT name, target_cents, saved_cents FROM goals WHERE user_id = ? AND status = 'active'",
-        (user_id,),
-    )
-    goals = cur.fetchall()
-    if goals:
-        lines.append("🎯 *Metas ativas:*")
-        for g_name, g_target, g_saved in goals:
-            pct = round((g_saved or 0) / g_target * 100) if g_target > 0 else 0
-            lines.append(f"  • {g_name}: {_fmt_brl(g_saved or 0)}/{_fmt_brl(g_target)} ({pct}%)")
-        lines.append("")
+    try:
+        cur.execute(
+            "SELECT name, target_cents, saved_cents FROM goals WHERE user_id = ? AND status = 'active'",
+            (user_id,),
+        )
+        goals = cur.fetchall()
+        if goals:
+            lines.append("🎯 *Metas ativas:*")
+            for g_name, g_target, g_saved in goals:
+                pct = round((g_saved or 0) / g_target * 100) if g_target > 0 else 0
+                lines.append(f"  • {g_name}: {_fmt_brl(g_saved or 0)}/{_fmt_brl(g_target)} ({pct}%)")
+            lines.append("")
+    except Exception:
+        conn.rollback()
 
     # Bills (contas a pagar do mês)
-    cur.execute(
-        "SELECT name, amount_cents, due_date, paid FROM bills "
-        "WHERE user_id = ? AND due_date LIKE ? ORDER BY due_date",
-        (user_id, current_month + "%"),
-    )
-    bills = cur.fetchall()
+    try:
+        cur.execute(
+            "SELECT name, amount_cents, due_date, paid FROM bills "
+            "WHERE user_id = ? AND due_date LIKE ? ORDER BY due_date",
+            (user_id, current_month + "%"),
+        )
+        bills = cur.fetchall()
+    except Exception:
+        conn.rollback()
+        bills = []
     if bills:
         total_bills = sum(b[1] for b in bills)
         paid_bills = sum(b[1] for b in bills if b[3])
