@@ -10041,6 +10041,37 @@ _MENTOR_EXIT_PATTERNS = (
     "tá bom", "ta bom", "falou", "tmj", "top",
 )
 
+# Padrões analíticos — sempre vão pro LLM (nunca pre-router)
+_ANALYTICAL_PATTERNS = (
+    "é normal", "tá normal", "ta normal", "isso é muito", "isso é pouco",
+    "tô gastando muito", "to gastando muito", "gasto muito", "gasto pouco",
+    "como reduzir", "como diminuir", "como economizar", "como cortar",
+    "o que acha", "o que vc acha", "o que você acha",
+    "me analisa", "analisa meus", "avalia meus", "avalia minhas",
+    "gasto médio", "gasto medio", "média de gasto", "media de gasto",
+    "tá bom isso", "ta bom isso", "tô bem", "to bem financeiramente",
+)
+
+# Marcadores referenciais — indicam que o user fala de algo existente, NÃO registrando novo
+_REFERENTIAL_MARKERS = (
+    "esse gasto", "essa compra", "esse valor", "esta despesa",
+    "aquele gasto", "aquela compra", "o gasto de", "a compra de",
+    "sobre o", "sobre a", "esse de", "essa de",
+    "foi no", "foi na", "foi pelo", "foi pela",
+)
+
+def _has_referential_markers(body_lower: str) -> bool:
+    """Verifica se a mensagem contém marcadores referenciais (fala de algo existente)."""
+    return any(m in body_lower for m in _REFERENTIAL_MARKERS)
+
+def _is_mentor_exit(body: str) -> bool:
+    """Saída do mentor: msg curta (<=4 palavras) com padrão de saída."""
+    low = body.lower().strip()
+    words = low.split()
+    if len(words) > 4:
+        return False  # Msg longa = não é saída (ex: "valeu, mas e investimentos?")
+    return any(k in low for k in _MENTOR_EXIT_PATTERNS)
+
 def _extract_user_phone(message: str) -> str:
     """Extrai user_phone do header [user_phone: +55...]."""
     m = _re_router.search(r'\[user_phone:\s*(\+?\d+)\]', message)
@@ -10415,6 +10446,16 @@ def _pre_route(message: str) -> dict | None:
     msg = " ".join(body.lower().split())  # normaliza espaços múltiplos
     today = _now_br()
     current_month = today.strftime("%Y-%m")
+
+    # ═══ CHECKS PRIORITÁRIOS (ANTES de qualquer regex de gasto/categoria) ═══
+
+    # --- PERGUNTAS ANALÍTICAS → LLM (não são pedidos de dados, são pedidos de análise) ---
+    if any(k in msg for k in _ANALYTICAL_PATTERNS):
+        return None  # Vai pro LLM pra análise inteligente
+
+    # --- MENTOR: detecta pedidos de ajuda financeira/mentoria → deixa pro LLM ---
+    if any(k in msg for k in _MENTOR_KEYWORDS):
+        return None  # Vai direto pro LLM (modo mentor)
 
     # Helper: chama a função real dentro do wrapper @tool e limpa metadata interna
     def _call(tool_func, *args, **kwargs):
@@ -11201,24 +11242,7 @@ def _pre_route(message: str) -> dict | None:
         if panel_url:
             return {"response": f"📊 *Seu painel está pronto!*\n\n👉 {panel_url}\n\nLá você pode editar cartões, ver transações e muito mais.\n_Link válido por 30 minutos._"}
 
-    # --- MENTOR: detecta pedidos de ajuda financeira/mentoria → deixa pro LLM ---
-    if any(k in msg for k in _MENTOR_KEYWORDS):
-        return None  # Vai direto pro LLM (modo mentor)
-
-    # --- PERGUNTAS ANALÍTICAS → LLM (não são pedidos de dados, são pedidos de análise) ---
-    # "quanto está sendo meu gasto médio com alimentação" → LLM analisa + pergunta contexto
-    # "isso é normal?", "tô gastando muito?", "como reduzir meus gastos?"
-    _analytical_patterns = (
-        "é normal", "tá normal", "ta normal", "isso é muito", "isso é pouco",
-        "tô gastando muito", "to gastando muito", "gasto muito", "gasto pouco",
-        "como reduzir", "como diminuir", "como economizar", "como cortar",
-        "o que acha", "o que vc acha", "o que você acha",
-        "me analisa", "analisa meus", "avalia meus", "avalia minhas",
-        "gasto médio", "gasto medio", "média de gasto", "media de gasto",
-        "tá bom isso", "ta bom isso", "tô bem", "to bem financeiramente",
-    )
-    if any(k in msg for k in _analytical_patterns):
-        return None  # Vai pro LLM pra análise inteligente
+    # (mentor + analytical checks movidos pro topo do _pre_route)
 
     # --- AJUDA INTERATIVA (tema específico) ---
     _help_topic_m = _re_router.match(
@@ -11729,10 +11753,73 @@ def _get_help_topic(msg: str) -> str | None:
             return _HELP_TOPICS[topic]
     return None
 
+# ═══ CLASSIFICADOR DE INTENÇÃO ═══
+from enum import Enum as _Enum
+
+class _Intent(str, _Enum):
+    CLEAR_TRANSACTION = "tx"
+    CLEAR_QUERY = "query"
+    CLEAR_MENTOR = "mentor"
+    AMBIGUOUS = "ambiguous"
+
+# Regex simples para detectar valor monetário na mensagem
+_VALUE_PATTERN = _re_router.compile(r'(?:r\$\s?)?\d+(?:[.,]\d{2})?')
+
+def _classify_message_intent(body: str, in_mentor: bool) -> _Intent:
+    """Classifica intenção da mensagem: transação, mentor, query, ou ambíguo."""
+    low = body.lower().strip()
+
+    has_mentor_kw = any(k in low for k in _MENTOR_KEYWORDS)
+    has_tx_signal = any(k in low for k in _TRANSACTION_PATTERNS) and bool(_VALUE_PATTERN.search(low))
+    has_analytical = any(k in low for k in _ANALYTICAL_PATTERNS)
+    has_referential = _has_referential_markers(low)
+
+    # Referencial + valor = NÃO é transação nova (fala de gasto existente)
+    if has_referential and has_tx_signal:
+        has_tx_signal = False
+
+    # Analítico sempre vai pro LLM
+    if has_analytical:
+        return _Intent.CLEAR_MENTOR
+
+    if has_mentor_kw and not has_tx_signal:
+        return _Intent.CLEAR_MENTOR
+    if has_tx_signal and not has_mentor_kw:
+        return _Intent.CLEAR_TRANSACTION
+    if has_mentor_kw and has_tx_signal:
+        return _Intent.AMBIGUOUS
+
+    return _Intent.CLEAR_QUERY
+
 # Sessões de mentor ativas: {user_phone: timestamp}
 # Quando o mentor é ativado, marca o user. Próximas mensagens bypass pre-router.
 _mentor_sessions: dict = {}
 _MENTOR_SESSION_TTL = 600  # 10 minutos de inatividade encerra a sessão
+
+async def _micro_classify(body: str) -> str:
+    """Micro-classificador LLM para mensagens ambíguas. Custo: ~150 tokens."""
+    import openai as _oai_mc
+    try:
+        resp = await _oai_mc.AsyncOpenAI().chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content":
+                 "Classifique a intenção desta mensagem de WhatsApp financeiro. "
+                 "Responda UMA palavra: TRANSACTION (registrar gasto/receita novo) "
+                 "ou MENTOR (conselho/análise financeira) ou QUERY (consultar dados existentes)."},
+                {"role": "user", "content": body}
+            ],
+            max_tokens=5,
+            temperature=0
+        )
+        result = resp.choices[0].message.content.strip().upper()
+        if "TRANSACTION" in result:
+            return "tx"
+        if "MENTOR" in result:
+            return "mentor"
+        return "query"
+    except Exception:
+        return "query"  # fallback seguro
 
 from fastapi import Form as _Form
 
@@ -11823,8 +11910,9 @@ async def chat_endpoint(
     body = _extract_body(full_message).strip()
     _body_lower = body.lower() if body else ""
 
-    # ═══ LÓGICA DE SESSÃO MENTOR ═══
-    # 1. Verifica se user está em sessão mentor ativa
+    # ═══ ROTEADOR HÍBRIDO COM CLASSIFICAÇÃO DE INTENÇÃO ═══
+
+    # 1. Estado da sessão mentor
     _in_mentor_session = False
     if user_phone in _mentor_sessions:
         _elapsed = time.time() - _mentor_sessions[user_phone]
@@ -11833,53 +11921,55 @@ async def chat_endpoint(
         else:
             del _mentor_sessions[user_phone]  # expirou
 
-    # 2. Detecta se é novo pedido de mentoria
-    _is_mentor = any(k in _body_lower for k in _MENTOR_KEYWORDS)
+    _is_mentor_mode = False
 
-    # 3. Detecta se é um gasto/receita (NÃO deve ativar mentor, mesmo com keywords)
-    _is_transaction = any(k in _body_lower for k in _TRANSACTION_PATTERNS)
-    # Se parece transação, NÃO ativa mentor (ex: "gastei 50 e não sobra nada")
-    if _is_transaction and _is_mentor:
-        _is_mentor = False
-
-    # 4. Detecta se user quer SAIR do mentor
-    _wants_exit = False
+    # 2. PORTÃO DE SESSÃO (prioridade absoluta quando mentor está ativo)
     if _in_mentor_session:
-        # Saída explícita
-        if any(k in _body_lower for k in _MENTOR_EXIT_PATTERNS):
-            _wants_exit = True
-        # Mensagem muito curta (1-2 palavras) que não é continuação de conversa
-        _word_count = len(_body_lower.split())
-        if _word_count <= 2 and not _is_mentor and any(k in _body_lower for k in _MENTOR_EXIT_PATTERNS):
-            _wants_exit = True
+        # Saída do mentor (msg curta com padrão de despedida)
+        if _is_mentor_exit(body):
+            _mentor_sessions.pop(user_phone, None)
+            return {"content": "Beleza! Quando precisar do mentor de novo, é só chamar. 💪", "routed": True}
 
-    if _wants_exit:
-        del _mentor_sessions[user_phone]
-        _in_mentor_session = False
-        return {"content": "Beleza! Quando precisar do mentor de novo, é só chamar. 💪", "routed": True}
+        # Classifica intenção dentro da sessão
+        _intent = _classify_message_intent(body, True)
+        if _intent == _Intent.CLEAR_TRANSACTION and not _has_referential_markers(_body_lower):
+            # Transação NOVA real durante mentoria → registra mas mantém sessão
+            routed = _pre_route(full_message)
+            if routed:
+                _mentor_sessions[user_phone] = time.time()  # renova
+                return {"content": _strip_whatsapp_bold(routed["response"]), "routed": True}
+        # Qualquer outra coisa na sessão mentor → LLM mentor
+        _mentor_sessions[user_phone] = time.time()  # renova
+        _is_mentor_mode = True
 
-    # 5. Em sessão mentor → TUDO vai pro LLM (ele tem save_transaction como tool)
-    # Não passa pelo pre-router que pode interpretar "esse gasto de 4867" como nova transação
-    # O LLM entende contexto: "esse gasto foi no cartão X" ≠ nova transação
+    # 3. FORA DE SESSÃO — classificar intenção
+    if not _in_mentor_session:
+        _intent = _classify_message_intent(body, False)
+        if _intent == _Intent.CLEAR_MENTOR:
+            _mentor_sessions[user_phone] = time.time()
+            _is_mentor_mode = True
+        elif _intent == _Intent.AMBIGUOUS:
+            _resolved = await _micro_classify(body)
+            if _resolved == "mentor":
+                _mentor_sessions[user_phone] = time.time()
+                _is_mentor_mode = True
 
-    # 6. Rota normal (sem mentor)
-    if not _in_mentor_session and not _is_mentor:
-        # 1. Tenta pré-roteamento (sem LLM)
+    # 4. Se NÃO é mentor → roteamento normal (pre-router + keyword)
+    if not _is_mentor_mode:
         routed = _pre_route(full_message)
         if routed:
             return {"content": _strip_whatsapp_bold(routed["response"]), "routed": True}
 
-        # 2. Keyword matcher — tolerante a typos (sem LLM)
         kw_routed = _keyword_route(user_phone, body)
         if kw_routed:
             return {"content": _strip_whatsapp_bold(kw_routed["response"]), "routed": True}
 
-    # 3. Fallback: chama o agente LLM
+    # 5. Fallback: chama o agente LLM
     if not session_id:
         session_id = f"wa_{user_phone.replace('+','')}"
 
-    # Loga mensagem não roteada para análise
-    if body and len(body) < 200 and not _in_mentor_session:
+    # Loga mensagem não roteada para análise (apenas fora do mentor)
+    if body and len(body) < 200 and not _is_mentor_mode:
         try:
             conn = _get_conn()
             cur = conn.cursor()
@@ -11893,9 +11983,8 @@ async def chat_endpoint(
     _now_ctx = _now_br()
     _time_ctx = f"[CONTEXTO: Agora são {_now_ctx.strftime('%H:%M')} do dia {_now_ctx.strftime('%d/%m/%Y')} (horário de Brasília). Use SEMPRE este horário como referência.]"
     _mentor_ctx = ""
-    if _is_mentor:
-        # Nova sessão mentor — marca e injeta instrução completa
-        _mentor_sessions[user_phone] = time.time()
+    if _is_mentor_mode and not _in_mentor_session:
+        # Nova sessão mentor — instrução completa + snapshot obrigatório
         _fmt_rules = (
             "\n\n⚠️ FORMATAÇÃO OBRIGATÓRIA (WhatsApp):\n"
             "- Divida em 3-4 seções curtas com emoji como título (📊 💡 🎯)\n"
@@ -11918,9 +12007,8 @@ async def chat_endpoint(
             "4. Máximo 1-2 perguntas sobre o que NÃO tem no snapshot\n"
             + _fmt_rules
         )
-    elif _in_mentor_session:
-        # Continuação de sessão mentor — renova timer e injeta contexto leve
-        _mentor_sessions[user_phone] = time.time()
+    elif _is_mentor_mode and _in_mentor_session:
+        # Continuação de sessão mentor — contexto leve
         _fmt_rules = (
             "\n⚠️ FORMATAÇÃO OBRIGATÓRIA (WhatsApp):\n"
             "- Seções curtas com emoji (📊 💡 🎯). NUNCA parede de texto.\n"
@@ -11941,7 +12029,7 @@ async def chat_endpoint(
     )
     content = response.content if hasattr(response, 'content') else str(response)
     # No modo mentor, NÃO remove perguntas (o mentor DEVE fazer perguntas)
-    if not _is_mentor and not _in_mentor_session:
+    if not _is_mentor_mode:
         content = _strip_trailing_questions(content)
     content = _strip_whatsapp_bold(content)
     del response  # libera memória do response do LLM
