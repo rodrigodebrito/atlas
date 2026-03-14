@@ -9932,17 +9932,36 @@ def get_panel_url(user_phone: str) -> str:
 import re as _re_router
 
 # Palavras-chave que indicam pedido de mentoria financeira (bypass help/keyword router → vai pro LLM)
+# Keywords que ATIVAM o mentor (pedidos explícitos de ajuda/orientação financeira)
 _MENTOR_KEYWORDS = ("endividad", "divida", "dívida", "investir", "investimento", "mentor",
-                    "planejamento", "aposentadoria", "economizar", "juntar dinheiro",
-                    "sair do buraco", "não sobra", "nao sobra", "nunca sobra",
-                    "me ajuda com", "pode me ajudar", "preciso de ajuda",
-                    "como sair", "o que faço", "o que faco", "onde investir",
-                    "quero investir", "como economizar", "como poupar",
+                    "planejamento financeiro", "aposentadoria", "juntar dinheiro",
+                    "sair do buraco", "não sobra nada", "nao sobra nada", "nunca sobra",
+                    "me ajuda com minhas finanças", "preciso de ajuda financeira",
+                    "como sair das dívidas", "onde investir", "quero investir",
+                    "como economizar", "como poupar",
                     "tô endividad", "to endividad", "devo muito", "cartão estourad",
                     "cheque especial", "empréstimo", "emprestimo", "renegociar",
-                    "pagar dívida", "pagar divida", "quitar", "financeiro",
-                    "sobrar", "sobra dinheiro", "falta dinheiro", "sem dinheiro",
-                    "me orienta", "me guia", "preciso de um mentor")
+                    "pagar dívida", "pagar divida", "quitar dívida",
+                    "falta dinheiro", "sem dinheiro",
+                    "me orienta", "me guia", "preciso de um mentor",
+                    "modo mentor", "falar com mentor", "quero mentoria")
+
+# Padrões que indicam que o user está registrando gasto/receita (NÃO é mentor)
+_TRANSACTION_PATTERNS = (
+    "gastei", "paguei", "comprei", "recebi", "ganhei",
+    "r$", "reais", "conto", "pila",
+    "no almoço", "no almoco", "no jantar", "no uber", "no ifood",
+    "na farmácia", "na farmacia", "no mercado", "no super",
+    "conta de luz", "conta de água", "conta de agua",
+)
+
+# Padrões que ENCERRAM a sessão mentor (user quer voltar ao modo normal)
+_MENTOR_EXIT_PATTERNS = (
+    "sair do mentor", "voltar", "parar mentor", "sair da mentoria",
+    "ok obrigado", "ok obrigada", "valeu", "beleza", "entendi",
+    "obrigado", "obrigada", "brigado", "brigada",
+    "tá bom", "ta bom", "falou", "tmj", "top",
+)
 
 def _extract_user_phone(message: str) -> str:
     """Extrai user_phone do header [user_phone: +55...]."""
@@ -11709,7 +11728,8 @@ async def chat_endpoint(
     body = _extract_body(full_message).strip()
     _body_lower = body.lower() if body else ""
 
-    # Verifica se user está em sessão mentor ativa
+    # ═══ LÓGICA DE SESSÃO MENTOR ═══
+    # 1. Verifica se user está em sessão mentor ativa
     _in_mentor_session = False
     if user_phone in _mentor_sessions:
         _elapsed = time.time() - _mentor_sessions[user_phone]
@@ -11718,20 +11738,40 @@ async def chat_endpoint(
         else:
             del _mentor_sessions[user_phone]  # expirou
 
-    # Detecta se é novo pedido de mentoria
+    # 2. Detecta se é novo pedido de mentoria
     _is_mentor = any(k in _body_lower for k in _MENTOR_KEYWORDS)
 
-    # Comandos explícitos que SEMPRE passam pelo router (mesmo em sessão mentor)
-    _force_route_patterns = ("resumo", "quanto gastei", "meus cartões", "meus cartoes",
-                             "compromissos", "agenda", "painel", "oi", "olá", "ola",
-                             "sair do mentor", "voltar", "parar mentor")
+    # 3. Detecta se é um gasto/receita (NÃO deve ativar mentor, mesmo com keywords)
+    _is_transaction = any(k in _body_lower for k in _TRANSACTION_PATTERNS)
+    # Se parece transação, NÃO ativa mentor (ex: "gastei 50 e não sobra nada")
+    if _is_transaction and _is_mentor:
+        _is_mentor = False
 
-    # Sai da sessão mentor se pediu explicitamente
-    if _in_mentor_session and any(k in _body_lower for k in ("sair do mentor", "voltar", "parar mentor")):
+    # 4. Detecta se user quer SAIR do mentor
+    _wants_exit = False
+    if _in_mentor_session:
+        # Saída explícita
+        if any(k in _body_lower for k in _MENTOR_EXIT_PATTERNS):
+            _wants_exit = True
+        # Mensagem muito curta (1-2 palavras) que não é continuação de conversa
+        _word_count = len(_body_lower.split())
+        if _word_count <= 2 and not _is_mentor and any(k in _body_lower for k in _MENTOR_EXIT_PATTERNS):
+            _wants_exit = True
+
+    if _wants_exit:
         del _mentor_sessions[user_phone]
         _in_mentor_session = False
+        return {"content": "Beleza! Quando precisar do mentor de novo, é só chamar. 💪", "routed": True}
 
-    # Se NÃO está em sessão mentor e NÃO é pedido de mentoria → rota normal
+    # 5. Se em sessão mentor e user manda transação → registra E mantém sessão
+    if _in_mentor_session and _is_transaction:
+        # Deixa o pre-router processar a transação
+        routed = _pre_route(full_message)
+        if routed:
+            _mentor_sessions[user_phone] = time.time()  # renova sessão
+            return {"content": _strip_whatsapp_bold(routed["response"]), "routed": True}
+
+    # 6. Rota normal (sem mentor)
     if not _in_mentor_session and not _is_mentor:
         # 1. Tenta pré-roteamento (sem LLM)
         routed = _pre_route(full_message)
@@ -11742,17 +11782,6 @@ async def chat_endpoint(
         kw_routed = _keyword_route(user_phone, body)
         if kw_routed:
             return {"content": _strip_whatsapp_bold(kw_routed["response"]), "routed": True}
-
-    # Se está em sessão mentor mas pediu algo específico (resumo, cartões, etc)
-    # → rota normal pra esse comando
-    if _in_mentor_session and not _is_mentor:
-        _is_explicit_command = any(k in _body_lower for k in _force_route_patterns)
-        if _is_explicit_command:
-            routed = _pre_route(full_message)
-            if routed:
-                # Renova sessão mentor (não sai)
-                _mentor_sessions[user_phone] = time.time()
-                return {"content": _strip_whatsapp_bold(routed["response"]), "routed": True}
 
     # 3. Fallback: chama o agente LLM
     if not session_id:
