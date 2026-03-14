@@ -10087,7 +10087,8 @@ _ANALYTICAL_PATTERNS = (
     "tô gastando muito", "to gastando muito", "gasto muito", "gasto pouco",
     "como reduzir", "como diminuir", "como economizar", "como cortar",
     "o que acha", "o que vc acha", "o que você acha",
-    "me analisa", "analisa meus", "avalia meus", "avalia minhas",
+    "me analisa", "analisa meus", "análise meus", "analise meus",
+    "avalia meus", "avalia minhas", "me dê um feedback", "me da um feedback",
     "gasto médio", "gasto medio", "média de gasto", "media de gasto",
     "tá bom isso", "ta bom isso", "tô bem", "to bem financeiramente",
     "está alto", "esta alto", "tá alto", "ta alto", "alto demais", "muito alto",
@@ -10495,6 +10496,11 @@ def _pre_route(message: str) -> dict | None:
     current_month = today.strftime("%Y-%m")
 
     # ═══ CHECKS PRIORITÁRIOS (ANTES de qualquer regex de gasto/categoria) ═══
+
+    # --- "PRI" / "PRISCILA" no início → SEMPRE pro LLM mentor ---
+    if (msg.startswith("pri ") or msg.startswith("pri,") or msg.startswith("pri.")
+            or msg == "pri" or msg.startswith("priscila")):
+        return None
 
     # --- PERGUNTAS ANALÍTICAS → LLM (não são pedidos de dados, são pedidos de análise) ---
     if any(k in msg for k in _ANALYTICAL_PATTERNS):
@@ -11818,7 +11824,13 @@ def _classify_message_intent(body: str, in_mentor: bool) -> _Intent:
     """Classifica intenção da mensagem: transação, mentor, query, ou ambíguo."""
     low = body.lower().strip()
 
-    # Comando explícito de mentor — prioridade máxima
+    # ═══ TRIGGER "PRI" — PRIORIDADE ABSOLUTA ═══
+    # Qualquer msg que começa com "pri" ou "priscila" → MENTOR. Sem exceção.
+    if (low.startswith("pri ") or low.startswith("pri,") or low.startswith("pri.")
+            or low == "pri" or low.startswith("priscila")):
+        return _Intent.CLEAR_MENTOR
+
+    # Comando explícito de mentor — match exato
     if low in _MENTOR_COMMANDS:
         return _Intent.CLEAR_MENTOR
 
