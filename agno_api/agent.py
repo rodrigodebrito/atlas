@@ -11975,6 +11975,8 @@ async def chat_endpoint(
     _body_lower = body.lower() if body else ""
 
     # ═══ ROTEADOR HÍBRIDO COM CLASSIFICAÇÃO DE INTENÇÃO ═══
+    import logging as _log_rt
+    _rt_logger = _log_rt.getLogger("atlas.router")
 
     # 1. Estado da sessão mentor
     _in_mentor_session = False
@@ -11982,8 +11984,12 @@ async def chat_endpoint(
         _elapsed = time.time() - _mentor_sessions[user_phone]
         if _elapsed < _MENTOR_SESSION_TTL:
             _in_mentor_session = True
+            _rt_logger.warning(f"[ROUTER] SESSAO ATIVA phone={user_phone} elapsed={_elapsed:.0f}s")
         else:
             del _mentor_sessions[user_phone]  # expirou
+            _rt_logger.warning(f"[ROUTER] SESSAO EXPIRADA phone={user_phone} elapsed={_elapsed:.0f}s")
+    else:
+        _rt_logger.warning(f"[ROUTER] SEM SESSAO phone={user_phone} sessions={list(_mentor_sessions.keys())}")
 
     _is_mentor_mode = False
 
@@ -11996,19 +12002,23 @@ async def chat_endpoint(
 
         # Classifica intenção dentro da sessão
         _intent = _classify_message_intent(body, True)
+        _rt_logger.warning(f"[ROUTER] IN_SESSION intent={_intent.value} body={body[:80]}")
         if _intent == _Intent.CLEAR_TRANSACTION and not _has_referential_markers(_body_lower):
             # Transação NOVA real durante mentoria → registra mas mantém sessão
             routed = _pre_route(full_message)
             if routed:
                 _mentor_sessions[user_phone] = time.time()  # renova
+                _rt_logger.warning(f"[ROUTER] TX DURANTE MENTOR → pre-route")
                 return {"content": _strip_whatsapp_bold(routed["response"]), "routed": True}
         # Qualquer outra coisa na sessão mentor → LLM mentor
         _mentor_sessions[user_phone] = time.time()  # renova
         _is_mentor_mode = True
+        _rt_logger.warning(f"[ROUTER] → LLM MENTOR (sessão)")
 
     # 3. FORA DE SESSÃO — classificar intenção
     if not _in_mentor_session:
         _intent = _classify_message_intent(body, False)
+        _rt_logger.warning(f"[ROUTER] NO_SESSION intent={_intent.value} body={body[:80]}")
         if _intent == _Intent.CLEAR_MENTOR:
             _mentor_sessions[user_phone] = time.time()
             _is_mentor_mode = True
