@@ -12,6 +12,7 @@
 # ============================================================
 
 import os
+import time
 import sqlite3
 import uuid
 import calendar
@@ -11589,6 +11590,11 @@ def _get_help_topic(msg: str) -> str | None:
             return _HELP_TOPICS[topic]
     return None
 
+# Sessões de mentor ativas: {user_phone: timestamp}
+# Quando o mentor é ativado, marca o user. Próximas mensagens bypass pre-router.
+_mentor_sessions: dict = {}
+_MENTOR_SESSION_TTL = 600  # 10 minutos de inatividade encerra a sessão
+
 from fastapi import Form as _Form
 
 def _strip_whatsapp_bold(text: str) -> str:
@@ -11675,23 +11681,60 @@ async def chat_endpoint(
     if "[user_phone:" not in message:
         full_message = f"[user_phone: {user_phone}]\n{message}"
 
-    # 1. Tenta pré-roteamento (sem LLM)
-    routed = _pre_route(full_message)
-    if routed:
-        return {"content": _strip_whatsapp_bold(routed["response"]), "routed": True}
-
-    # 2. Keyword matcher — tolerante a typos (sem LLM)
     body = _extract_body(full_message).strip()
-    kw_routed = _keyword_route(user_phone, body)
-    if kw_routed:
-        return {"content": _strip_whatsapp_bold(kw_routed["response"]), "routed": True}
+    _body_lower = body.lower() if body else ""
+
+    # Verifica se user está em sessão mentor ativa
+    _in_mentor_session = False
+    if user_phone in _mentor_sessions:
+        _elapsed = time.time() - _mentor_sessions[user_phone]
+        if _elapsed < _MENTOR_SESSION_TTL:
+            _in_mentor_session = True
+        else:
+            del _mentor_sessions[user_phone]  # expirou
+
+    # Detecta se é novo pedido de mentoria
+    _is_mentor = any(k in _body_lower for k in _MENTOR_KEYWORDS)
+
+    # Comandos explícitos que SEMPRE passam pelo router (mesmo em sessão mentor)
+    _force_route_patterns = ("resumo", "quanto gastei", "meus cartões", "meus cartoes",
+                             "compromissos", "agenda", "painel", "oi", "olá", "ola",
+                             "sair do mentor", "voltar", "parar mentor")
+
+    # Sai da sessão mentor se pediu explicitamente
+    if _in_mentor_session and any(k in _body_lower for k in ("sair do mentor", "voltar", "parar mentor")):
+        del _mentor_sessions[user_phone]
+        _in_mentor_session = False
+
+    # Se NÃO está em sessão mentor e NÃO é pedido de mentoria → rota normal
+    if not _in_mentor_session and not _is_mentor:
+        # 1. Tenta pré-roteamento (sem LLM)
+        routed = _pre_route(full_message)
+        if routed:
+            return {"content": _strip_whatsapp_bold(routed["response"]), "routed": True}
+
+        # 2. Keyword matcher — tolerante a typos (sem LLM)
+        kw_routed = _keyword_route(user_phone, body)
+        if kw_routed:
+            return {"content": _strip_whatsapp_bold(kw_routed["response"]), "routed": True}
+
+    # Se está em sessão mentor mas pediu algo específico (resumo, cartões, etc)
+    # → rota normal pra esse comando
+    if _in_mentor_session and not _is_mentor:
+        _is_explicit_command = any(k in _body_lower for k in _force_route_patterns)
+        if _is_explicit_command:
+            routed = _pre_route(full_message)
+            if routed:
+                # Renova sessão mentor (não sai)
+                _mentor_sessions[user_phone] = time.time()
+                return {"content": _strip_whatsapp_bold(routed["response"]), "routed": True}
 
     # 3. Fallback: chama o agente LLM
     if not session_id:
         session_id = f"wa_{user_phone.replace('+','')}"
 
     # Loga mensagem não roteada para análise
-    if body and len(body) < 200:
+    if body and len(body) < 200 and not _in_mentor_session:
         try:
             conn = _get_conn()
             cur = conn.cursor()
@@ -11704,12 +11747,10 @@ async def chat_endpoint(
     # Injeta hora BRT no contexto pra o LLM saber o horário correto
     _now_ctx = _now_br()
     _time_ctx = f"[CONTEXTO: Agora são {_now_ctx.strftime('%H:%M')} do dia {_now_ctx.strftime('%d/%m/%Y')} (horário de Brasília). Use SEMPRE este horário como referência.]"
-
-    # Detecta se é pedido de mentoria → injeta instrução forte
-    _body_lower = body.lower() if body else ""
-    _is_mentor = any(k in _body_lower for k in _MENTOR_KEYWORDS)
     _mentor_ctx = ""
     if _is_mentor:
+        # Nova sessão mentor — marca e injeta instrução completa
+        _mentor_sessions[user_phone] = time.time()
         _mentor_ctx = (
             "\n\n⚠️ INSTRUÇÃO PRIORITÁRIA — SOBRESCREVE TODAS AS OUTRAS REGRAS ⚠️\n"
             "[MODO MENTOR ATIVADO]\n"
@@ -11722,13 +11763,27 @@ async def chat_endpoint(
             "4. Seja direto, provocativo, estratégico. Monte um plano personalizado.\n"
             "5. NÃO diga 'me manda os valores'. Você JÁ TEM os valores via snapshot.\n"
         )
+    elif _in_mentor_session:
+        # Continuação de sessão mentor — renova timer e injeta contexto leve
+        _mentor_sessions[user_phone] = time.time()
+        _mentor_ctx = (
+            "\n\n[MODO MENTOR ATIVO — CONVERSA EM ANDAMENTO]\n"
+            "O usuário está em uma sessão de mentoria financeira. Continue a conversa naturalmente.\n"
+            "Responda como mentor: direto, provocativo, estratégico.\n"
+            "Se precisar de mais dados, PERGUNTE (é uma conversa, não um monólogo).\n"
+            "Se o usuário deu informação nova, USE para refinar o plano.\n"
+            "Pode chamar tools se precisar (snapshot, simulações, taxas).\n"
+            "Siga a formatação WhatsApp (seções curtas, bold, emojis como marcadores).\n"
+        )
 
     response = await atlas_agent.arun(
         input=f"{_time_ctx}{_mentor_ctx}\n\n{full_message}",
         session_id=session_id,
     )
     content = response.content if hasattr(response, 'content') else str(response)
-    content = _strip_trailing_questions(content)
+    # No modo mentor, NÃO remove perguntas (o mentor DEVE fazer perguntas)
+    if not _is_mentor and not _in_mentor_session:
+        content = _strip_trailing_questions(content)
     content = _strip_whatsapp_bold(content)
     del response  # libera memória do response do LLM
     import gc as _gc; _gc.collect()
