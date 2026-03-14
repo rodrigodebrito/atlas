@@ -13346,6 +13346,12 @@ def debug_users():
     return {"users": [{"id": r[0], "phone": r[1], "name": r[2]} for r in rows]}
 
 
+@app.get("/v1/debug/snapshot")
+def debug_snapshot(user_phone: str):
+    """Debug: testa get_user_financial_snapshot."""
+    return {"snapshot": get_user_financial_snapshot.entrypoint(user_phone)}
+
+
 @app.get("/v1/debug/today")
 def debug_today(user_phone: str):
     """Debug: testa get_today_total e mostra dados brutos."""
