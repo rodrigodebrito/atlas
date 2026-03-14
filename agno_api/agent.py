@@ -11885,29 +11885,43 @@ async def chat_endpoint(
     if _is_mentor:
         # Nova sessão mentor — marca e injeta instrução completa
         _mentor_sessions[user_phone] = time.time()
+        _fmt_rules = (
+            "\n\n⚠️ FORMATAÇÃO OBRIGATÓRIA (WhatsApp):\n"
+            "- Divida em 3-4 seções curtas com emoji como título (📊 💡 🎯)\n"
+            "- Cada seção = máximo 3-4 linhas. NUNCA parede de texto.\n"
+            "- Linha em branco entre cada seção.\n"
+            "- *bold* para valores e destaques. _itálico_ para observações.\n"
+            "- Bullet points com • (NÃO listas numeradas longas)\n"
+            "- Termine com UMA pergunta curta\n"
+            "- NÃO use headers como 'Plano de resgate:' seguido de parágrafo. Use emoji + bold curto.\n"
+        )
         _mentor_ctx = (
             "\n\n⚠️ INSTRUÇÃO PRIORITÁRIA — SOBRESCREVE TODAS AS OUTRAS REGRAS ⚠️\n"
             "[MODO MENTOR ATIVADO]\n"
             "NÃO responda com 'Não entendi', 'Sou especialista em anotar', ou qualquer recusa.\n"
             "NÃO peça dados ao usuário que você pode buscar com tools.\n"
-            "AÇÃO OBRIGATÓRIA (nesta ordem):\n"
-            "1. PRIMEIRO chame get_user_financial_snapshot(user_phone) — você TEM essa tool, USE-A AGORA\n"
-            "2. Analise os dados retornados (gastos, categorias, compromissos, cartões)\n"
-            "3. Responda como mentor financeiro de elite usando OS DADOS REAIS do snapshot\n"
-            "4. Seja direto, provocativo, estratégico. Monte um plano personalizado.\n"
-            "5. NÃO diga 'me manda os valores'. Você JÁ TEM os valores via snapshot.\n"
+            "AÇÃO OBRIGATÓRIA:\n"
+            "1. Chame get_user_financial_snapshot(user_phone) AGORA\n"
+            "2. Use os dados reais na resposta\n"
+            "3. Seja direto, provocativo, estratégico\n"
+            "4. Máximo 1-2 perguntas sobre o que NÃO tem no snapshot\n"
+            + _fmt_rules
         )
     elif _in_mentor_session:
         # Continuação de sessão mentor — renova timer e injeta contexto leve
         _mentor_sessions[user_phone] = time.time()
+        _fmt_rules = (
+            "\n⚠️ FORMATAÇÃO OBRIGATÓRIA (WhatsApp):\n"
+            "- Seções curtas com emoji (📊 💡 🎯). NUNCA parede de texto.\n"
+            "- *bold* valores. Linha em branco entre seções.\n"
+            "- Termine com UMA pergunta ou ação.\n"
+        )
         _mentor_ctx = (
             "\n\n[MODO MENTOR ATIVO — CONVERSA EM ANDAMENTO]\n"
-            "O usuário está em uma sessão de mentoria financeira. Continue a conversa naturalmente.\n"
-            "Responda como mentor: direto, provocativo, estratégico.\n"
-            "Se precisar de mais dados, PERGUNTE (é uma conversa, não um monólogo).\n"
+            "Continue a conversa de mentoria naturalmente.\n"
             "Se o usuário deu informação nova, USE para refinar o plano.\n"
-            "Pode chamar tools se precisar (snapshot, simulações, taxas).\n"
-            "Siga a formatação WhatsApp (seções curtas, bold, emojis como marcadores).\n"
+            "Pode chamar tools se precisar.\n"
+            + _fmt_rules
         )
 
     response = await atlas_agent.arun(
