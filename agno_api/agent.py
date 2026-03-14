@@ -8156,7 +8156,7 @@ atlas_agent = Agent(
     model=get_model(),
     db=db,
     add_history_to_context=True,
-    num_history_runs=5,
+    num_history_runs=10,
     tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event, pause_agenda_event, resume_agenda_event, edit_agenda_event_time, set_category_budget, get_category_budgets, remove_category_budget, get_user_financial_snapshot, get_market_rates, simulate_debt_payoff, simulate_investment],
     add_datetime_to_context=True,
     markdown=True,
@@ -10031,8 +10031,9 @@ _MENTOR_KEYWORDS = ("endividad", "divida", "dívida", "investir", "investimento"
                     "me ajuda com minhas finanças", "preciso de ajuda financeira",
                     "como sair das dívidas", "onde investir", "quero investir",
                     "como economizar", "como poupar",
-                    "tô endividad", "to endividad", "devo muito", "cartão estourad",
-                    "cheque especial", "empréstimo", "emprestimo", "renegociar",
+                    "tô endividad", "to endividad", "devo muito", "devo ", "estou devendo",
+                    "to devendo", "tô devendo", "cartão estourad",
+                    "cheque especial", "empréstimo", "emprestimo", "renegociar", "financiamento",
                     "pagar dívida", "pagar divida", "quitar dívida",
                     "falta dinheiro", "sem dinheiro",
                     "me orienta", "me guia",
@@ -10049,12 +10050,27 @@ _MENTOR_KEYWORDS = ("endividad", "divida", "dívida", "investir", "investimento"
                     )
 
 # Padrões que indicam que o user está registrando gasto/receita (NÃO é mentor)
-_TRANSACTION_PATTERNS = (
+# VERBOS DE AÇÃO — indicam registro ativo de transação
+_TX_ACTION_VERBS = (
     "gastei", "paguei", "comprei", "recebi", "ganhei",
-    "r$", "reais", "conto", "pila",
+    "transferi", "depositei", "saquei", "pago", "parcela de",
+)
+# SINAIS MONETÁRIOS — indicam valor financeiro
+_TX_MONEY_SIGNALS = ("r$", "reais", "conto", "pila")
+# LOCAIS COMUNS — sozinhos NÃO bastam, precisam de verbo ou sinal monetário
+_TX_LOCATIONS = (
     "no almoço", "no almoco", "no jantar", "no uber", "no ifood",
     "na farmácia", "na farmacia", "no mercado", "no super",
     "conta de luz", "conta de água", "conta de agua",
+)
+# Combinados pra compatibilidade, mas o classificador usa a lógica refinada
+_TRANSACTION_PATTERNS = _TX_ACTION_VERBS + _TX_MONEY_SIGNALS + _TX_LOCATIONS
+
+# Palavras que indicam POSSE/DÍVIDA (NÃO são transação nova, mesmo com valor)
+_POSSESSION_MARKERS = (
+    "tenho", "tenho um", "tenho uma", "devo", "estou devendo",
+    "to devendo", "tô devendo", "financiamento", "financiei",
+    "minha dívida", "minha divida", "parcela do",
 )
 
 # Padrões que ENCERRAM a sessão mentor (user quer voltar ao modo normal)
@@ -11803,13 +11819,24 @@ def _classify_message_intent(body: str, in_mentor: bool) -> _Intent:
     low = body.lower().strip()
 
     # Comando explícito de mentor — prioridade máxima
-    if low in _MENTOR_COMMANDS or any(low == c for c in _MENTOR_COMMANDS):
+    if low in _MENTOR_COMMANDS:
         return _Intent.CLEAR_MENTOR
 
     has_mentor_kw = any(k in low for k in _MENTOR_KEYWORDS)
-    has_tx_signal = any(k in low for k in _TRANSACTION_PATTERNS) and bool(_VALUE_PATTERN.search(low))
     has_analytical = any(k in low for k in _ANALYTICAL_PATTERNS)
     has_referential = _has_referential_markers(low)
+    has_possession = any(k in low for k in _POSSESSION_MARKERS)
+    has_value = bool(_VALUE_PATTERN.search(low))
+
+    # TX precisa de: (verbo de ação OU sinal monetário) + valor
+    # Só local ("no mercado") + valor NÃO basta (pode ser "financiamento no mercado livre")
+    has_action_verb = any(k in low for k in _TX_ACTION_VERBS)
+    has_money_signal = any(k in low for k in _TX_MONEY_SIGNALS)
+    has_tx_signal = (has_action_verb or has_money_signal) and has_value
+
+    # Posse/dívida + valor = NÃO é transação nova ("tenho financiamento de 1000")
+    if has_possession and has_tx_signal:
+        has_tx_signal = False
 
     # Referencial + valor = NÃO é transação nova (fala de gasto existente)
     if has_referential and has_tx_signal:
@@ -12064,9 +12091,16 @@ async def chat_endpoint(
         _mentor_ctx = (
             "\n\n[MODO MENTOR ATIVO — PRISCILA NAVES — CONVERSA EM ANDAMENTO]\n"
             "Continue como Priscila Naves (Pri), consultora financeira.\n"
-            "Mantenha o tom: direta, provocativa, empática, motivacional.\n"
+            "Mantenha o tom: direta, provocativa, empática, motivacional.\n\n"
+            "⚠️ REGRA CRÍTICA DE CONTINUIDADE:\n"
+            "A mensagem do usuário é RESPOSTA à sua última pergunta.\n"
+            "NÃO ignore o que ele disse. NÃO mude de assunto. NÃO repita perguntas já respondidas.\n"
+            "LEIA o histórico da conversa, identifique o que VOCÊ perguntou por último,\n"
+            "e USE a resposta dele para avançar a conversa.\n"
+            "Exemplo: se você perguntou 'tem dívida além dos cartões?' e ele disse 'devo 2000 no especial',\n"
+            "USE essa info no plano. NÃO pergunte de novo.\n\n"
             "Se o usuário deu informação nova, USE para refinar o plano.\n"
-            "Pode chamar tools se precisar.\n"
+            "Pode chamar tools se precisar. Faça a conversa PROGREDIR.\n"
             + _fmt_rules
         )
 
