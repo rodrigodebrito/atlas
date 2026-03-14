@@ -568,6 +568,40 @@ def _db():
             pass
 
 
+def _find_user(cur, phone: str):
+    """Busca user por phone, tentando variantes BR (com/sem 9 no celular).
+    Se existem dois users (com e sem 9), retorna o que tem mais transações.
+    Retorna (id, name, monthly_income_cents) ou None."""
+    phone = phone.strip()
+    if not phone.startswith("+"):
+        phone = "+" + phone
+
+    # Coleta todos os phones candidatos
+    candidates = [phone]
+    import re as _re_phone
+    m = _re_phone.match(r'^\+55(\d{2})(\d+)$', phone)
+    if m:
+        ddd, rest = m.group(1), m.group(2)
+        if len(rest) == 9 and rest[0] == '9':
+            candidates.append(f"+55{ddd}{rest[1:]}")
+        elif len(rest) == 8:
+            candidates.append(f"+55{ddd}9{rest}")
+
+    # Busca todos os candidatos e retorna o com mais transações
+    best = None
+    best_count = -1
+    for p in candidates:
+        cur.execute("SELECT id, name, monthly_income_cents FROM users WHERE phone=?", (p,))
+        row = cur.fetchone()
+        if row:
+            cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id=?", (row[0],))
+            cnt = cur.fetchone()[0]
+            if cnt > best_count:
+                best = row
+                best_count = cnt
+    return best
+
+
 def _ensure_pending_actions_table(cur):
     """Cria tabela pending_actions se não existir (safe para chamar múltiplas vezes)."""
     if DB_TYPE == "postgres":
@@ -7467,8 +7501,7 @@ def get_user_financial_snapshot(user_phone: str) -> str:
     from collections import defaultdict
     conn = _get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT id, name, monthly_income_cents FROM users WHERE phone=?", (user_phone,))
-    row = cur.fetchone()
+    row = _find_user(cur, user_phone)
     if not row:
         conn.close()
         return "Usuário não encontrado."
