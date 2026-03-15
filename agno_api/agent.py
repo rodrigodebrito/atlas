@@ -10138,6 +10138,17 @@ def _extract_user_name_header(message: str) -> str:
     m = _re_router.search(r'\[user_name:\s*([^\]]+)\]', message)
     return m.group(1).strip() if m else ""
 
+
+def _has_explicit_amount(text: str) -> bool:
+    """Detecta se a mensagem traz um valor monetário explícito."""
+    if not text:
+        return False
+    return bool(
+        _re_router.search(r'r\$\s*\d', text, _re_router.IGNORECASE)
+        or _re_router.search(r'\b\d+(?:[.,]\d{1,2})?\s*(?:reais?|conto|contos|pila|pilas|real)\b', text, _re_router.IGNORECASE)
+        or _re_router.search(r'(?<!\w)\d+(?:[.,]\d{1,2})?(?!\w)', text)
+    )
+
 def _onboard_if_new(user_phone: str, message: str) -> dict | None:
     """
     Se o usuário é novo (não existe no DB), faz onboarding via pré-roteador:
@@ -10509,6 +10520,9 @@ async def _mini_route(body: str, user_phone: str, in_mentor: bool) -> dict:
         "RULES:\n"
         "1. Message starting with \"pri\"/\"priscila\" -> ALWAYS \"mentor\", no exceptions\n"
         "2. If mentor_session=active and NOT a clear new expense with amount+verb -> \"mentor\"\n"
+        "2b. If mentor_session=active and the user is answering Pri's question without explicit amount, "
+        "it is ALWAYS \"mentor\". Example: \"foi por plantão\", \"tenho reserva sim\", "
+        "\"foi pontual\", \"não, só cartão\".\n"
         "3. \"quanto gastei\"/\"resumo\"/\"meus cartoes\" = \"query\" (asking for data, not advice)\n"
         "4. \"gastei 50 uber\" = \"transaction\" (has amount + action verb)\n"
         "5. \"tenho divida de 5000\"/\"estou devendo\"/\"financiamento\" = \"mentor\" (NOT transaction)\n"
@@ -11215,6 +11229,11 @@ async def chat_endpoint(
     # 5. Mini-router (gpt-5-mini, ~200ms)
     _route = await _mini_route(body, user_phone, _in_mentor_session)
     _rt_logger.warning(f"[MINI_ROUTE] phone={user_phone} result={_route} body={body[:80]}")
+
+    # Sessão mentor ativa + sem valor explícito = resposta de conversa, nunca lançamento.
+    if _in_mentor_session and not _has_explicit_amount(body):
+        _route = {"intent": "mentor", "action": "", "params": {}}
+
     _is_mentor_mode = (_route.get("intent") == "mentor")
 
     # 6. Dispatch
