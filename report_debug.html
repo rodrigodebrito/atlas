@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fatura 2026-03-04_145110.pdf — fev/26</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: #f0f2f5; color: #111; }
+  .header { background: linear-gradient(135deg, #128c7e, #075e54);
+             color: white; padding: 20px 16px 16px; }
+  .header h1 { font-size: 1.3rem; font-weight: 700; }
+  .header .sub { font-size: 0.85rem; opacity: 0.85; margin-top: 4px; }
+  .total { font-size: 2rem; font-weight: 800; margin: 8px 0 4px; }
+  .status { display: inline-block; background: rgba(255,255,255,0.2);
+             border-radius: 12px; padding: 2px 10px; font-size: 0.78rem; }
+  .card { background: white; border-radius: 12px; margin: 12px;
+           padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  .card h2 { font-size: 0.9rem; color: #666; text-transform: uppercase;
+              letter-spacing: .05em; margin-bottom: 12px; }
+  .chart-wrap { max-width: 280px; margin: 0 auto; }
+  .filters { display: flex; flex-wrap: wrap; gap: 6px; }
+  .filter-btn { border: none; border-radius: 20px; padding: 6px 14px;
+                 font-size: 0.82rem; cursor: pointer; background: #eee;
+                 color: #333; transition: all .15s; }
+  .filter-btn.active { background: var(--cat-color, #128c7e); color: white; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { text-align: left; padding: 8px 6px; border-bottom: 2px solid #eee;
+        font-size: 0.75rem; color: #888; text-transform: uppercase; }
+  td { padding: 10px 6px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  .cat-tag { display: inline-block; border-radius: 10px; padding: 2px 8px;
+              font-size: 0.75rem; color: white; white-space: nowrap; }
+  .badge-indef { margin-left: 4px; }
+  tr.hidden { display: none; }
+  .legend { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+  .legend-item { display: flex; align-items: center; gap: 8px; font-size: 0.82rem; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="sub">💳 2026-03-04_145110.pdf</div>
+  <div class="total">R$6.466,22</div>
+  <div class="sub">103 transações · fev/26 &nbsp;·&nbsp; <span class="status">⏳ Pendente de importação</span></div>
+</div>
+
+<div class="card">
+  <h2>Por Categoria</h2>
+  <div class="chart-wrap">
+    <canvas id="pieChart"></canvas>
+  </div>
+  <div class="legend" id="legend"></div>
+</div>
+
+<div class="card">
+  <h2>Filtrar</h2>
+  <div class="filters"><button class="filter-btn active" onclick="filterCat('all',this)">Todas</button><button class="filter-btn" onclick="filterCat('Alimentação',this)" style="--cat-color:#4CAF50">Alimentação</button><button class="filter-btn" onclick="filterCat('Assinaturas',this)" style="--cat-color:#00BCD4">Assinaturas</button><button class="filter-btn" onclick="filterCat('Educação',this)" style="--cat-color:#3F51B5">Educação</button><button class="filter-btn" onclick="filterCat('Indefinido',this)" style="--cat-color:#FF5722">Indefinido</button><button class="filter-btn" onclick="filterCat('Outros',this)" style="--cat-color:#9E9E9E">Outros</button><button class="filter-btn" onclick="filterCat('Pets',this)" style="--cat-color:#795548">Pets</button><button class="filter-btn" onclick="filterCat('Saúde',this)" style="--cat-color:#E91E63">Saúde</button><button class="filter-btn" onclick="filterCat('Transporte',this)" style="--cat-color:#2196F3">Transporte</button><button class="filter-btn" onclick="filterCat('Vestuário',this)" style="--cat-color:#F44336">Vestuário</button></div>
+</div>
+
+<div class="card">
+  <h2>Transações <span id="count-label" style="font-weight:400;color:#999">(103)</span></h2>
+  <table>
+    <thead><tr><th>Data</th><th>Estabelecimento</th><th style="text-align:right">Valor</th><th>Categoria</th></tr></thead>
+    <tbody id="txTable"><tr data-cat="Pets">
+          <td>2026-01-12</td>
+          <td>PET RANSMILLER 02</td>
+          <td style="text-align:right">R$138,00</td>
+          <td><span class="cat-tag" style="background:#795548">Pets</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-04</td>
+          <td>HTM NATHAN LOPES SU</td>
+          <td style="text-align:right">R$110,45</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-04</td>
+          <td>HTM NATHAN LOPES FO</td>
+          <td style="text-align:right">R$554,00</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-05</td>
+          <td>TALENTOSRESTAU RAN</td>
+          <td style="text-align:right">R$53,33</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-05</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$4,75</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Saúde">
+          <td>2026-02-05</td>
+          <td>DROGASIL1677</td>
+          <td style="text-align:right">R$48,87</td>
+          <td><span class="cat-tag" style="background:#E91E63">Saúde</span></td>
+        </tr><tr data-cat="Assinaturas">
+          <td>2026-02-05</td>
+          <td>EBN HOSTINGER</td>
+          <td style="text-align:right">R$12,08</td>
+          <td><span class="cat-tag" style="background:#00BCD4">Assinaturas</span></td>
+        </tr><tr data-cat="Transporte">
+          <td>2026-02-05</td>
+          <td>IRMAOS MENDES COMBUSTI</td>
+          <td style="text-align:right">R$100,00</td>
+          <td><span class="cat-tag" style="background:#2196F3">Transporte</span></td>
+        </tr><tr data-cat="Assinaturas">
+          <td>2026-02-05</td>
+          <td>DM HOSTINGER CO 01 04</td>
+          <td style="text-align:right">R$102,58</td>
+          <td><span class="cat-tag" style="background:#00BCD4">Assinaturas</span></td>
+        </tr><tr data-cat="Assinaturas">
+          <td>2026-02-07</td>
+          <td>DM HOSTINGERCOMBR</td>
+          <td style="text-align:right">R$12,08</td>
+          <td><span class="cat-tag" style="background:#00BCD4">Assinaturas</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-09</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$26,93</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-09</td>
+          <td>TALENTOSRESTAU RAN</td>
+          <td style="text-align:right">R$300,00</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-09</td>
+          <td>HELIO RODRIGUES NAZAR</td>
+          <td style="text-align:right">R$298,00</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-10</td>
+          <td>PG Z API</td>
+          <td style="text-align:right">R$89,99</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-11</td>
+          <td>HTM NATHAN LOPES S 02 05</td>
+          <td style="text-align:right">R$22,09</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-11</td>
+          <td>HTM NATHAN LOPES S 03 05</td>
+          <td style="text-align:right">R$22,09</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-11</td>
+          <td>HTM NATHAN LOPES S 04 05</td>
+          <td style="text-align:right">R$22,09</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-11</td>
+          <td>HTM NATHAN LOPES S 05 05</td>
+          <td style="text-align:right">R$22,09</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-12</td>
+          <td>BATE BURGER</td>
+          <td style="text-align:right">R$71,96</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-13</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$53,90</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-13</td>
+          <td>HELIO RODRIGUES NAZAR</td>
+          <td style="text-align:right">R$114,00</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Transporte">
+          <td>2026-02-13</td>
+          <td>AUTO POSTO GALVAO 6</td>
+          <td style="text-align:right">R$50,00</td>
+          <td><span class="cat-tag" style="background:#2196F3">Transporte</span></td>
+        </tr><tr data-cat="Vestuário">
+          <td>2026-02-14</td>
+          <td>RIACHUELO UBERLANDIA C</td>
+          <td style="text-align:right">R$29,99</td>
+          <td><span class="cat-tag" style="background:#F44336">Vestuário</span></td>
+        </tr><tr data-cat="Pets">
+          <td>2026-02-14</td>
+          <td>COBASI UBERLANDIA</td>
+          <td style="text-align:right">R$129,80</td>
+          <td><span class="cat-tag" style="background:#795548">Pets</span></td>
+        </tr><tr data-cat="Saúde">
+          <td>2026-02-14</td>
+          <td>DROGASIL1209</td>
+          <td style="text-align:right">R$49,38</td>
+          <td><span class="cat-tag" style="background:#E91E63">Saúde</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-14</td>
+          <td>NOVA ESTACAO 2</td>
+          <td style="text-align:right">R$20,50</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-14</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$94,89</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-15</td>
+          <td>PM RESTAURANTE LTDA</td>
+          <td style="text-align:right">R$70,19</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-15</td>
+          <td>BATE BURGER</td>
+          <td style="text-align:right">R$58,97</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Saúde">
+          <td>2026-02-15</td>
+          <td>DROGASIL1677</td>
+          <td style="text-align:right">R$103,61</td>
+          <td><span class="cat-tag" style="background:#E91E63">Saúde</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-16</td>
+          <td>VIA SABOR</td>
+          <td style="text-align:right">R$30,00</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Saúde">
+          <td>2026-02-16</td>
+          <td>DROGALIDERSM</td>
+          <td style="text-align:right">R$42,99</td>
+          <td><span class="cat-tag" style="background:#E91E63">Saúde</span></td>
+        </tr><tr data-cat="Transporte">
+          <td>2026-02-16</td>
+          <td>AUTO POSTO GALVAO 6</td>
+          <td style="text-align:right">R$50,00</td>
+          <td><span class="cat-tag" style="background:#2196F3">Transporte</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-16</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$14,00</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-16</td>
+          <td>PEM RESTAURANTE LTDA</td>
+          <td style="text-align:right">R$49,95</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-17</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$23,50</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-17</td>
+          <td>NOVA ESTACAO 2</td>
+          <td style="text-align:right">R$232,25</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-17</td>
+          <td>CARREFOUR UBL 215</td>
+          <td style="text-align:right">R$151,98</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Saúde">
+          <td>2026-02-18</td>
+          <td>DROGACITY</td>
+          <td style="text-align:right">R$6,00</td>
+          <td><span class="cat-tag" style="background:#E91E63">Saúde</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-18</td>
+          <td>NOVA ESTACAO 2</td>
+          <td style="text-align:right">R$15,91</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-18</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$95,76</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Saúde">
+          <td>2026-02-18</td>
+          <td>DROGALIDERCENTER SHOP</td>
+          <td style="text-align:right">R$22,90</td>
+          <td><span class="cat-tag" style="background:#E91E63">Saúde</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-18</td>
+          <td>HELIO RODRIGUES NAZAR</td>
+          <td style="text-align:right">R$36,00</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Saúde">
+          <td>2026-02-18</td>
+          <td>DROGACITY</td>
+          <td style="text-align:right">R$8,10</td>
+          <td><span class="cat-tag" style="background:#E91E63">Saúde</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-18</td>
+          <td>HTM NATHAN LOPES F 02 04 <small>(2/4)</small></td>
+          <td style="text-align:right">R$138,50</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-18</td>
+          <td>HTM NATHAN LOPES F 03 04 <small>(3/4)</small></td>
+          <td style="text-align:right">R$138,50</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-18</td>
+          <td>HTM NATHAN LOPES F 04 04 <small>(4/4)</small></td>
+          <td style="text-align:right">R$138,50</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-19</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$28,77</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-19</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$58,22</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-19</td>
+          <td>HELIO RODRIGUES NAZAR</td>
+          <td style="text-align:right">R$36,00</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-19</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$51,31</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-20</td>
+          <td>NO ESPETO</td>
+          <td style="text-align:right">R$70,40</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Transporte">
+          <td>2026-02-20</td>
+          <td>AUTO POSTO GALVAO 6</td>
+          <td style="text-align:right">R$50,00</td>
+          <td><span class="cat-tag" style="background:#2196F3">Transporte</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-20</td>
+          <td>HELIO RODRIGUES NAZAR</td>
+          <td style="text-align:right">R$44,00</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-20</td>
+          <td>TALENTOS RESTAURAN</td>
+          <td style="text-align:right">R$57,00</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-20</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$31,67</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Saúde">
+          <td>2026-02-21</td>
+          <td>DROGASIL1677</td>
+          <td style="text-align:right">R$42,99</td>
+          <td><span class="cat-tag" style="background:#E91E63">Saúde</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-21</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$74,00</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-21</td>
+          <td>NILSON DIAS DE</td>
+          <td style="text-align:right">R$88,64</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-22</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$57,19</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-22</td>
+          <td>LATAVOLA PIZZARIA</td>
+          <td style="text-align:right">R$100,47</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-22</td>
+          <td>54389722 ANTONIO</td>
+          <td style="text-align:right">R$29,49</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Assinaturas">
+          <td>2026-02-23</td>
+          <td>NET PGT FATURA CLARO</td>
+          <td style="text-align:right">R$211,95</td>
+          <td><span class="cat-tag" style="background:#00BCD4">Assinaturas</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-23</td>
+          <td>HELIO RODRIGUES NAZAR</td>
+          <td style="text-align:right">R$36,00</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-23</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$63,91</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Transporte">
+          <td>2026-02-23</td>
+          <td>AUTO POSTO GALVAO 6</td>
+          <td style="text-align:right">R$50,00</td>
+          <td><span class="cat-tag" style="background:#2196F3">Transporte</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-23</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$32,93</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-24</td>
+          <td>TALENTOS RESTAURAN</td>
+          <td style="text-align:right">R$60,00</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-24</td>
+          <td>HELIO RODRIGUES NAZAR</td>
+          <td style="text-align:right">R$44,00</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-24</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$72,90</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-25</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$60,71</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-25</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$59,50</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-25</td>
+          <td>NOVA ESTACAO</td>
+          <td style="text-align:right">R$25,29</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-26</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$40,72</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-26</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$35,73</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-27</td>
+          <td>QUERO CARNE</td>
+          <td style="text-align:right">R$22,00</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-27</td>
+          <td>D VILLE SUPERMERCADOS</td>
+          <td style="text-align:right">R$45,97</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Transporte">
+          <td>2026-02-27</td>
+          <td>POSTO EVEREST</td>
+          <td style="text-align:right">R$50,00</td>
+          <td><span class="cat-tag" style="background:#2196F3">Transporte</span></td>
+        </tr><tr data-cat="Alimentação">
+          <td>2026-02-28</td>
+          <td>PIZZA BAR LATAVOLA</td>
+          <td style="text-align:right">R$102,30</td>
+          <td><span class="cat-tag" style="background:#4CAF50">Alimentação</span></td>
+        </tr><tr data-cat="Transporte">
+          <td>2026-02-28</td>
+          <td>POSTO TIO PATINHAS</td>
+          <td style="text-align:right">R$50,00</td>
+          <td><span class="cat-tag" style="background:#2196F3">Transporte</span></td>
+        </tr><tr data-cat="Transporte">
+          <td>2026-03-01</td>
+          <td>POSTO SARAIVA LTDA</td>
+          <td style="text-align:right">R$100,00</td>
+          <td><span class="cat-tag" style="background:#2196F3">Transporte</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-08</td>
+          <td>ELEVENLABS</td>
+          <td style="text-align:right">R$27,19</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Outros">
+          <td>2026-02-08</td>
+          <td>IOF COMPRA INTERNACIONAL</td>
+          <td style="text-align:right">R$0,95</td>
+          <td><span class="cat-tag" style="background:#9E9E9E">Outros</span></td>
+        </tr><tr data-cat="Assinaturas">
+          <td>2026-02-13</td>
+          <td>CLAUDE AI SUBSCRIPTION</td>
+          <td style="text-align:right">R$115,64</td>
+          <td><span class="cat-tag" style="background:#00BCD4">Assinaturas</span></td>
+        </tr><tr data-cat="Outros">
+          <td>2026-02-13</td>
+          <td>IOF COMPRA INTERNACIONAL</td>
+          <td style="text-align:right">R$4,04</td>
+          <td><span class="cat-tag" style="background:#9E9E9E">Outros</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-14</td>
+          <td>ANTHROPIC</td>
+          <td style="text-align:right">R$10,44</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Outros">
+          <td>2026-02-14</td>
+          <td>IOF COMPRA INTERNACIONAL</td>
+          <td style="text-align:right">R$0,36</td>
+          <td><span class="cat-tag" style="background:#9E9E9E">Outros</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-14</td>
+          <td>ANTHROPIC</td>
+          <td style="text-align:right">R$10,44</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Outros">
+          <td>2026-02-14</td>
+          <td>IOF COMPRA INTERNACIONAL</td>
+          <td style="text-align:right">R$0,36</td>
+          <td><span class="cat-tag" style="background:#9E9E9E">Outros</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-15</td>
+          <td>ANTHROPIC</td>
+          <td style="text-align:right">R$15,66</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Outros">
+          <td>2026-02-15</td>
+          <td>IOF COMPRA INTERNACIONAL</td>
+          <td style="text-align:right">R$0,54</td>
+          <td><span class="cat-tag" style="background:#9E9E9E">Outros</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-15</td>
+          <td>ANTHROPIC</td>
+          <td style="text-align:right">R$10,44</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Outros">
+          <td>2026-02-15</td>
+          <td>IOF COMPRA INTERNACIONAL</td>
+          <td style="text-align:right">R$0,36</td>
+          <td><span class="cat-tag" style="background:#9E9E9E">Outros</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-15</td>
+          <td>ANTHROPIC</td>
+          <td style="text-align:right">R$15,66</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Outros">
+          <td>2026-02-15</td>
+          <td>IOF COMPRA INTERNACIONAL</td>
+          <td style="text-align:right">R$0,54</td>
+          <td><span class="cat-tag" style="background:#9E9E9E">Outros</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-16</td>
+          <td>ANTHROPIC</td>
+          <td style="text-align:right">R$5,22</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Outros">
+          <td>2026-02-16</td>
+          <td>IOF COMPRA INTERNACIONAL</td>
+          <td style="text-align:right">R$0,18</td>
+          <td><span class="cat-tag" style="background:#9E9E9E">Outros</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-16</td>
+          <td>ANTHROPIC</td>
+          <td style="text-align:right">R$15,66</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Outros">
+          <td>2026-02-16</td>
+          <td>IOF COMPRA INTERNACIONAL</td>
+          <td style="text-align:right">R$0,54</td>
+          <td><span class="cat-tag" style="background:#9E9E9E">Outros</span></td>
+        </tr><tr data-cat="Indefinido">
+          <td>2026-02-16</td>
+          <td>ANTHROPIC</td>
+          <td style="text-align:right">R$5,22</td>
+          <td><span class="cat-tag" style="background:#FF5722">Indefinido</span><span class="badge-indef">❓</span></td>
+        </tr><tr data-cat="Outros">
+          <td>2026-02-16</td>
+          <td>IOF COMPRA INTERNACIONAL</td>
+          <td style="text-align:right">R$0,18</td>
+          <td><span class="cat-tag" style="background:#9E9E9E">Outros</span></td>
+        </tr><tr data-cat="Vestuário">
+          <td>2026-02-11</td>
+          <td>FARM ECOMMERCE 01 04 <small>(1/4)</small></td>
+          <td style="text-align:right">R$99,99</td>
+          <td><span class="cat-tag" style="background:#F44336">Vestuário</span></td>
+        </tr><tr data-cat="Educação">
+          <td>2026-02-12</td>
+          <td>HTM ASIMOVACADE 01 12 <small>(1/12)</small></td>
+          <td style="text-align:right">R$161,10</td>
+          <td><span class="cat-tag" style="background:#3F51B5">Educação</span></td>
+        </tr></tbody>
+  </table>
+</div>
+
+<script>
+const labels = ["Pets","Indefinido","Alimentação","Saúde","Assinaturas","Transporte","Vestuário","Outros","Educação"];
+const values = [267.80,2394.31,2225.81,324.84,454.33,500.00,129.98,8.05,161.10];
+const colors = ["#795548","#FF5722","#4CAF50","#E91E63","#00BCD4","#2196F3","#F44336","#9E9E9E","#3F51B5"];
+
+const ctx = document.getElementById('pieChart').getContext('2d');
+new Chart(ctx, {
+  type: 'doughnut',
+  data: { labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 2 }] },
+  options: {
+    plugins: { legend: { display: false } },
+    cutout: '60%',
+  }
+});
+
+// Legenda manual
+const legend = document.getElementById('legend');
+labels.forEach((l, i) => {
+  const pct = (values[i] / 6466.22 * 100).toFixed(0);
+  const valStr = values[i].toFixed(2).replace('.',',').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  legend.innerHTML += `<div class="legend-item">
+    <div class="legend-dot" style="background:${colors[i]}"></div>
+    <span>${l}</span>
+    <span style="margin-left:auto;color:#666">R$${valStr} (${pct}%)</span>
+  </div>`;
+});
+
+// Filtro por categoria
+function filterCat(cat, btn) {
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const rows = document.querySelectorAll('#txTable tr');
+  let count = 0;
+  rows.forEach(r => {
+    const show = cat === 'all' || r.dataset.cat === cat;
+    r.classList.toggle('hidden', !show);
+    if (show) count++;
+  });
+  document.getElementById('count-label').textContent = '(' + count + ')';
+}
+</script>
+</body>
+</html>
