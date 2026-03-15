@@ -1,8 +1,8 @@
+import importlib
 import sqlite3
 import sys
-from pathlib import Path
-import importlib
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -89,8 +89,13 @@ def test_save_and_load_mentor_state_persists_structured_fields(atlas):
         last_open_question="Essa receita extra veio pra ficar ou foi pontual?",
         open_question_key="income_extra_recurrence",
         expected_answer_type="income_recurrence",
+        consultant_stage="income_clarification",
+        case_summary={
+            "income_extra_origin": "plantao",
+            "has_emergency_reserve": "unknown",
+        },
         memory_turns=[
-            {"role": "Usuário", "content": "pri faz uma análise"},
+            {"role": "Usuario", "content": "pri faz uma analise"},
             {"role": "Pri", "content": "Essa receita extra veio pra ficar ou foi pontual?"},
         ],
         expires_at=atlas._mentor_expiry_iso(),
@@ -103,6 +108,8 @@ def test_save_and_load_mentor_state_persists_structured_fields(atlas):
     assert state["last_open_question"] == "Essa receita extra veio pra ficar ou foi pontual?"
     assert state["open_question_key"] == "income_extra_recurrence"
     assert state["expected_answer_type"] == "income_recurrence"
+    assert state["consultant_stage"] == "income_clarification"
+    assert state["case_summary"]["income_extra_origin"] == "plantao"
     assert len(state["memory_turns"]) == 2
 
 
@@ -112,8 +119,36 @@ def test_structured_question_key_recognizes_short_continuation_reply(atlas):
         "expected_answer_type": "open_text",
     }
 
-    assert atlas._looks_like_answer_to_open_mentor_question("foi por plantão", state)
+    assert atlas._looks_like_answer_to_open_mentor_question("foi por plantao", state)
     assert not atlas._looks_like_answer_to_open_mentor_question("gastei 50 no ifood", state)
+
+
+def test_merge_case_summary_extracts_consultant_signals(atlas):
+    summary = atlas.merge_case_summary(
+        {"has_emergency_reserve": "unknown"},
+        "Foi por plantao e eu nao tenho reserva ainda",
+        "has_emergency_reserve",
+        "has_reserve",
+    )
+
+    assert summary["income_extra_origin"] == "plantao"
+    assert summary["has_emergency_reserve"] == "no"
+    assert summary["main_issue_hypothesis"] == "no_emergency_buffer"
+
+
+def test_transition_consultant_stage_promotes_to_action_plan_when_case_is_ready(atlas):
+    next_stage = atlas.transition_consultant_stage(
+        "reserve_check",
+        "",
+        "",
+        "",
+        {
+            "has_emergency_reserve": "no",
+            "main_issue_hypothesis": "no_emergency_buffer",
+        },
+    )
+
+    assert next_stage == "action_plan"
 
 
 @pytest.mark.asyncio
@@ -122,7 +157,7 @@ async def test_chat_endpoint_keeps_short_reply_inside_pri_flow(atlas, monkeypatc
     stub_agent = _StubAtlasAgent(
         [
             "Pri aqui. Essa receita extra veio pra ficar ou foi pontual?",
-            "Boa. Então foi pontual. Isso muda o plano. Você tem alguma reserva hoje?",
+            "Boa. Entao foi pontual. Isso muda o plano. Voce tem alguma reserva hoje?",
         ]
     )
 
@@ -154,14 +189,22 @@ async def test_chat_endpoint_keeps_short_reply_inside_pri_flow(atlas, monkeypatc
     assert state_after_first is not None
     assert state_after_first["open_question_key"] == "income_extra_recurrence"
 
-    second = await atlas.chat_endpoint(user_phone=phone, message="foi por plantão")
+    second = await atlas.chat_endpoint(user_phone=phone, message="foi por plantao")
     assert "reserva" in second["content"].lower()
 
     assert executed_routes == []
     assert len(stub_agent.calls) == 2
     assert "[CHAVE FORMAL DA PERGUNTA ABERTA]" in stub_agent.calls[1]["input"]
     assert "income_extra_recurrence" in stub_agent.calls[1]["input"]
+    assert "[ESTAGIO ATUAL DA CONSULTORIA]" in stub_agent.calls[1]["input"]
+    assert "income_clarification" in stub_agent.calls[1]["input"]
+    assert "[RESUMO ESTRUTURADO DO CASO]" in stub_agent.calls[1]["input"]
+    assert "Origem da receita extra: plantao" in stub_agent.calls[1]["input"]
+    assert "[PLANO DE CONSULTORIA DA PRI]" in stub_agent.calls[1]["input"]
+    assert "Primeira acao recomendada" in stub_agent.calls[1]["input"]
 
     state_after_second = atlas._load_mentor_state(phone)
     assert state_after_second is not None
     assert "reserva" in state_after_second["last_open_question"].lower()
+    assert state_after_second["consultant_stage"] == "reserve_check"
+    assert state_after_second["case_summary"]["income_extra_origin"] == "plantao"

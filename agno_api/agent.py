@@ -30,6 +30,16 @@ from agno.tools.decorator import tool
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
+from agno_api.mentor_consultant import (
+    build_case_summary_context,
+    build_consultant_plan_context,
+    infer_consultant_stage,
+    merge_case_summary,
+    normalize_case_summary,
+    normalize_consultant_stage,
+    transition_consultant_stage,
+)
+
 load_dotenv()
 
 
@@ -291,6 +301,8 @@ def _init_sqlite_tables():
             last_open_question TEXT DEFAULT '',
             open_question_key TEXT DEFAULT '',
             expected_answer_type TEXT DEFAULT '',
+            consultant_stage TEXT DEFAULT 'diagnosis',
+            case_summary_json TEXT DEFAULT '{}',
             memory_json TEXT DEFAULT '[]',
             expires_at TEXT NOT NULL,
             created_at TEXT DEFAULT (datetime('now')),
@@ -511,6 +523,8 @@ def _init_postgres_tables():
             last_open_question TEXT DEFAULT '',
             open_question_key TEXT DEFAULT '',
             expected_answer_type TEXT DEFAULT '',
+            consultant_stage TEXT DEFAULT 'diagnosis',
+            case_summary_json TEXT DEFAULT '{}',
             memory_json TEXT DEFAULT '[]',
             expires_at TEXT NOT NULL,
             created_at TEXT DEFAULT (now()::text),
@@ -11198,6 +11212,8 @@ def _ensure_mentor_dialog_state_table(cur) -> None:
                 last_open_question TEXT DEFAULT '',
                 open_question_key TEXT DEFAULT '',
                 expected_answer_type TEXT DEFAULT '',
+                consultant_stage TEXT DEFAULT 'diagnosis',
+                case_summary_json TEXT DEFAULT '{}',
                 memory_json TEXT DEFAULT '[]',
                 expires_at TEXT NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -11210,6 +11226,10 @@ def _ensure_mentor_dialog_state_table(cur) -> None:
             cols = {row[1] for row in (cur.fetchall() or [])}
             if "open_question_key" not in cols:
                 cur.execute("ALTER TABLE mentor_dialog_state ADD COLUMN open_question_key TEXT DEFAULT ''")
+            if "consultant_stage" not in cols:
+                cur.execute("ALTER TABLE mentor_dialog_state ADD COLUMN consultant_stage TEXT DEFAULT 'diagnosis'")
+            if "case_summary_json" not in cols:
+                cur.execute("ALTER TABLE mentor_dialog_state ADD COLUMN case_summary_json TEXT DEFAULT '{}'")
         else:
             cur.execute(
                 "SELECT column_name FROM information_schema.columns WHERE table_name = 'mentor_dialog_state'"
@@ -11218,6 +11238,14 @@ def _ensure_mentor_dialog_state_table(cur) -> None:
             if "open_question_key" not in cols:
                 cur.execute(
                     "ALTER TABLE mentor_dialog_state ADD COLUMN IF NOT EXISTS open_question_key TEXT DEFAULT ''"
+                )
+            if "consultant_stage" not in cols:
+                cur.execute(
+                    "ALTER TABLE mentor_dialog_state ADD COLUMN IF NOT EXISTS consultant_stage TEXT DEFAULT 'diagnosis'"
+                )
+            if "case_summary_json" not in cols:
+                cur.execute(
+                    "ALTER TABLE mentor_dialog_state ADD COLUMN IF NOT EXISTS case_summary_json TEXT DEFAULT '{}'"
                 )
     except Exception:
         pass
@@ -11236,7 +11264,8 @@ def _load_mentor_state(user_phone: str) -> dict | None:
             conn.commit()
             cur.execute(
                 """
-                SELECT mode, last_open_question, open_question_key, expected_answer_type, memory_json, expires_at
+                SELECT mode, last_open_question, open_question_key, expected_answer_type,
+                       consultant_stage, case_summary_json, memory_json, expires_at
                 FROM mentor_dialog_state
                 WHERE user_phone = ?
                 """,
@@ -11245,7 +11274,16 @@ def _load_mentor_state(user_phone: str) -> dict | None:
             row = cur.fetchone()
             if not row:
                 return None
-            mode, last_open_question, open_question_key, expected_answer_type, memory_json, expires_at = row
+            (
+                mode,
+                last_open_question,
+                open_question_key,
+                expected_answer_type,
+                consultant_stage,
+                case_summary_json,
+                memory_json,
+                expires_at,
+            ) = row
             now_iso = _now_br().isoformat()
             if not expires_at or expires_at <= now_iso or mode != "mentor":
                 try:
@@ -11255,18 +11293,23 @@ def _load_mentor_state(user_phone: str) -> dict | None:
                     pass
                 return None
             turns = []
+            case_summary = {}
             try:
                 import json as _json_mentor
                 turns = _json_mentor.loads(memory_json or "[]")
                 if not isinstance(turns, list):
                     turns = []
+                case_summary = _json_mentor.loads(case_summary_json or "{}")
             except Exception:
                 turns = []
+                case_summary = {}
             return {
                 "mode": mode or "inactive",
                 "last_open_question": (last_open_question or "").strip(),
                 "open_question_key": (open_question_key or "").strip(),
                 "expected_answer_type": (expected_answer_type or "").strip(),
+                "consultant_stage": normalize_consultant_stage(consultant_stage),
+                "case_summary": normalize_case_summary(case_summary),
                 "memory_turns": turns[-_MENTOR_MEMORY_TURNS:],
                 "expires_at": expires_at,
             }
@@ -11281,6 +11324,8 @@ def _save_mentor_state(
     last_open_question: str = "",
     open_question_key: str = "",
     expected_answer_type: str = "",
+    consultant_stage: str = "diagnosis",
+    case_summary: dict | None = None,
     memory_turns: list | None = None,
     expires_at: str | None = None,
 ) -> None:
@@ -11290,8 +11335,13 @@ def _save_mentor_state(
     try:
         import json as _json_mentor
         payload = _json_mentor.dumps(turns, ensure_ascii=False)
+        case_summary_payload = _json_mentor.dumps(
+            normalize_case_summary(case_summary),
+            ensure_ascii=False,
+        )
     except Exception:
         payload = "[]"
+        case_summary_payload = "{}"
     expires = expires_at or _mentor_expiry_iso()
     now_iso = _now_br().isoformat()
     try:
@@ -11305,7 +11355,7 @@ def _save_mentor_state(
                     """
                     UPDATE mentor_dialog_state
                     SET mode = ?, last_open_question = ?, open_question_key = ?, expected_answer_type = ?,
-                        memory_json = ?, expires_at = ?, updated_at = ?
+                        consultant_stage = ?, case_summary_json = ?, memory_json = ?, expires_at = ?, updated_at = ?
                     WHERE user_phone = ?
                     """,
                     (
@@ -11313,6 +11363,8 @@ def _save_mentor_state(
                         last_open_question.strip(),
                         open_question_key.strip(),
                         expected_answer_type.strip(),
+                        normalize_consultant_stage(consultant_stage),
+                        case_summary_payload,
                         payload,
                         expires,
                         now_iso,
@@ -11324,8 +11376,8 @@ def _save_mentor_state(
                     """
                     INSERT INTO mentor_dialog_state (
                         user_phone, mode, last_open_question, open_question_key, expected_answer_type,
-                        memory_json, expires_at, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        consultant_stage, case_summary_json, memory_json, expires_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         user_phone,
@@ -11333,6 +11385,8 @@ def _save_mentor_state(
                         last_open_question.strip(),
                         open_question_key.strip(),
                         expected_answer_type.strip(),
+                        normalize_consultant_stage(consultant_stage),
+                        case_summary_payload,
                         payload,
                         expires,
                         now_iso,
@@ -11367,6 +11421,8 @@ def _touch_mentor_state(user_phone: str) -> None:
         last_open_question=state.get("last_open_question", ""),
         open_question_key=state.get("open_question_key", ""),
         expected_answer_type=state.get("expected_answer_type", ""),
+        consultant_stage=state.get("consultant_stage", "diagnosis"),
+        case_summary=state.get("case_summary", {}),
         memory_turns=state.get("memory_turns", []),
         expires_at=_mentor_expiry_iso(),
     )
@@ -11379,6 +11435,9 @@ def _extract_last_open_question(text: str) -> str:
     for line in reversed(lines):
         if "?" in line:
             q = line.rsplit("?", 1)[0].strip()
+            sentence_parts = [part.strip() for part in _re_router.split(r"[.!]+", q) if part.strip()]
+            if sentence_parts:
+                q = sentence_parts[-1]
             if q:
                 return f"{q}?"
     return ""
@@ -11515,6 +11574,8 @@ def _append_mentor_memory(user_phone: str, role: str, content: str) -> None:
         last_open_question=state.get("last_open_question", ""),
         open_question_key=state.get("open_question_key", ""),
         expected_answer_type=state.get("expected_answer_type", ""),
+        consultant_stage=state.get("consultant_stage", "diagnosis"),
+        case_summary=state.get("case_summary", {}),
         memory_turns=bucket,
         expires_at=_mentor_expiry_iso(),
     )
@@ -11610,6 +11671,8 @@ async def chat_endpoint(
             last_open_question=(_mentor_state or {}).get("last_open_question", ""),
             open_question_key=(_mentor_state or {}).get("open_question_key", ""),
             expected_answer_type=(_mentor_state or {}).get("expected_answer_type", ""),
+            consultant_stage=(_mentor_state or {}).get("consultant_stage", "diagnosis"),
+            case_summary=(_mentor_state or {}).get("case_summary", {}),
             memory_turns=(_mentor_state or {}).get("memory_turns", []),
             expires_at=_mentor_expiry_iso(),
         )
@@ -11641,6 +11704,24 @@ async def chat_endpoint(
     _mentor_open_question = (_mentor_state or {}).get("last_open_question", "")
     _mentor_open_question_key = (_mentor_state or {}).get("open_question_key", "")
     _mentor_expected_answer = (_mentor_state or {}).get("expected_answer_type", "")
+    _mentor_stage = (_mentor_state or {}).get("consultant_stage", "diagnosis")
+    _mentor_case_summary = normalize_case_summary((_mentor_state or {}).get("case_summary", {}))
+    if _is_mentor_mode:
+        _mentor_case_summary = merge_case_summary(
+            _mentor_case_summary,
+            body,
+            _mentor_open_question_key,
+            _mentor_expected_answer,
+        )
+        _mentor_stage = transition_consultant_stage(
+            _mentor_stage,
+            _mentor_open_question_key,
+            _mentor_expected_answer,
+            _mentor_open_question,
+            _mentor_case_summary,
+        )
+    _mentor_case_ctx = build_case_summary_context(_mentor_case_summary)
+    _mentor_plan_ctx = build_consultant_plan_context(_mentor_case_summary, _mentor_stage)
     if _is_mentor_mode and not _in_mentor_session:
         # Nova sessão mentor — prompt conversacional estilo Nat
         _mentor_ctx = (
@@ -11724,6 +11805,21 @@ async def chat_endpoint(
             "NO MÁXIMO um emoji por parágrafo — não decore com emojis.\n"
             "A mensagem toda deve ter no máximo 15-20 linhas.\n"
         )
+        if _mentor_stage:
+            _mentor_ctx += (
+                f"\n[ESTAGIO ATUAL DA CONSULTORIA]\n"
+                f"{_mentor_stage}\n"
+            )
+        if _mentor_case_ctx:
+            _mentor_ctx += (
+                f"\n[RESUMO ESTRUTURADO DO CASO]\n"
+                f"{_mentor_case_ctx}\n"
+            )
+        if _mentor_plan_ctx:
+            _mentor_ctx += (
+                f"\n[PLANO DE CONSULTORIA DA PRI]\n"
+                f"{_mentor_plan_ctx}\n"
+            )
     elif _is_mentor_mode and _in_mentor_session:
         # Continuação de sessão mentor — conversa em andamento
         _mentor_ctx = (
@@ -11761,6 +11857,21 @@ async def chat_endpoint(
             _mentor_ctx += (
                 f"\n[CHAVE FORMAL DA PERGUNTA ABERTA]\n"
                 f"{_mentor_open_question_key}\n"
+            )
+        if _mentor_stage:
+            _mentor_ctx += (
+                f"\n[ESTAGIO ATUAL DA CONSULTORIA]\n"
+                f"{_mentor_stage}\n"
+            )
+        if _mentor_case_ctx:
+            _mentor_ctx += (
+                f"\n[RESUMO ESTRUTURADO DO CASO]\n"
+                f"{_mentor_case_ctx}\n"
+            )
+        if _mentor_plan_ctx:
+            _mentor_ctx += (
+                f"\n[PLANO DE CONSULTORIA DA PRI]\n"
+                f"{_mentor_plan_ctx}\n"
             )
         if _mentor_memory_ctx:
             _mentor_ctx += f"\n\n{_mentor_memory_ctx}\n"
@@ -11808,14 +11919,30 @@ async def chat_endpoint(
         _append_mentor_memory(user_phone, "Usuário", body)
         _append_mentor_memory(user_phone, "Pri", content)
         _updated_mentor_state = _load_mentor_state(user_phone) or {}
+        _updated_case_summary = merge_case_summary(
+            _updated_mentor_state.get("case_summary", {}),
+            body,
+            _mentor_open_question_key,
+            _mentor_expected_answer,
+        )
         _next_open_question = _extract_last_open_question(content)
         _next_expected_answer = _infer_expected_answer_type(_next_open_question)
+        _next_open_question_key = _infer_open_question_key(_next_open_question, _next_expected_answer)
+        _next_stage = transition_consultant_stage(
+            _updated_mentor_state.get("consultant_stage", _mentor_stage),
+            _next_open_question_key,
+            _next_expected_answer,
+            _next_open_question,
+            _updated_case_summary,
+        )
         _save_mentor_state(
             user_phone,
             mode="mentor",
             last_open_question=_next_open_question,
-            open_question_key=_infer_open_question_key(_next_open_question, _next_expected_answer),
+            open_question_key=_next_open_question_key,
             expected_answer_type=_next_expected_answer,
+            consultant_stage=_next_stage,
+            case_summary=_updated_case_summary,
             memory_turns=_updated_mentor_state.get("memory_turns", []),
             expires_at=_mentor_expiry_iso(),
         )
