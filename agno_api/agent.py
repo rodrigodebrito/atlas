@@ -11,12 +11,14 @@
 #   PRODUÇÃO   → PostgreSQL no Render (DATABASE_URL definida)
 # ============================================================
 
+import logging
 import os
 import time
 import sqlite3
 import uuid
 import calendar
 import hashlib
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -52,6 +54,9 @@ ATLAS_MAX_TOKENS = _env_int("ATLAS_MAX_TOKENS", 1200)
 ATLAS_ENABLE_HISTORY = _env_bool("ATLAS_ENABLE_HISTORY", False)
 ATLAS_HISTORY_RUNS = _env_int("ATLAS_HISTORY_RUNS", 2)
 ATLAS_MAX_INPUT_CHARS = _env_int("ATLAS_MAX_INPUT_CHARS", 4000)
+ATLAS_PERSIST_SESSIONS = _env_bool("ATLAS_PERSIST_SESSIONS", False)
+
+logger = logging.getLogger("atlas.api")
 
 # ============================================================
 # BANCO — SQLite local ou PostgreSQL no Render
@@ -11172,8 +11177,11 @@ async def chat_endpoint(
         _mentor_sessions[user_phone] = time.time()
 
     # 5. Fallback: chama o agente LLM
-    if not session_id:
-        session_id = f"wa_{user_phone.replace('+','')}"
+    if ATLAS_PERSIST_SESSIONS:
+        if not session_id:
+            session_id = f"wa_{user_phone.replace('+','')}"
+    else:
+        session_id = f"wa_{user_phone.replace('+','')}_{uuid.uuid4().hex[:8]}"
 
     # Loga mensagem não roteada para análise (apenas fora do mentor)
     if body and len(body) < 200 and not _is_mentor_mode:
@@ -11288,11 +11296,40 @@ async def chat_endpoint(
         )
 
     _agent_input = _trim_agent_input(f"{_time_ctx}{_mentor_ctx}\n\n{full_message}")
-    response = await atlas_agent.arun(
-        input=_agent_input,
-        session_id=session_id,
-    )
-    content = response.content if hasattr(response, 'content') else str(response)
+    _agent_started_at = time.time()
+    response = None
+    try:
+        response = await atlas_agent.arun(
+            input=_agent_input,
+            session_id=session_id,
+        )
+        content = response.content if hasattr(response, "content") else str(response)
+    except Exception as exc:
+        logger.exception(
+            "atlas_agent.arun failed phone=%s session_id=%s input_chars=%s",
+            user_phone,
+            session_id,
+            len(_agent_input),
+        )
+        return {
+            "content": (
+                "Tive uma falha interna ao processar sua mensagem agora. "
+                "Tenta de novo em instantes."
+            ),
+            "routed": False,
+            "session_id": session_id,
+            "error": "agent_execution_failed",
+            "detail": str(exc),
+            "traceback": traceback.format_exc(limit=8),
+        }
+    finally:
+        logger.warning(
+            "atlas_agent.arun finished phone=%s session_id=%s input_chars=%s duration_ms=%s",
+            user_phone,
+            session_id,
+            len(_agent_input),
+            int((time.time() - _agent_started_at) * 1000),
+        )
     # No modo mentor, NÃO remove perguntas (o mentor DEVE fazer perguntas)
     if not _is_mentor_mode:
         content = _strip_trailing_questions(content)
