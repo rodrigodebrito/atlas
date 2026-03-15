@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 from agno_api.mentor_consultant import (
     build_case_summary_context,
     build_consultant_plan_context,
+    build_structured_pri_opening,
     infer_consultant_stage,
     merge_case_summary,
     normalize_case_summary,
@@ -7968,6 +7969,101 @@ def get_user_financial_snapshot(user_phone: str) -> str:
     return "\n".join(lines)
 
 
+def _is_generic_pri_analysis_request(text: str) -> bool:
+    body = (text or "").strip().lower()
+    if not body:
+        return False
+    signals = (
+        "analise do meu mes",
+        "análise do meu mês",
+        "analise do meu mês",
+        "analisa meu mes",
+        "analisa meu mês",
+        "raio x do meu mes",
+        "raio-x do meu mes",
+        "onde esta indo o dinheiro",
+        "onde ta indo o dinheiro",
+        "onde tá indo o dinheiro",
+        "onde esta indo meu dinheiro",
+        "onde ta indo meu dinheiro",
+        "onde tá indo meu dinheiro",
+    )
+    return any(signal in body for signal in signals)
+
+
+def _get_pri_month_opening_snapshot(user_phone: str) -> dict:
+    conn = _get_conn()
+    cur = conn.cursor()
+    row = _find_user(cur, user_phone)
+    if not row:
+        conn.close()
+        return {}
+
+    user_id, name, income = row
+    now = _now_br()
+    current_month = now.strftime("%Y-%m")
+
+    cur.execute(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+        "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+        (user_id, current_month + "%"),
+    )
+    expense_total = cur.fetchone()[0] or 0
+
+    cur.execute(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+        "WHERE user_id = ? AND type = 'INCOME' AND occurred_at LIKE ?",
+        (user_id, current_month + "%"),
+    )
+    actual_income = cur.fetchone()[0] or 0
+
+    cur.execute(
+        "SELECT category, SUM(amount_cents), COUNT(*) FROM transactions "
+        "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ? "
+        "GROUP BY category ORDER BY SUM(amount_cents) DESC LIMIT 5",
+        (user_id, current_month + "%"),
+    )
+    top_categories = [
+        {
+            "name": category or "Outros",
+            "total_cents": total or 0,
+            "count": count or 0,
+        }
+        for category, total, count in (cur.fetchall() or [])
+    ]
+
+    total_card_debt = 0
+    try:
+        cur.execute(
+            "SELECT id, current_bill_opening_cents, closing_day FROM credit_cards WHERE user_id = ?",
+            (user_id,),
+        )
+        cards = cur.fetchall() or []
+    except Exception:
+        conn.rollback()
+        cards = []
+
+    for card_id, opening, closing in cards:
+        period_start = _bill_period_start(closing or 0)
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+            "WHERE user_id = ? AND card_id = ? AND occurred_at >= ?",
+            (user_id, card_id, period_start),
+        )
+        new_purchases = cur.fetchone()[0] or 0
+        total_card_debt += (opening or 0) + new_purchases
+
+    conn.close()
+    return {
+        "first_name": (name or "amigo").split()[0],
+        "declared_income_cents": income or 0,
+        "actual_income_cents": actual_income,
+        "expense_total_cents": expense_total,
+        "card_total_cents": total_card_debt,
+        "top_categories": top_categories,
+    }
+
+
 @tool
 def get_market_rates(user_phone: str) -> str:
     """Busca taxas de mercado atuais (Selic, CDI, IPCA, dólar, S&P 500, Bitcoin).
@@ -11722,6 +11818,38 @@ async def chat_endpoint(
         )
     _mentor_case_ctx = build_case_summary_context(_mentor_case_summary)
     _mentor_plan_ctx = build_consultant_plan_context(_mentor_case_summary, _mentor_stage)
+    if _is_mentor_mode and not _in_mentor_session and _is_generic_pri_analysis_request(body):
+        _opening_snapshot = _get_pri_month_opening_snapshot(user_phone)
+        if _opening_snapshot:
+            _opening = build_structured_pri_opening(_opening_snapshot, _mentor_case_summary)
+            content = (_opening.get("content") or "").strip()
+            _next_open_question = (_opening.get("question") or "").strip()
+            _next_open_question_key = (_opening.get("open_question_key") or "").strip()
+            _next_expected_answer = (_opening.get("expected_answer_type") or "").strip()
+            _opening_case_summary = normalize_case_summary(_mentor_case_summary)
+            if _opening.get("main_issue_hypothesis"):
+                _opening_case_summary["main_issue_hypothesis"] = str(_opening["main_issue_hypothesis"]).strip().lower()
+            _next_stage = transition_consultant_stage(
+                "diagnosis",
+                _next_open_question_key,
+                _next_expected_answer,
+                _next_open_question,
+                _opening_case_summary,
+            )
+            _save_mentor_state(
+                user_phone,
+                mode="mentor",
+                last_open_question=_next_open_question,
+                open_question_key=_next_open_question_key,
+                expected_answer_type=_next_expected_answer,
+                consultant_stage=_next_stage,
+                case_summary=_opening_case_summary,
+                memory_turns=[],
+                expires_at=_mentor_expiry_iso(),
+            )
+            _append_mentor_memory(user_phone, "Usuario", body)
+            _append_mentor_memory(user_phone, "Pri", content)
+            return {"content": content, "routed": False, "session_id": session_id}
     if _is_mentor_mode and not _in_mentor_session:
         # Nova sessão mentor — prompt conversacional estilo Nat
         _mentor_ctx = (

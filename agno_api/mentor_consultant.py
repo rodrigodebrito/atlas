@@ -269,11 +269,129 @@ def build_consultant_plan_context(case_summary: dict[str, Any] | None, stage: st
     )
 
 
+def build_structured_pri_opening(
+    month_snapshot: dict[str, Any] | None,
+    case_summary: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    snapshot = month_snapshot if isinstance(month_snapshot, dict) else {}
+    summary = normalize_case_summary(case_summary)
+    categories = snapshot.get("top_categories") if isinstance(snapshot.get("top_categories"), list) else []
+
+    reference_income = int(snapshot.get("actual_income_cents") or 0) or int(snapshot.get("declared_income_cents") or 0)
+    expense_total = int(snapshot.get("expense_total_cents") or 0)
+    card_total = int(snapshot.get("card_total_cents") or 0)
+
+    def _find_category(*names: str) -> dict[str, Any]:
+        wanted = {name.strip().lower() for name in names if name}
+        for item in categories:
+            category_name = str(item.get("name") or "").strip().lower()
+            if category_name in wanted:
+                return item
+        return {}
+
+    others = _find_category("outros")
+    food = _find_category("alimentacao", "alimentação")
+    housing = _find_category("moradia")
+
+    others_total = int(others.get("total_cents") or 0)
+    food_total = int(food.get("total_cents") or 0)
+    food_count = int(food.get("count") or 0)
+    housing_total = int(housing.get("total_cents") or 0)
+
+    issue = "general_leak"
+    question = "Me responde uma coisa: hoje voce sente mais aperto com cartao, com gasto do dia a dia ou com conta fixa?"
+    question_key = "open_text_followup"
+    expected_answer_type = "open_text"
+    main_hypothesis = summary.get("main_issue_hypothesis") or "cashflow_pressure"
+
+    if others_total >= max(250000, int(expense_total * 0.18) if expense_total else 250000):
+        issue = "others_leak"
+        question = f"Me diz uma coisa: esses *{_fmt_cents_brl(others_total)}* em *Outros* voce ja sabe o que sao ou ta tudo misturado?"
+        question_key = "category_other_breakdown"
+        expected_answer_type = "open_text"
+        main_hypothesis = "cashflow_pressure"
+    elif card_total >= max(150000, int(reference_income * 0.35) if reference_income else 150000):
+        issue = "card_pressure"
+        question = "Antes de falar do resto, me diz: voce ta pagando essa fatura toda ou ta ficando no minimo/parcelando?"
+        question_key = "card_repayment_behavior"
+        expected_answer_type = "debt_status"
+        main_hypothesis = "high_interest_debt"
+    elif food_count >= 20 and food_total >= 150000:
+        issue = "food_frequency"
+        question = "Me diz: esse gasto foi mais mercado, delivery ou comer fora?"
+        question_key = "open_text_followup"
+        expected_answer_type = "open_text"
+        main_hypothesis = "cashflow_pressure"
+    elif housing_total >= max(300000, int(reference_income * 0.35) if reference_income else 300000):
+        issue = "housing_weight"
+        question = "Me responde uma coisa: nessa moradia tem so aluguel/financiamento ou tem mais coisa pesada junto?"
+        question_key = "open_text_followup"
+        expected_answer_type = "open_text"
+        main_hypothesis = "cashflow_pressure"
+
+    if issue == "card_pressure":
+        content = (
+            "Pri aqui. Vou te falar sem rodeio: o que mais me preocupa no teu mes nao e nem categoria pequena. "
+            "E cartao puxando teu caixa.\n\n"
+            f"Hoje voce tem *{_fmt_cents_brl(card_total)}* em faturas abertas. Se isso escorrega pra minimo ou rotativo, "
+            "vira dinheiro queimando sem trazer nada em troca.\n\n"
+            "Se eu estivesse organizando isso com voce, eu travaria esse risco antes de mexer no resto.\n\n"
+            f"{question}"
+        )
+    elif issue == "others_leak":
+        content = (
+            "Pri aqui. Vou te falar sem rodeio: teu problema esse mes nao e so renda ou alimentacao. "
+            "E dinheiro saindo sem centro de controle.\n\n"
+            f"O maior alerta pra mim e *Outros* com *{_fmt_cents_brl(others_total)}*. Quando tanto dinheiro cai em categoria generica, "
+            "quase sempre tem vazamento escondido ali.\n\n"
+            "Se eu estivesse arrumando isso com voce, eu comecaria abrindo esse *Outros* antes de tentar cortar o resto no escuro.\n\n"
+            f"{question}"
+        )
+    elif issue == "food_frequency":
+        content = (
+            "Pri aqui. O problema aqui nao e so mercado. E rotina de gasto pequeno escapando todo dia.\n\n"
+            f"Alimentacao ja bateu *{_fmt_cents_brl(food_total)}* em *{food_count} compras*. Quando a frequencia sobe assim, o dinheiro vai embora sem fazer barulho.\n\n"
+            "Se eu estivesse organizando isso com voce, eu abriria os ultimos 15 dias dessa categoria antes de falar de qualquer outro ajuste.\n\n"
+            f"{question}"
+        )
+    elif issue == "housing_weight":
+        content = (
+            "Pri aqui. Vou direto na ferida: teu mes ta pesado demais nas contas que voce nao consegue ignorar.\n\n"
+            f"Moradia sozinha ta em *{_fmt_cents_brl(housing_total)}*. Quando esse bloco pesa assim, o resto do orcamento perde margem pra respirar.\n\n"
+            "Se eu estivesse te assessorando, eu separaria o que e fixo de verdade e o que entrou junto nessa conta.\n\n"
+            f"{question}"
+        )
+    else:
+        problem_text = "teu dinheiro entrou em modo reativo" if reference_income and expense_total > reference_income else "tem vazamento no teu mes"
+        content = (
+            f"Pri aqui. Vou te falar sem rodeio: o problema aqui nao e detalhe pequeno. E que {problem_text}.\n\n"
+            "Quando o mes fica sem um centro claro de controle, qualquer categoria comeca a puxar mais do que deveria.\n\n"
+            "Se eu estivesse organizando isso com voce, eu escolheria primeiro onde atacar de verdade em vez de sair cortando tudo.\n\n"
+            f"{question}"
+        )
+
+    return {
+        "content": content,
+        "question": question,
+        "open_question_key": question_key,
+        "expected_answer_type": expected_answer_type,
+        "main_issue_hypothesis": main_hypothesis,
+    }
+
+
 def _normalize_binary(value: Any) -> str:
     text = str(value or "").strip().lower()
     if text in {"yes", "no", "unknown"}:
         return text
     return "unknown"
+
+
+def _fmt_cents_brl(value_cents: int | float | None) -> str:
+    value = float(value_cents or 0) / 100.0
+    formatted = f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    if formatted.endswith(",00"):
+        formatted = formatted[:-3]
+    return f"R${formatted}"
 
 
 def _extract_binary_status(text: str) -> str:

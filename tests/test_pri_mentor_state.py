@@ -210,3 +210,46 @@ async def test_chat_endpoint_keeps_short_reply_inside_pri_flow(atlas, monkeypatc
     assert "reserva" in state_after_second["last_open_question"].lower()
     assert state_after_second["consultant_stage"] == "reserve_check"
     assert state_after_second["case_summary"]["income_extra_origin"] == "plantao"
+
+
+@pytest.mark.asyncio
+async def test_first_pri_month_analysis_uses_structured_opening_without_llm(atlas, monkeypatch):
+    phone = "+5511977776666"
+    stub_agent = _StubAtlasAgent([])
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return {"intent": "mentor", "action": "", "params": {}}
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+    monkeypatch.setattr(
+        atlas,
+        "_get_pri_month_opening_snapshot",
+        lambda _phone: {
+            "first_name": "Rodrigo",
+            "declared_income_cents": 1200000,
+            "actual_income_cents": 1767754,
+            "expense_total_cents": 1912147,
+            "card_total_cents": 473420,
+            "top_categories": [
+                {"name": "Moradia", "total_cents": 821143, "count": 5},
+                {"name": "Outros", "total_cents": 531700, "count": 3},
+                {"name": "Alimentacao", "total_cents": 195400, "count": 33},
+            ],
+        },
+    )
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="pri faz uma analise do meu mes")
+
+    assert "centro de controle" in result["content"].lower()
+    assert "outros" in result["content"].lower()
+    assert "tudo misturado" in result["content"].lower()
+    assert stub_agent.calls == []
+
+    state = atlas._load_mentor_state(phone)
+    assert state is not None
+    assert state["open_question_key"] == "category_other_breakdown"
+    assert state["consultant_stage"] == "diagnosis_clarification"
+    assert state["case_summary"]["main_issue_hypothesis"] == "cashflow_pressure"
