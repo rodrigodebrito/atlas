@@ -457,44 +457,44 @@ def build_structured_pri_opening(
 
     if issue == "temporal_others_leak":
         content = (
-            f"Pri aqui. Em {period_label}, o problema nao parece ser uma compra isolada. Parece dinheiro saindo sem clareza.\n\n"
-            "O ponto mais suspeito pra mim e *Outros*. Quando essa categoria aparece forte num recorte curto, quase sempre teve gasto no automatico.\n\n"
-            "Se eu estivesse organizando isso com voce, eu abriria esse bloco primeiro antes de procurar problema no resto.\n\n"
+            f"Pri aqui. Em {period_label}, teu dinheiro nao explodiu num lugar so. Ele vazou.\n\n"
+            "E o ponto mais suspeito pra mim e *Outros*. Quando essa categoria pesa num recorte curto, quase sempre teve gasto saindo no automatico.\n\n"
+            "Se eu estivesse arrumando isso com voce, eu abriria esse bloco primeiro. Porque e ali que normalmente fica o ralo.\n\n"
             f"{question}"
         )
     elif issue == "temporal_food_frequency":
         content = (
-            f"Pri aqui. Em {period_label}, o que me chama atencao nao e um valor gigante. E repeticao.\n\n"
-            "Quando alimentacao aparece varias vezes em pouco tempo, o dinheiro vai embora pingando e o aperto vem depois.\n\n"
-            "Se eu estivesse organizando isso com voce, eu destrinchava essa categoria primeiro.\n\n"
+            f"Pri aqui. Em {period_label}, o problema nao parece ser um gasto gigante. E repeticao.\n\n"
+            "Quando alimentacao aparece toda hora, o dinheiro vai embora pingando e voce so sente o tranco depois.\n\n"
+            "Se eu estivesse organizando isso com voce, eu comecaria por aqui. Porque esse tipo de vazamento e rapido de sentir no bolso.\n\n"
             f"{question}"
         )
     elif issue == "temporal_housing_weight":
         content = (
-            f"Pri aqui. Em {period_label}, o peso maior veio de conta grande, nao de gasto bobo.\n\n"
-            "Quando moradia domina o recorte, a pergunta certa nao e onde cortar cafe. E o que entrou aqui alem do normal.\n\n"
-            "Se eu estivesse olhando isso com voce, eu separaria o fixo do que foi excecao.\n\n"
+            f"Pri aqui. Em {period_label}, o peso veio de conta grande, nao de besteira do dia a dia.\n\n"
+            "Quando moradia domina o recorte, nao adianta procurar culpado em cafezinho. A pergunta certa e: o que entrou aqui alem do normal?\n\n"
+            "Se eu estivesse olhando isso com voce, eu separaria o fixo do que foi fora da curva.\n\n"
             f"{question}"
         )
     elif issue == "temporal_general_leak":
         content = (
-            f"Pri aqui. Em {period_label}, teu dinheiro nao sumiu num lugar so. Ele espalhou.\n\n"
-            "Quando isso acontece, normalmente o problema e frequencia ou gasto no automatico, nao uma compra unica.\n\n"
-            "Se eu estivesse organizando isso com voce, eu escolheria primeiro o bloco mais repetido pra atacar.\n\n"
+            f"Pri aqui. Em {period_label}, teu dinheiro nao sumiu numa compra so. Ele foi escapando aos poucos.\n\n"
+            "Quando isso acontece, normalmente o problema e rotina sem controle, nao uma decisao gigante.\n\n"
+            "Se eu estivesse organizando isso com voce, eu atacaria primeiro o bloco mais repetido. Porque e ali que o dinheiro escapa sem pedir permissao.\n\n"
             f"{question}"
         )
     elif issue == "high_interest_debt":
         debt_amount = explicit_amount or card_total
         debt_label = _fmt_cents_brl(debt_amount) if debt_amount else "essa divida"
         content = (
-            f"Pri aqui. O problema aqui nao e so *{debt_label}*. E o custo desse dinheiro rodando contra voce.\n\n"
-            "Cheque especial e rotativo sao o tipo de divida que cresce quieta e, quando voce percebe, ja virou uma bola de neve.\n\n"
-            "Se eu estivesse organizando isso com voce, minha prioridade 1 seria parar o sangramento antes de falar de qualquer outro ajuste.\n\n"
+            f"Pri aqui. O problema aqui nao e so *{debt_label}*. E o custo desse dinheiro mordendo teu mes.\n\n"
+            "Cheque especial e rotativo sao o tipo de divida que cresce quieta. Quando voce percebe, ela ja comeu um pedaco do teu folego.\n\n"
+            "Se eu estivesse organizando isso com voce, minha prioridade 1 seria parar esse sangramento antes de falar de qualquer outro ajuste.\n\n"
             f"{question}"
         )
     elif issue == "card_pressure":
         content = (
-            "Pri aqui. Vou te falar sem rodeio: o que mais me preocupa no teu mes nao e nem categoria pequena. "
+            "Pri aqui. Vou te falar sem rodeio: o que mais me preocupa no teu mes nao e cafezinho nem delivery. "
             "E cartao puxando teu caixa.\n\n"
             f"Hoje voce tem *{_fmt_cents_brl(card_total)}* em faturas abertas. Se isso escorrega pra minimo ou rotativo, "
             "vira dinheiro queimando sem trazer nada em troca.\n\n"
@@ -503,52 +503,50 @@ def build_structured_pri_opening(
         )
     elif issue == "reserve_gap":
         content = (
-            "Pri aqui. Antes de pensar em crescer dinheiro, tem um buraco mais importante pra fechar: protecao.\n\n"
-            "Sem reserva, qualquer imprevisto joga voce de volta pra cartao, emprestimo ou cheque especial. A vida vira improviso.\n\n"
-            "Se eu estivesse organizando isso com voce, eu montaria uma reserva pequena primeiro e so depois pensaria no resto.\n\n"
+            "Pri aqui. Antes de pensar em fazer dinheiro crescer, tem um buraco mais urgente pra fechar: protecao.\n\n"
+            "Sem reserva, qualquer imprevisto te empurra de volta pra cartao, emprestimo ou cheque especial. A vida vira improviso.\n\n"
+            "Se eu estivesse organizando isso com voce, eu montaria uma reserva pequena primeiro. Sem isso, qualquer plano fica bambu.\n\n"
             f"{question}"
         )
     elif issue == "invest_vs_debt":
         content = (
             "Pri aqui. Vou ser direta: se tiver divida cara correndo, investir agora vira maquiagem financeira.\n\n"
-            "Porque o dinheiro rende de um lado e sangra muito mais do outro. A prioridade certa e estancar o juro primeiro.\n\n"
-            "Se eu estivesse te assessorando, eu confirmaria isso antes de falar de CDB, Tesouro ou qualquer aplicacao.\n\n"
+            "O dinheiro rende de um lado e sangra muito mais do outro. Antes de falar de CDB ou Tesouro, tem fogo pra apagar.\n\n"
+            "Se eu estivesse te assessorando, eu confirmaria isso primeiro. Prioridade boa e a que para de te fazer perder dinheiro.\n\n"
             f"{question}"
         )
     elif issue == "investing_start":
         content = (
-            "Pri aqui. Antes de eu te dizer onde investir, eu preciso olhar uma coisa que vem antes de investimento: base.\n\n"
-            "Quem investe sem reserva fica tirando dinheiro da aplicacao na primeira pancada. A estrategia quebra na primeira curva.\n\n"
-            "Se eu estivesse montando isso com voce, eu validaria essa base primeiro.\n\n"
+            "Pri aqui. Antes de eu te dizer onde investir, eu preciso olhar o chao onde voce vai pisar.\n\n"
+            "Quem investe sem reserva acaba sacando na primeira pancada. A estrategia quebra na primeira curva.\n\n"
+            "Se eu estivesse montando isso com voce, eu validaria essa base antes de falar de produto.\n\n"
             f"{question}"
         )
     elif issue == "debt_mapping":
         content = (
             "Pri aqui. O problema aqui nao e so o valor da divida. E onde ela mora.\n\n"
-            "Porque divida em cartao, cheque especial e emprestimo tem pesos bem diferentes no teu caixa. A prioridade muda completamente.\n\n"
-            "Se eu estivesse organizando isso com voce, eu mapearia a fonte da pressao antes de falar de plano.\n\n"
+            "Cartao, cheque especial e emprestimo pesam de jeitos bem diferentes no teu caixa. E isso muda completamente a ordem do plano.\n\n"
+            "Se eu estivesse organizando isso com voce, eu mapearia a fonte da pressao antes de falar de qualquer saida.\n\n"
             f"{question}"
         )
     elif issue == "others_leak":
         content = (
-            "Pri aqui. Vou te falar sem rodeio: teu problema esse mes nao e so renda ou alimentacao. "
-            "E dinheiro saindo sem centro de controle.\n\n"
-            f"O maior alerta pra mim e *Outros* com *{_fmt_cents_brl(others_total)}*. Quando tanto dinheiro cai em categoria generica, "
-            "quase sempre tem vazamento escondido ali.\n\n"
-            "Se eu estivesse arrumando isso com voce, eu comecaria abrindo esse *Outros* antes de tentar cortar o resto no escuro.\n\n"
+            "Pri aqui. Vou te falar sem rodeio: teu problema esse mes nao e falta de renda. E vazamento.\n\n"
+            f"O maior alerta pra mim e *Outros* com *{_fmt_cents_brl(others_total)}*. Quando muito dinheiro cai em categoria generica, quase sempre tem gasto escondido ali.\n\n"
+            "Se eu estivesse arrumando isso com voce, eu comecaria abrindo esse *Outros* hoje. Porque e ali que o dinheiro some sem fazer barulho.\n\n"
             f"{question}"
         )
     elif issue == "food_frequency":
         content = (
-            "Pri aqui. O problema aqui nao e so mercado. E rotina de gasto pequeno escapando todo dia.\n\n"
+            "Pri aqui. O problema aqui nao e mercado. E frequencia.\n\n"
             f"Alimentacao ja bateu *{_fmt_cents_brl(food_total)}* em *{food_count} compras*. Quando a frequencia sobe assim, o dinheiro vai embora sem fazer barulho.\n\n"
             "Se eu estivesse organizando isso com voce, eu abriria os ultimos 15 dias dessa categoria antes de falar de qualquer outro ajuste.\n\n"
             f"{question}"
         )
     elif issue == "housing_weight":
         content = (
-            "Pri aqui. Vou direto na ferida: teu mes ta pesado demais nas contas que voce nao consegue ignorar.\n\n"
-            f"Moradia sozinha ta em *{_fmt_cents_brl(housing_total)}*. Quando esse bloco pesa assim, o resto do orcamento perde margem pra respirar.\n\n"
+            "Pri aqui. Vou direto na ferida: teu mes ta pesado demais nas contas que voce nao consegue empurrar pra depois.\n\n"
+            f"Moradia sozinha ta em *{_fmt_cents_brl(housing_total)}*. Quando esse bloco pesa assim, o resto do orcamento fica sem ar.\n\n"
             "Se eu estivesse te assessorando, eu separaria o que e fixo de verdade e o que entrou junto nessa conta.\n\n"
             f"{question}"
         )
@@ -557,7 +555,7 @@ def build_structured_pri_opening(
         content = (
             f"Pri aqui. Vou te falar sem rodeio: o problema aqui nao e detalhe pequeno. E que {problem_text}.\n\n"
             "Quando o mes fica sem um centro claro de controle, qualquer categoria comeca a puxar mais do que deveria.\n\n"
-            "Se eu estivesse organizando isso com voce, eu escolheria primeiro onde atacar de verdade em vez de sair cortando tudo.\n\n"
+            "Se eu estivesse organizando isso com voce, eu escolheria primeiro onde atacar de verdade em vez de sair cortando tudo no susto.\n\n"
             f"{question}"
         )
 

@@ -245,7 +245,8 @@ async def test_first_pri_month_analysis_uses_structured_opening_without_llm(atla
 
     result = await atlas.chat_endpoint(user_phone=phone, message="pri faz uma analise do meu mes")
 
-    assert "centro de controle" in result["content"].lower()
+    assert "falta de renda" in result["content"].lower()
+    assert "vazamento" in result["content"].lower()
     assert "outros" in result["content"].lower()
     assert "tudo misturado" in result["content"].lower()
     assert stub_agent.calls == []
