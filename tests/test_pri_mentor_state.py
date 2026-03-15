@@ -253,3 +253,42 @@ async def test_first_pri_month_analysis_uses_structured_opening_without_llm(atla
     assert state["open_question_key"] == "category_other_breakdown"
     assert state["consultant_stage"] == "diagnosis_clarification"
     assert state["case_summary"]["main_issue_hypothesis"] == "cashflow_pressure"
+
+
+@pytest.mark.asyncio
+async def test_first_pri_debt_question_uses_debt_frame_without_llm(atlas, monkeypatch):
+    phone = "+5511966665555"
+    stub_agent = _StubAtlasAgent([])
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return {"intent": "mentor", "action": "", "params": {}}
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+    monkeypatch.setattr(
+        atlas,
+        "_get_pri_month_opening_snapshot",
+        lambda _phone: {
+            "first_name": "Rodrigo",
+            "declared_income_cents": 1200000,
+            "actual_income_cents": 1200000,
+            "expense_total_cents": 900000,
+            "card_total_cents": 0,
+            "top_categories": [],
+        },
+    )
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="pri estou devendo 2.000 no cheque especial o que fazer?")
+
+    content = result["content"].lower()
+    assert "custo desse dinheiro" in content
+    assert "cheque especial" in content or "rotativo" in content
+    assert "levantar parte disso" in content
+    assert stub_agent.calls == []
+
+    state = atlas._load_mentor_state(phone)
+    assert state is not None
+    assert state["case_summary"]["main_issue_hypothesis"] == "high_interest_debt"
+    assert state["consultant_stage"] == "diagnosis_clarification"

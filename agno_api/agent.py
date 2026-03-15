@@ -35,6 +35,7 @@ from agno_api.mentor_consultant import (
     build_consultant_plan_context,
     build_structured_pri_opening,
     infer_consultant_stage,
+    infer_pri_opening_frame,
     merge_case_summary,
     normalize_case_summary,
     normalize_consultant_stage,
@@ -11818,10 +11819,11 @@ async def chat_endpoint(
         )
     _mentor_case_ctx = build_case_summary_context(_mentor_case_summary)
     _mentor_plan_ctx = build_consultant_plan_context(_mentor_case_summary, _mentor_stage)
-    if _is_mentor_mode and not _in_mentor_session and _is_generic_pri_analysis_request(body):
+    _structured_opening_frame = infer_pri_opening_frame(body, _get_pri_month_opening_snapshot(user_phone), _mentor_case_summary) if (_is_mentor_mode and not _in_mentor_session) else ""
+    if _is_mentor_mode and not _in_mentor_session and _structured_opening_frame:
         _opening_snapshot = _get_pri_month_opening_snapshot(user_phone)
         if _opening_snapshot:
-            _opening = build_structured_pri_opening(_opening_snapshot, _mentor_case_summary)
+            _opening = build_structured_pri_opening(body, _opening_snapshot, _mentor_case_summary)
             content = (_opening.get("content") or "").strip()
             _next_open_question = (_opening.get("question") or "").strip()
             _next_open_question_key = (_opening.get("open_question_key") or "").strip()

@@ -269,17 +269,70 @@ def build_consultant_plan_context(case_summary: dict[str, Any] | None, stage: st
     )
 
 
+def infer_pri_opening_frame(
+    user_message: str,
+    month_snapshot: dict[str, Any] | None = None,
+    case_summary: dict[str, Any] | None = None,
+) -> str:
+    text = (user_message or "").strip().lower()
+    snapshot = month_snapshot if isinstance(month_snapshot, dict) else {}
+    summary = normalize_case_summary(case_summary)
+    card_total = int(snapshot.get("card_total_cents") or 0)
+
+    monthly_signals = (
+        "analise do meu mes",
+        "análise do meu mês",
+        "analise do meu mês",
+        "analisa meu mes",
+        "analisa meu mês",
+        "raio x do meu mes",
+        "raio-x do meu mes",
+        "onde esta indo o dinheiro",
+        "onde ta indo o dinheiro",
+        "onde tá indo o dinheiro",
+        "onde esta indo meu dinheiro",
+        "onde ta indo meu dinheiro",
+        "onde tá indo meu dinheiro",
+    )
+    if any(signal in text for signal in monthly_signals):
+        return "monthly_analysis"
+
+    if any(token in text for token in ("cheque especial", "especial", "rotativo", "minimo", "mínimo")):
+        return "high_interest_debt"
+
+    if any(token in text for token in ("cartao", "cartão", "fatura")) and any(
+        token in text for token in ("devendo", "divida", "dívida", "pagar", "parcel")
+    ):
+        return "card_debt"
+
+    if any(token in text for token in ("reserva", "emergencia", "emergência")):
+        return "reserve"
+
+    if any(token in text for token in ("invest", "aplicar", "cdb", "tesouro", "guardar")):
+        if summary.get("main_issue_hypothesis") in {"high_interest_debt", "outside_debt_pressure"} or card_total >= 150000:
+            return "invest_vs_debt"
+        return "investing"
+
+    if any(token in text for token in ("divida", "dívida", "emprestimo", "empréstimo", "devendo")):
+        return "debt_mapping"
+
+    return ""
+
+
 def build_structured_pri_opening(
+    user_message: str,
     month_snapshot: dict[str, Any] | None,
     case_summary: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     snapshot = month_snapshot if isinstance(month_snapshot, dict) else {}
     summary = normalize_case_summary(case_summary)
     categories = snapshot.get("top_categories") if isinstance(snapshot.get("top_categories"), list) else []
+    frame = infer_pri_opening_frame(user_message, snapshot, summary)
 
     reference_income = int(snapshot.get("actual_income_cents") or 0) or int(snapshot.get("declared_income_cents") or 0)
     expense_total = int(snapshot.get("expense_total_cents") or 0)
     card_total = int(snapshot.get("card_total_cents") or 0)
+    explicit_amount = _extract_brl_amount_cents(user_message)
 
     def _find_category(*names: str) -> dict[str, Any]:
         wanted = {name.strip().lower() for name in names if name}
@@ -304,7 +357,44 @@ def build_structured_pri_opening(
     expected_answer_type = "open_text"
     main_hypothesis = summary.get("main_issue_hypothesis") or "cashflow_pressure"
 
-    if others_total >= max(250000, int(expense_total * 0.18) if expense_total else 250000):
+    if frame == "high_interest_debt":
+        issue = "high_interest_debt"
+        debt_amount = explicit_amount or card_total
+        question = "Me responde com sinceridade: voce consegue levantar parte disso ainda este mes ou vai precisar montar uma saida parcelada?"
+        question_key = "open_text_followup"
+        expected_answer_type = "open_text"
+        main_hypothesis = "high_interest_debt"
+    elif frame == "card_debt":
+        issue = "card_pressure"
+        question = "Antes de pensar no resto, me diz: voce ta pagando essa fatura toda ou ta ficando no minimo/parcelando?"
+        question_key = "card_repayment_behavior"
+        expected_answer_type = "debt_status"
+        main_hypothesis = "high_interest_debt"
+    elif frame == "reserve":
+        issue = "reserve_gap"
+        question = "Hoje voce consegue separar quanto por mes sem se enrolar: *R$100*, *R$300* ou mais?"
+        question_key = "amount_followup"
+        expected_answer_type = "number_amount"
+        main_hypothesis = "no_emergency_buffer"
+    elif frame == "invest_vs_debt":
+        issue = "invest_vs_debt"
+        question = "Me diz uma coisa: hoje voce tem alguma divida cara rodando ou ta tudo pago em dia?"
+        question_key = "debt_outside_cards"
+        expected_answer_type = "debt_status"
+        main_hypothesis = "high_interest_debt"
+    elif frame == "investing":
+        issue = "investing_start"
+        question = "Antes de eu te dizer onde investir, me responde: hoje voce ja tem reserva montada ou ainda nao?"
+        question_key = "has_emergency_reserve"
+        expected_answer_type = "has_reserve"
+        main_hypothesis = summary.get("main_issue_hypothesis") or ""
+    elif frame == "debt_mapping":
+        issue = "debt_mapping"
+        question = "Me fala sem enfeitar: essa divida hoje ta mais em cartao, emprestimo ou cheque especial?"
+        question_key = "debt_outside_cards"
+        expected_answer_type = "debt_status"
+        main_hypothesis = "outside_debt_pressure"
+    elif others_total >= max(250000, int(expense_total * 0.18) if expense_total else 250000):
         issue = "others_leak"
         question = f"Me diz uma coisa: esses *{_fmt_cents_brl(others_total)}* em *Outros* voce ja sabe o que sao ou ta tudo misturado?"
         question_key = "category_other_breakdown"
@@ -329,13 +419,50 @@ def build_structured_pri_opening(
         expected_answer_type = "open_text"
         main_hypothesis = "cashflow_pressure"
 
-    if issue == "card_pressure":
+    if issue == "high_interest_debt":
+        debt_amount = explicit_amount or card_total
+        debt_label = _fmt_cents_brl(debt_amount) if debt_amount else "essa divida"
+        content = (
+            f"Pri aqui. O problema aqui nao e so *{debt_label}*. E o custo desse dinheiro rodando contra voce.\n\n"
+            "Cheque especial e rotativo sao o tipo de divida que cresce quieta e, quando voce percebe, ja virou uma bola de neve.\n\n"
+            "Se eu estivesse organizando isso com voce, minha prioridade 1 seria parar o sangramento antes de falar de qualquer outro ajuste.\n\n"
+            f"{question}"
+        )
+    elif issue == "card_pressure":
         content = (
             "Pri aqui. Vou te falar sem rodeio: o que mais me preocupa no teu mes nao e nem categoria pequena. "
             "E cartao puxando teu caixa.\n\n"
             f"Hoje voce tem *{_fmt_cents_brl(card_total)}* em faturas abertas. Se isso escorrega pra minimo ou rotativo, "
             "vira dinheiro queimando sem trazer nada em troca.\n\n"
             "Se eu estivesse organizando isso com voce, eu travaria esse risco antes de mexer no resto.\n\n"
+            f"{question}"
+        )
+    elif issue == "reserve_gap":
+        content = (
+            "Pri aqui. Antes de pensar em crescer dinheiro, tem um buraco mais importante pra fechar: protecao.\n\n"
+            "Sem reserva, qualquer imprevisto joga voce de volta pra cartao, emprestimo ou cheque especial. A vida vira improviso.\n\n"
+            "Se eu estivesse organizando isso com voce, eu montaria uma reserva pequena primeiro e so depois pensaria no resto.\n\n"
+            f"{question}"
+        )
+    elif issue == "invest_vs_debt":
+        content = (
+            "Pri aqui. Vou ser direta: se tiver divida cara correndo, investir agora vira maquiagem financeira.\n\n"
+            "Porque o dinheiro rende de um lado e sangra muito mais do outro. A prioridade certa e estancar o juro primeiro.\n\n"
+            "Se eu estivesse te assessorando, eu confirmaria isso antes de falar de CDB, Tesouro ou qualquer aplicacao.\n\n"
+            f"{question}"
+        )
+    elif issue == "investing_start":
+        content = (
+            "Pri aqui. Antes de eu te dizer onde investir, eu preciso olhar uma coisa que vem antes de investimento: base.\n\n"
+            "Quem investe sem reserva fica tirando dinheiro da aplicacao na primeira pancada. A estrategia quebra na primeira curva.\n\n"
+            "Se eu estivesse montando isso com voce, eu validaria essa base primeiro.\n\n"
+            f"{question}"
+        )
+    elif issue == "debt_mapping":
+        content = (
+            "Pri aqui. O problema aqui nao e so o valor da divida. E onde ela mora.\n\n"
+            "Porque divida em cartao, cheque especial e emprestimo tem pesos bem diferentes no teu caixa. A prioridade muda completamente.\n\n"
+            "Se eu estivesse organizando isso com voce, eu mapearia a fonte da pressao antes de falar de plano.\n\n"
             f"{question}"
         )
     elif issue == "others_leak":
@@ -371,6 +498,7 @@ def build_structured_pri_opening(
         )
 
     return {
+        "frame": frame,
         "content": content,
         "question": question,
         "open_question_key": question_key,
@@ -392,6 +520,29 @@ def _fmt_cents_brl(value_cents: int | float | None) -> str:
     if formatted.endswith(",00"):
         formatted = formatted[:-3]
     return f"R${formatted}"
+
+
+def _extract_brl_amount_cents(text: str) -> int:
+    import re
+
+    raw = str(text or "").lower()
+    patterns = [
+        r"r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?|\d+(?:,\d{1,2})?)",
+        r"(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?|\d+(?:,\d{1,2})?)\s*(mil)?",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, raw)
+        if not match:
+            continue
+        number = (match.group(1) or "").strip()
+        multiplier = 1000 if len(match.groups()) > 1 and (match.group(2) or "").strip() else 1
+        normalized = number.replace(".", "").replace(",", ".")
+        try:
+            value = float(normalized) * multiplier
+            return int(round(value * 100))
+        except Exception:
+            continue
+    return 0
 
 
 def _extract_binary_status(text: str) -> str:
