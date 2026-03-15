@@ -30,6 +30,19 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int((os.getenv(name) or "").strip())
+    except Exception:
+        return default
+
+
+ATLAS_MODEL_ID = os.getenv("ATLAS_MODEL_ID", "gpt-4.1-mini").strip() or "gpt-4.1-mini"
+ATLAS_MAX_TOKENS = _env_int("ATLAS_MAX_TOKENS", 1200)
+ATLAS_HISTORY_RUNS = _env_int("ATLAS_HISTORY_RUNS", 3)
+ATLAS_MAX_INPUT_CHARS = _env_int("ATLAS_MAX_INPUT_CHARS", 4000)
+
 # ============================================================
 # BANCO — SQLite local ou PostgreSQL no Render
 # ============================================================
@@ -479,7 +492,12 @@ if DB_TYPE == "postgres":
 # ============================================================
 
 def get_model():
-    return OpenAIChat(id="gpt-4.1", api_key=os.getenv("OPENAI_API_KEY"), temperature=0.4, max_tokens=2500)
+    return OpenAIChat(
+        id=ATLAS_MODEL_ID,
+        api_key=os.getenv("OPENAI_API_KEY"),
+        temperature=0.4,
+        max_tokens=ATLAS_MAX_TOKENS,
+    )
 
 def get_fast_model():
     return OpenAIChat(id="gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY"))
@@ -8156,9 +8174,9 @@ atlas_agent = Agent(
     model=get_model(),
     db=db,
     add_history_to_context=True,
-    num_history_runs=10,
+    num_history_runs=ATLAS_HISTORY_RUNS,
     tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event, pause_agenda_event, resume_agenda_event, edit_agenda_event_time, set_category_budget, get_category_budgets, remove_category_budget, get_user_financial_snapshot, get_market_rates, simulate_debt_payoff, simulate_investment],
-    add_datetime_to_context=True,
+    add_datetime_to_context=False,
     markdown=True,
 )
 
@@ -11060,6 +11078,17 @@ def _strip_trailing_questions(text: str) -> str:
 _mentor_sessions: dict = {}
 _MENTOR_SESSION_TTL = 600  # 10 minutos de inatividade encerra a sessão
 
+
+def _trim_agent_input(text: str) -> str:
+    """Evita mandar payloads gigantes para o agente em instâncias pequenas."""
+    if len(text) <= ATLAS_MAX_INPUT_CHARS:
+        return text
+    head = text[: ATLAS_MAX_INPUT_CHARS - 200]
+    return (
+        f"{head}\n\n"
+        "[mensagem truncada automaticamente para evitar excesso de memória no runtime]"
+    )
+
 from fastapi import Form as _Form
 
 @app.post("/v1/chat")
@@ -11245,8 +11274,9 @@ async def chat_endpoint(
             "Máximo 15 linhas por mensagem.\n"
         )
 
+    _agent_input = _trim_agent_input(f"{_time_ctx}{_mentor_ctx}\n\n{full_message}")
     response = await atlas_agent.arun(
-        input=f"{_time_ctx}{_mentor_ctx}\n\n{full_message}",
+        input=_agent_input,
         session_id=session_id,
     )
     content = response.content if hasattr(response, 'content') else str(response)
@@ -13402,7 +13432,7 @@ def health_check():
         "service": "atlas-agno-api",
         "db": DB_TYPE,
         "agents": ["atlas", "parse_agent", "response_agent"],
-        "model": "gpt-5-mini",
+        "model": ATLAS_MODEL_ID,
     }
 
 
