@@ -10008,71 +10008,9 @@ def get_panel_url(user_phone: str) -> str:
 # ============================================================
 
 # ============================================================
-# PRÉ-ROTEADOR — intercepta padrões comuns sem chamar LLM
+# ROTEAMENTO — LLM-mini + regex rápido para confirmações
 # ============================================================
 import re as _re_router
-
-# Palavras-chave que indicam pedido de mentoria financeira (bypass help/keyword router → vai pro LLM)
-# Keywords que ATIVAM o mentor (pedidos explícitos de ajuda/orientação financeira)
-# Comando explícito para ativar mentor (match exato, curto)
-_MENTOR_COMMANDS = ("mentor", "/mentor", "modo mentor", "quero mentor", "quero mentoria",
-                    "falar com mentor", "ativar mentor", "preciso de um mentor",
-                    # Priscila Naves — persona da consultora financeira
-                    "pri", "priscila", "oi pri", "oi priscila",
-                    "falar com a pri", "falar com a priscila",
-                    "chama a pri", "chama a priscila",
-                    )
-
-# Keywords que ATIVAM o mentor (match parcial dentro da mensagem)
-# Inclui "pri"/"priscila" como trigger parcial também
-_MENTOR_KEYWORDS = ("endividad", "divida", "dívida", "investir", "investimento",
-                    "planejamento financeiro", "aposentadoria", "juntar dinheiro",
-                    "sair do buraco", "não sobra nada", "nao sobra nada", "nunca sobra",
-                    "me ajuda com minhas finanças", "preciso de ajuda financeira",
-                    "como sair das dívidas", "onde investir", "quero investir",
-                    "como economizar", "como poupar",
-                    "tô endividad", "to endividad", "devo muito", "devo ", "estou devendo",
-                    "to devendo", "tô devendo", "cartão estourad",
-                    "cheque especial", "empréstimo", "emprestimo", "renegociar", "financiamento",
-                    "pagar dívida", "pagar divida", "quitar dívida",
-                    "falta dinheiro", "sem dinheiro",
-                    "me orienta", "me guia",
-                    # Pedidos de ajuda com contexto financeiro
-                    "me ajudar com", "pode me ajudar", "preciso de ajuda",
-                    "preocupado com", "preocupada com",
-                    "ajuda com meus gastos", "ajuda com minhas finanças",
-                    "ajuda com as contas", "ajuda com minha dívida",
-                    "orientação financeira", "orientacao financeira",
-                    "conselho financeiro", "dica financeira",
-                    # Priscila Naves — trigger parcial
-                    " pri ", " pri,", "pri me", "pri,",
-                    "priscila", "a pri",
-                    )
-
-# Padrões que indicam que o user está registrando gasto/receita (NÃO é mentor)
-# VERBOS DE AÇÃO — indicam registro ativo de transação
-_TX_ACTION_VERBS = (
-    "gastei", "paguei", "comprei", "recebi", "ganhei",
-    "transferi", "depositei", "saquei", "pago", "parcela de",
-)
-# SINAIS MONETÁRIOS — indicam valor financeiro
-_TX_MONEY_SIGNALS = ("r$", "reais", "conto", "pila")
-# LOCAIS COMUNS — sozinhos NÃO bastam, precisam de verbo ou sinal monetário
-_TX_LOCATIONS = (
-    "no almoço", "no almoco", "no jantar", "no uber", "no ifood",
-    "na farmácia", "na farmacia", "no mercado", "no super",
-    "conta de luz", "conta de água", "conta de agua",
-)
-# Combinados pra compatibilidade, mas o classificador usa a lógica refinada
-_TRANSACTION_PATTERNS = _TX_ACTION_VERBS + _TX_MONEY_SIGNALS + _TX_LOCATIONS
-
-# Palavras que indicam POSSE/DÍVIDA (NÃO são transação nova, mesmo com valor)
-_POSSESSION_MARKERS = (
-    "tenho", "tenho um", "tenho uma", "devo", "estou devendo",
-    "to devendo", "tô devendo", "financiamento", "financiei",
-    "minha dívida", "minha divida", "parcela do",
-)
-
 # Padrões que ENCERRAM a sessão mentor (user quer voltar ao modo normal)
 _MENTOR_EXIT_PATTERNS = (
     "sair do mentor", "voltar", "parar mentor", "sair da mentoria",
@@ -10080,36 +10018,6 @@ _MENTOR_EXIT_PATTERNS = (
     "obrigado", "obrigada", "brigado", "brigada",
     "tá bom", "ta bom", "falou", "tmj", "top",
 )
-
-# Padrões analíticos — sempre vão pro LLM (nunca pre-router)
-_ANALYTICAL_PATTERNS = (
-    "é normal", "tá normal", "ta normal", "isso é muito", "isso é pouco",
-    "tô gastando muito", "to gastando muito", "gasto muito", "gasto pouco",
-    "como reduzir", "como diminuir", "como economizar", "como cortar",
-    "o que acha", "o que vc acha", "o que você acha",
-    "me analisa", "analisa meus", "análise meus", "analise meus",
-    "avalia meus", "avalia minhas", "me dê um feedback", "me da um feedback",
-    "gasto médio", "gasto medio", "média de gasto", "media de gasto",
-    "tá bom isso", "ta bom isso", "tô bem", "to bem financeiramente",
-    "está alto", "esta alto", "tá alto", "ta alto", "alto demais", "muito alto",
-    "é padrão", "é padrao", "é normal pra", "é normal para",
-    "tá caro", "ta caro", "caro demais",
-    "estou gastando muito", "gastando demais", "gastando muito",
-    "ou é padrão", "ou é padrao", "ou é normal",
-    "pra quantas pessoas", "pra 2", "pra 3", "pra duas", "pra tres",
-)
-
-# Marcadores referenciais — indicam que o user fala de algo existente, NÃO registrando novo
-_REFERENTIAL_MARKERS = (
-    "esse gasto", "essa compra", "esse valor", "esta despesa",
-    "aquele gasto", "aquela compra", "o gasto de", "a compra de",
-    "sobre o", "sobre a", "esse de", "essa de",
-    "foi no", "foi na", "foi pelo", "foi pela",
-)
-
-def _has_referential_markers(body_lower: str) -> bool:
-    """Verifica se a mensagem contém marcadores referenciais (fala de algo existente)."""
-    return any(m in body_lower for m in _REFERENTIAL_MARKERS)
 
 def _is_mentor_exit(body: str) -> bool:
     """Saída do mentor: msg curta (<=4 palavras) com padrão de saída."""
@@ -10475,54 +10383,82 @@ def _smart_expense_extract(user_phone: str, msg: str) -> dict | None:
 _user_last_context: dict = {}
 
 
-def _pre_route(message: str) -> dict | None:
-    """
-    Tenta rotear mensagens comuns sem chamar o LLM.
-    Retorna {"response": "..."} se conseguiu, ou None para fallback ao agente.
-    """
-    user_phone = _extract_user_phone(message)
-    if not user_phone:
-        return None
+# ═══ ROTEADOR LLM-MINI — substitui pre-router regex ═══
 
-    # Onboarding: se usuário é novo, retorna boas-vindas fixas (sem LLM)
-    onboard = _onboard_if_new(user_phone, message)
-    if onboard:
-        return onboard
+def _call(tool_func, *args, **kwargs):
+    """Chama a função real dentro do wrapper @tool e limpa metadata interna."""
+    fn = getattr(tool_func, 'entrypoint', None) or tool_func
+    result = fn(*args, **kwargs)
+    if isinstance(result, str):
+        result = "\n".join(l for l in result.split("\n") if not l.startswith("__"))
+    return result
 
-    body = _extract_body(message)
-    body_raw = _extract_body_raw(message)  # preserva newlines p/ multi-expense
-    msg = " ".join(body.lower().split())  # normaliza espaços múltiplos
-    today = _now_br()
-    current_month = today.strftime("%Y-%m")
 
-    # ═══ CHECKS PRIORITÁRIOS (ANTES de qualquer regex de gasto/categoria) ═══
+def _current_month() -> str:
+    return _now_br().strftime("%Y-%m")
 
-    # --- "PRI" / "PRISCILA" no início → SEMPRE pro LLM mentor ---
-    if (msg.startswith("pri ") or msg.startswith("pri,") or msg.startswith("pri.")
-            or msg == "pri" or msg.startswith("priscila")):
-        return None
 
-    # --- PERGUNTAS ANALÍTICAS → LLM (não são pedidos de dados, são pedidos de análise) ---
-    if any(k in msg for k in _ANALYTICAL_PATTERNS):
-        return None  # Vai pro LLM pra análise inteligente
+async def _mini_route(body: str, user_phone: str, in_mentor: bool) -> dict:
+    """Roteador universal via gpt-5-mini. Custo: ~430 tokens/msg."""
+    import openai as _oai, json as _json
+    _system = (
+        "You are a classifier for a WhatsApp financial bot (Brazilian Portuguese).\n"
+        "Return ONLY valid JSON: {\"intent\": \"...\", \"action\": \"...\", \"params\": {...}}\n\n"
+        "INTENTS:\n"
+        "- \"mentor\": starts with \"pri\"/\"priscila\", OR asks for advice/analysis/opinion/help with finances, "
+        "OR user is in mentor session and NOT registering a new expense\n"
+        "- \"transaction\": registering NEW expense/income (has amount + action verb like gastei/paguei/comprei/recebi). "
+        "NOT debts/financing (tenho divida, financiamento).\n"
+        "- \"query\": asking to SEE existing data. Actions: month_summary, week_summary, today, cards, bills, "
+        "recurring, goals, score, installments, categories, merchant_filter, category_filter, card_statement, "
+        "panel, budgets, salary_cycle, commitments, can_i_buy, averages, delete_last\n"
+        "- \"agenda\": calendar/reminder operations. Actions: list, create, complete, delete, pause, resume, edit, snooze\n"
+        "- \"help\": asking how the bot works, what commands exist\n"
+        "- \"greeting\": hi/hello/oi/boa tarde (short greeting only)\n"
+        "- \"confirm\": sim/ok/beleza (confirming pending action)\n"
+        "- \"cancel\": nao/cancela (canceling pending action)\n\n"
+        "RULES:\n"
+        "1. Message starting with \"pri\"/\"priscila\" -> ALWAYS \"mentor\", no exceptions\n"
+        "2. If mentor_session=active and NOT a clear new expense with amount+verb -> \"mentor\"\n"
+        "3. \"quanto gastei\"/\"resumo\"/\"meus cartoes\" = \"query\" (asking for data, not advice)\n"
+        "4. \"gastei 50 uber\" = \"transaction\" (has amount + action verb)\n"
+        "5. \"tenho divida de 5000\"/\"estou devendo\"/\"financiamento\" = \"mentor\" (NOT transaction)\n"
+        "6. Analytical questions (\"e normal?\", \"ta alto?\", \"como reduzir?\", \"pode me ajudar?\") = \"mentor\"\n"
+        "7. \"feito\"/\"pronto\"/\"concluido\" = \"agenda\" action \"complete\"\n"
+        "8. \"adiar\"/\"snooze\"/\"depois\" = \"agenda\" action \"snooze\"\n"
+        "9. \"errei\"/\"apaga ultimo\"/\"desfazer\" = \"query\" action \"delete_last\"\n"
+        "10. Complex operations (pay bill, import statement, change category, set budget) = \"unknown\" (let LLM handle)\n\n"
+        "For query params: month (\"current\" or \"2026-03\" or month name), merchant, category, card.\n"
+        "For agenda create: title, datetime in params.\n"
+        "For can_i_buy: item, amount in params.\n"
+        "For merchant_filter: merchant name in params.\n"
+        "For category_filter: category name in params.\n"
+        "For snooze: minutes (default 60) in params."
+    )
+    try:
+        resp = await _oai.AsyncOpenAI().chat.completions.create(
+            model="gpt-5-mini",
+            messages=[
+                {"role": "system", "content": _system},
+                {"role": "user", "content": f"[mentor_session: {'active' if in_mentor else 'inactive'}]\nMessage: {body}"}
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=150,
+            temperature=0,
+        )
+        return _json.loads(resp.choices[0].message.content)
+    except Exception:
+        return {"intent": "unknown", "action": "", "params": {}}
 
-    # --- MENTOR: detecta pedidos de ajuda financeira/mentoria → deixa pro LLM ---
-    if any(k in msg for k in _MENTOR_KEYWORDS):
-        return None  # Vai direto pro LLM (modo mentor)
 
-    # Helper: chama a função real dentro do wrapper @tool e limpa metadata interna
-    def _call(tool_func, *args, **kwargs):
-        fn = getattr(tool_func, 'entrypoint', None) or tool_func
-        result = fn(*args, **kwargs)
-        if isinstance(result, str):
-            result = "\n".join(l for l in result.split("\n") if not l.startswith("__"))
-        return result
+def _check_pending_action(user_phone: str, msg: str) -> dict | None:
+    """Verifica confirmacao/cancelamento de acao pendente (regex rapido, sem LLM)."""
+    import json as _json_pa
+    import logging as _log_pa
+    _logger = _log_pa.getLogger("atlas")
 
-    # --- CONFIRMAÇÃO / CANCELAMENTO DE AÇÃO PENDENTE ---
+    # Confirmacao
     if _re_router.match(r'(sim|s|yes|confirma|confirmar|pode apagar|apaga|beleza|bora|ok|t[aá]|isso)[\s\?\!\.]*$', msg):
-        import json as _json_pr
-        import logging as _log_pr
-        _logger = _log_pr.getLogger("atlas")
         try:
             conn_pa = _get_conn()
             cur_pa = conn_pa.cursor()
@@ -10537,13 +10473,12 @@ def _pre_route(message: str) -> dict | None:
             _logger.warning(f"[PENDING_ACTION] Found: {pa_row}")
             if pa_row:
                 pa_id, action_type, action_data_str = pa_row
-                # Limpa a ação pendente
                 cur_pa.execute("DELETE FROM pending_actions WHERE user_phone = ?", (user_phone,))
                 conn_pa.commit()
                 conn_pa.close()
 
                 if action_type == "delete_transactions":
-                    data = _json_pr.loads(action_data_str)
+                    data = _json_pa.loads(action_data_str)
                     result = _call(
                         delete_transactions, user_phone,
                         merchant=data.get("merchant", ""),
@@ -10556,7 +10491,7 @@ def _pre_route(message: str) -> dict | None:
                     )
                     return {"response": result}
                 elif action_type == "delete_agenda_event":
-                    data = _json_pr.loads(action_data_str)
+                    data = _json_pa.loads(action_data_str)
                     ev_id = data.get("event_id", "")
                     title = data.get("title", "evento")
                     try:
@@ -10569,8 +10504,6 @@ def _pre_route(message: str) -> dict | None:
                         pass
                     return {"response": f"🗑️ *{title}* removido da sua agenda!"}
                 elif action_type == "set_agenda_alert":
-                    # Não é confirmação "sim" — é a resposta do alerta, tratada abaixo
-                    # Re-insere a pending_action para ser tratada no bloco de alerta
                     try:
                         conn3 = _get_conn()
                         cur3 = conn3.cursor()
@@ -10584,12 +10517,12 @@ def _pre_route(message: str) -> dict | None:
                         pass
             else:
                 conn_pa.close()
-                # Sem ação pendente — "sim" solto não tem contexto, responde direto
                 return {"response": "Sim pra quê? Me diz o que precisa — pode lançar um gasto, pedir resumo, ou digitar *ajuda*."}
         except Exception as e:
             _logger.error(f"[PENDING_ACTION] CHECK FAILED: {e}")
             import traceback; traceback.print_exc()
 
+    # Cancelamento
     if _re_router.match(r'(n[aã]o|nao|n|cancela|cancelar|deixa|esquece|desiste)[\s\?\!\.]*$', msg):
         try:
             conn_pa = _get_conn()
@@ -10607,7 +10540,7 @@ def _pre_route(message: str) -> dict | None:
         except Exception:
             pass
 
-    # --- AGENDA: resposta de alerta (pending_action set_agenda_alert) ---
+    # Resposta de alerta de agenda
     _alert_match = _re_router.match(
         r'(\d+)\s*(?:min(?:uto)?s?|h(?:ora)?s?|dia(?:s)?\s+antes)'
         r'|(?:n[aã]o\s+avisa|sem\s+(?:alerta|aviso)|n[aã]o\s+(?:precisa|quero)\s+(?:de\s+)?(?:alerta|aviso))'
@@ -10629,14 +10562,12 @@ def _pre_route(message: str) -> dict | None:
                 data = _j_alert.loads(action_data_str)
                 ev_id = data.get("event_id", "")
                 title = data.get("title", "")
-
-                # Parseia a preferência do usuário
-                alert_min = 30  # padrão
+                alert_min = 30
                 raw_alert = msg.lower().strip()
                 if "não" in raw_alert or "nao" in raw_alert or "sem" in raw_alert:
                     alert_min = 0
                 elif "dia anterior" in raw_alert or "véspera" in raw_alert or "vespera" in raw_alert or "1 dia" in raw_alert or "um dia" in raw_alert:
-                    alert_min = 1440  # 24h
+                    alert_min = 1440
                 else:
                     m_num = _re_router.match(r'(\d+)\s*(min|h)', raw_alert)
                     if m_num:
@@ -10646,14 +10577,11 @@ def _pre_route(message: str) -> dict | None:
                             alert_min = n_val * 60
                         else:
                             alert_min = n_val
-
-                # Atualiza o evento
                 cur_al.execute("SELECT event_at FROM agenda_events WHERE id = ?", (ev_id,))
                 ev_row = cur_al.fetchone()
                 next_alert = ""
                 if ev_row:
                     next_alert = _compute_next_alert_at(ev_row[0], alert_min)
-
                 cur_al.execute(
                     "UPDATE agenda_events SET alert_minutes_before = ?, next_alert_at = ?, updated_at = ? WHERE id = ?",
                     (alert_min, next_alert, _now_br().strftime("%Y-%m-%d %H:%M:%S"), ev_id),
@@ -10661,7 +10589,6 @@ def _pre_route(message: str) -> dict | None:
                 cur_al.execute("DELETE FROM pending_actions WHERE user_phone = ? AND action_type = 'set_agenda_alert'", (user_phone,))
                 conn_al.commit()
                 conn_al.close()
-
                 if alert_min == 0:
                     return {"response": f"✅ *{title}* agendado sem alerta."}
                 elif alert_min >= 1440:
@@ -10675,649 +10602,47 @@ def _pre_route(message: str) -> dict | None:
         except Exception:
             pass
 
-    # --- AGENDA: criar evento (detecta trigger + tempo) ---
-    _agenda_trigger = _re_router.match(
-        r'(?:me\s+)?(?:lembr[aeo]r?|avisa[r]?)\s+(?:de\s+|que\s+|para\s+|pra\s+)?.+'
-        r'|tenho\s+(?:um\s+)?(?:compromisso|evento|reuni[aã]o)\s+.+'
-        r'|(?:agendar?|marcar?)\s+(?:um\s+)?(?:compromisso|evento|reuni[aã]o|lembrete|consulta|hor[aá]rio)\s+.+'
-        r'|.+\s+(?:de\s+\d+\s+em\s+\d+\s+hora|a\s+cada\s+\d+\s+hora)',
-        msg
-    )
-    if _agenda_trigger:
-        try:
-            parsed = _parse_agenda_message(msg)
-        except Exception:
-            parsed = None
-        if parsed and parsed.get("confidence", 0) >= 0.7:
-            result = _call(
-                create_agenda_event, user_phone,
-                title=parsed["title"],
-                event_at=parsed["event_at"],
-                recurrence_type=parsed["recurrence_type"],
-                recurrence_rule=parsed["recurrence_rule"],
-                alert_minutes_before=-1,
-                category="geral",
-            )
-            return {"response": result}
+    return None
 
-    # --- AGENDA: listar (SEM "compromisso" — "meus compromissos" = financeiro) ---
-    if _re_router.match(r'(?:(?:mostr[ae]|ver|abr[aei]|exib[aei]|me (?:mostr[ae]|d[aá]))\s+)?(?:minha\s+)?agenda|(?:(?:mostr[ae]|ver|quais)\s+)?(?:meus\s+)?(?:lembrete|evento)s?(?:\s+(?:da\s+semana|de\s+hoje|de\s+amanh[aã]|do\s+m[eê]s|pr[oó]ximos))?[\s\?\!\.]*$', msg):
-        return {"response": _call(list_agenda_events, user_phone)}
 
-    # --- AGENDA: feito/concluído (verifica se tem evento notificado recente) ---
-    if _re_router.match(r'(feito|pronto|conclu[ií]do?|fiz|j[aá] fiz|cumpri|marquei|done)[\s\?\!\.]*$', msg):
-        try:
-            _r = _call(complete_agenda_event, user_phone, "last")
-            if "não encontrei" not in _r.lower():
-                return {"response": _r}
-        except Exception:
-            pass
+def _panel_url_response(user_phone: str) -> str:
+    url = get_panel_url(user_phone)
+    if url:
+        return f"📊 *Seu painel está pronto!*\n\n👉 {url}\n\n_Link válido por 30 minutos._"
+    return "Não consegui gerar o painel agora. Tente novamente."
 
-    # --- AGENDA: snooze (adia 1h, adia 30 min, adia pra amanhã) ---
-    _snooze_m = _re_router.match(
-        r'(?:adia(?:r)?|snooze|soneca|depois|lembra (?:de novo |dnv )?(?:em |daqui ))\s*'
-        r'(?:pra |para |por |em |daqui )?'
-        r'(?:(\d+)\s*(?:min(?:uto)?s?)|(\d+)\s*h(?:ora)?s?|amanh[aã]|(\d+)\s*dia(?:s)?)[\s\?\!\.]*$',
-        msg
-    )
-    if _snooze_m:
-        try:
-            conn_sn = _get_conn()
-            cur_sn = conn_sn.cursor()
-            user_id_sn = _get_user_id(cur_sn, user_phone)
-            if user_id_sn:
-                # Busca o evento notificado mais recente (últimos 30 min)
-                cutoff = (today - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
-                cur_sn.execute(
-                    """SELECT id, title, event_at, alert_minutes_before, recurrence_type, recurrence_rule,
-                              active_start_hour, active_end_hour
-                       FROM agenda_events
-                       WHERE user_id = ? AND status = 'active' AND last_notified_at >= ?
-                       ORDER BY last_notified_at DESC LIMIT 1""",
-                    (user_id_sn, cutoff),
-                )
-                sn_row = cur_sn.fetchone()
-                if sn_row:
-                    sn_id, sn_title, sn_event_at, sn_alert_min, sn_rec, sn_rule, sn_start_h, sn_end_h = sn_row
-                    # Calcula novo next_alert_at
-                    mins_text = _snooze_m.group(1)
-                    hours_text = _snooze_m.group(2)
-                    days_text = _snooze_m.group(3)
-                    if mins_text:
-                        snooze_delta = timedelta(minutes=int(mins_text))
-                        snooze_label = f"{mins_text} minutos"
-                    elif hours_text:
-                        snooze_delta = timedelta(hours=int(hours_text))
-                        snooze_label = f"{hours_text}h"
-                    elif days_text:
-                        snooze_delta = timedelta(days=int(days_text))
-                        snooze_label = f"{days_text} dia(s)"
-                    elif "amanh" in msg:
-                        snooze_delta = timedelta(days=1)
-                        snooze_label = "amanhã"
-                    else:
-                        snooze_delta = timedelta(hours=1)
-                        snooze_label = "1h"
-                    new_alert = (today + snooze_delta).strftime("%Y-%m-%d %H:%M")
-                    now_ts = today.strftime("%Y-%m-%d %H:%M:%S")
-                    cur_sn.execute(
-                        "UPDATE agenda_events SET next_alert_at = ?, last_notified_at = '', updated_at = ? WHERE id = ?",
-                        (new_alert, now_ts, sn_id),
-                    )
-                    conn_sn.commit()
-                    conn_sn.close()
-                    return {"response": f"⏰ Lembrete \"{sn_title}\" adiado por {snooze_label}.\nVou avisar de novo às {new_alert[11:16]}. ✌️"}
-                else:
-                    conn_sn.close()
-                    return {"response": "Não encontrei nenhum lembrete recente para adiar. Tente especificar qual evento quer adiar."}
-            conn_sn.close()
-        except Exception as _sn_exc:
-            print(f"[SNOOZE] Erro: {_sn_exc}")
 
-    # --- AGENDA: pausar evento ("pausar lembrete água", "parar de avisar reunião") ---
-    _pause_m = _re_router.match(
-        r'(?:paus(?:ar|e|a)|silenci(?:ar|e|a)|par(?:ar|e|a) de (?:avisar|lembrar|notificar)|desativ(?:ar|e|a))\s+'
-        r'(?:(?:o |a )?(?:lembrete|evento|alarme|notifica[çc][aã]o)\s+(?:d[eoa]\s+)?)?'
-        r'(.+?)[\s\?\!\.]*$',
-        msg
-    )
-    if _pause_m:
-        _pause_query = _pause_m.group(1).strip()
-        if _pause_query and len(_pause_query) < 60:
-            return {"response": _call(pause_agenda_event, user_phone, _pause_query)}
+_QUERY_DISPATCH = {
+    "month_summary":    lambda ph, p: _call(get_month_summary, ph, p.get("month") or _current_month(), "ALL"),
+    "week_summary":     lambda ph, p: _call(get_week_summary, ph, "ALL"),
+    "today":            lambda ph, p: _call(get_today_total, ph, p.get("filter", "EXPENSE"), 1),
+    "cards":            lambda ph, p: _call(get_cards, ph),
+    "bills":            lambda ph, p: _call(get_bills, ph, p.get("month") or _current_month()),
+    "recurring":        lambda ph, p: _call(get_recurring, ph),
+    "goals":            lambda ph, p: _call(get_goals, ph),
+    "score":            lambda ph, p: _call(get_financial_score, ph),
+    "installments":     lambda ph, p: _call(get_installments_summary, ph),
+    "categories":       lambda ph, p: _call(get_all_categories_breakdown, ph, p.get("month") or _current_month()),
+    "merchant_filter":  lambda ph, p: _call(get_transactions_by_merchant, ph, p.get("merchant", ""), p.get("month") or _current_month()),
+    "category_filter":  lambda ph, p: _call(get_category_breakdown, ph, p.get("category", ""), p.get("month") or _current_month()),
+    "card_statement":   lambda ph, p: _call(get_card_statement, ph, p.get("card", "")),
+    "panel":            lambda ph, p: _panel_url_response(ph),
+    "budgets":          lambda ph, p: _call(get_category_budgets, ph),
+    "salary_cycle":     lambda ph, p: _call(get_salary_cycle, ph),
+    "commitments":      lambda ph, p: _call(get_upcoming_commitments, ph),
+    "can_i_buy":        lambda ph, p: _call(can_i_buy, ph, float(p.get("amount", 0)), p.get("item", "")),
+    "averages":         lambda ph, p: _call(get_spending_averages, ph, p.get("category", ""), p.get("month") or _current_month()),
+    "delete_last":      lambda ph, p: _call(delete_last_transaction, ph),
+}
 
-    # --- AGENDA: retomar evento ("retomar lembrete água", "reativar reunião") ---
-    _resume_m = _re_router.match(
-        r'(?:retom(?:ar|e|a)|reativ(?:ar|e|a)|volt(?:ar|e|a) a (?:avisar|lembrar|notificar)|ativ(?:ar|e|a))\s+'
-        r'(?:(?:o |a )?(?:lembrete|evento|alarme|notifica[çc][aã]o)\s+(?:d[eoa]\s+)?)?'
-        r'(.+?)[\s\?\!\.]*$',
-        msg
-    )
-    if _resume_m:
-        _resume_query = _resume_m.group(1).strip()
-        if _resume_query and len(_resume_query) < 60:
-            return {"response": _call(resume_agenda_event, user_phone, _resume_query)}
 
-    # --- AGENDA: editar horário ("editar reunião pra 15h", "mudar evento X pra amanhã 10h") ---
-    _edit_ev_m = _re_router.match(
-        r'(?:edit(?:ar|e|a)|mud(?:ar|e|a)|alter(?:ar|e|a)|troc(?:ar|e|a))\s+'
-        r'(?:(?:o )?(?:hor[aá]rio|data|hora) (?:d[eoa] )?)?'
-        r'(.+?)\s+'
-        r'(?:pra|para|por)\s+'
-        r'(.+?)[\s\?\!\.]*$',
-        msg
-    )
-    if _edit_ev_m:
-        _edit_name = _edit_ev_m.group(1).strip()
-        _edit_time_raw = _edit_ev_m.group(2).strip()
-        if _edit_name and _edit_time_raw:
-            # Converte tempo informal pra formato ISO
-            _new_time = _parse_event_time_edit(_edit_time_raw, today)
-            if _new_time:
-                return {"response": _call(edit_agenda_event_time, user_phone, _edit_name, _new_time)}
+async def _execute_intent(result: dict, user_phone: str, body: str, full_message: str) -> dict | None:
+    """Dispatcher central — executa a intencao classificada pelo mini-router."""
+    intent = result.get("intent", "unknown")
+    action = result.get("action", "")
+    params = result.get("params", {})
 
-    # --- PAINEL HTML ---
-    if _re_router.match(r'(painel|dashboard|meu painel|me mostr[ea] o painel|abr[ea] o painel|quero ver o painel|ver painel)[\s\?\!\.]*$', msg):
-        panel_url = get_panel_url(user_phone)
-        if panel_url:
-            return {"response": f"📊 *Seu painel está pronto!*\n\n👉 {panel_url}\n\n_Link válido por 30 minutos. Lá você pode ver gráficos, editar e apagar transações._"}
-        return {"response": "Nenhum dado encontrado. Comece registrando um gasto!"}
-
-    # --- MÉDIAS DE CONSUMO ---
-    # "qual minha média diária", "média de alimentação", "quanto gasto por dia", "média semanal"
-    _AVG_CATEGORY_MAP = {
-        "alimentacao": "Alimentação", "alimentação": "Alimentação", "comida": "Alimentação",
-        "transporte": "Transporte", "moradia": "Moradia",
-        "saude": "Saúde", "saúde": "Saúde", "lazer": "Lazer",
-        "educacao": "Educação", "educação": "Educação",
-        "assinatura": "Assinaturas", "assinaturas": "Assinaturas",
-        "vestuario": "Vestuário", "vestuário": "Vestuário",
-        "pets": "Pets", "outros": "Outros",
-    }
-    _avg_m = _re_router.match(
-        r'(?:qual (?:[eé] )?(?:a )?)?(?:minha |meu )?'
-        r'm[eé]dia (?:di[aá]ria|semanal|mensal|de (?:gastos?|consumo|despesas?))'
-        r'(?:\s+(?:de |em |com |por )?(.+?))?'
-        r'(?:\s+(?:est[ea]|ess[ea]|neste|nesse|no|do) m[eê]s)?[\s\?\!\.]*$',
-        msg
-    )
-    if not _avg_m:
-        _avg_m = _re_router.match(
-            r'(?:quanto (?:eu )?gasto (?:por dia|por semana|em m[eé]dia))'
-            r'(?:\s+(?:de |em |com )?(.+?))?'
-            r'(?:\s+(?:est[ea]|ess[ea]|neste|nesse|no|do) m[eê]s)?[\s\?\!\.]*$',
-            msg
-        )
-    if not _avg_m:
-        _avg_m = _re_router.match(
-            r'm[eé]dia (?:de |em |com )(.+?)(?:\s+(?:est[ea]|ess[ea]|neste|nesse|no|do) m[eê]s)?[\s\?\!\.]*$',
-            msg
-        )
-    if _avg_m:
-        _avg_cat_raw = (_avg_m.group(1) or "").strip().rstrip("?!. ")
-        _avg_cat_raw = _re_router.sub(r'\s+(?:de|em|no|na|do|da|com|por)$', '', _avg_cat_raw).strip()
-        _avg_cat_norm = _avg_cat_raw.lower().replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").replace("ã", "a").replace("õ", "o").replace("ç", "c")
-        _avg_category = _AVG_CATEGORY_MAP.get(_avg_cat_norm, "")
-        return {"response": _call(get_spending_averages, user_phone, _avg_category, current_month)}
-
-    # --- FILTRO POR CATEGORIA OU MERCHANT ---
-    # "quanto gastei de alimentação", "quanto gastei no ifood", "gastos com uber este mês"
-    _CATEGORY_MAP = {
-        "alimentacao": "Alimentação", "alimentação": "Alimentação", "comida": "Alimentação", "restaurante": "Alimentação", "refeicao": "Alimentação", "refeição": "Alimentação",
-        "transporte": "Transporte", "uber": "Transporte", "gasolina": "Transporte", "combustivel": "Transporte", "combustível": "Transporte",
-        "moradia": "Moradia", "aluguel": "Moradia", "casa": "Moradia",
-        "saude": "Saúde", "saúde": "Saúde", "farmacia": "Saúde", "farmácia": "Saúde", "remedio": "Saúde", "remédio": "Saúde",
-        "lazer": "Lazer", "diversao": "Lazer", "diversão": "Lazer", "entretenimento": "Lazer",
-        "educacao": "Educação", "educação": "Educação", "escola": "Educação", "curso": "Educação", "faculdade": "Educação",
-        "assinatura": "Assinaturas", "assinaturas": "Assinaturas", "streaming": "Assinaturas",
-        "vestuario": "Vestuário", "vestuário": "Vestuário", "roupa": "Vestuário", "roupas": "Vestuário",
-        "investimento": "Investimento", "investimentos": "Investimentos",
-        "pets": "Pets", "pet": "Pets", "animal": "Pets",
-        "cartao": "Cartão", "cartão": "Cartão",
-        "outros": "Outros",
-        "salario": "Salário", "salário": "Salário",
-    }
-    # Variante 1: "quanto gastei este mes no Deville" (tempo ANTES do merchant)
-    _filter_m = _re_router.match(
-        r'(?:qua[nl]to (?:eu )?(?:j[aá] )?gastei|gastos?|(?:me )?mostr[ae]? (?:(?:os |meus )?gastos? )?)'
-        r'(?:\s+(?:est[ea]|ess[ea]|neste|nesse|no|do|deste|desse)\s+m[eê]s|\s+(?:esta|essa|nesta|nessa|na|da|desta|dessa)\s+semana|\s+hoje)?'
-        r'\s+(?:de |em |no |na |com |n[oa]s? )'
-        r'(.+?)[\s\?\!\.\,]*$',
-        msg
-    )
-    # Variante 2: "quanto gastei no Deville este mes" (merchant ANTES do tempo)
-    if not _filter_m:
-        _filter_m = _re_router.match(
-            r'(?:qua[nl]to (?:eu )?(?:j[aá] )?gastei (?:de |em |no |na |com |n[oa]s? )|gastos? (?:de |em |no |na |com |n[oa]s? )|(?:me )?mostr[ae]? (?:(?:os |meus )?gastos? )?(?:de |em |no |na |com |n[oa]s? )|(?:qual |quais )?(?:(?:os |meus )?gastos? )(?:de |em |no |na |com |n[oa]s? ))'
-            r'(.+?)(?:\s+(?:est[ea]|ess[ea]|neste|nesse|no|do|deste|desse)\s+m[eê]s|\s+(?:esta|essa|nesta|nessa|na|da|desta|dessa)\s+semana|\s+hoje)?[\s\?\!\.\,]*$',
-            msg
-        )
-    if _filter_m:
-        _filter_query = _filter_m.group(1).strip().rstrip("?!. ")
-        # Remove expressões de tempo no final ("este mes", "essa semana", "hoje", etc)
-        _filter_query = _re_router.sub(
-            r'\s+(?:(?:est[ea]|ess[ea]|neste|nesse|nesta|nessa|no|do|deste|desse)\s+m[eê]s'
-            r'|(?:esta|essa|nesta|nessa|na|da|desta|dessa)\s+semana'
-            r'|hoje|ontem|este|esse|esta|essa|neste|nesse'
-            r'|de|em|no|na|do|da|com)+\s*$', '', _filter_query).strip()
-        # Ignora queries genéricas que são tempo, não filtro
-        _generic_time = {"mes", "mês", "semana", "hoje", "dia", "ano", "este mes", "esse mes", "este mês", "esse mês"}
-        if _filter_query and _filter_query.lower() not in _generic_time:
-            _filter_norm = _filter_query.lower().replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").replace("ã", "a").replace("õ", "o").replace("ç", "c")
-            _matched_cat = _CATEGORY_MAP.get(_filter_norm)
-            if _matched_cat:
-                return {"response": _call(get_category_breakdown, user_phone, _matched_cat, current_month)}
-            else:
-                # Busca como merchant (ifood, deville, mercado, etc)
-                _user_last_context[user_phone] = {"month": current_month, "type": "merchant", "ts": _now_br()}
-                return {"response": _call(get_transactions_by_merchant, user_phone, _filter_query, current_month)}
-
-    # --- CONTINUAÇÃO: "e no Talentos?", "e o Deville?", "e uber?" ---
-    _cont_m = _re_router.match(r'e (?:no |na |o |a |n[oa]s? )?(.+?)[\s\?\!\.\,]*$', msg)
-    if _cont_m:
-        _cont_query = _cont_m.group(1).strip()
-        if _cont_query and len(_cont_query) < 40:
-            import time as _t_ctx
-            ctx = _user_last_context.get(user_phone)
-            # Usa contexto se for recente (< 5 min)
-            if ctx and (_now_br() - ctx["ts"]).total_seconds() < 300:
-                _ctx_month = ctx.get("month", current_month)
-                _user_last_context[user_phone] = {"month": _ctx_month, "type": "merchant", "ts": _now_br()}
-                return {"response": _call(get_transactions_by_merchant, user_phone, _cont_query, _ctx_month)}
-
-    # --- ORÇAMENTO POR CATEGORIA ---
-    # "limite alimentação 500", "orçamento transporte 300", "budget lazer 200"
-    _budget_m = _re_router.match(
-        r'(?:limite|or[cç]amento|budget|teto)\s+'
-        r'(?:de\s+|d[aeo]\s+|pra\s+|para\s+)?'
-        r'([a-záéíóúãõç]+(?:\s+[a-záéíóúãõç]+)?)\s+'
-        r'(?:de\s+|em\s+)?(?:r\$?\s*)?(\d[\d.,]*)',
-        msg
-    )
-    if _budget_m:
-        _b_cat = _budget_m.group(1).strip()
-        _b_val = _budget_m.group(2).replace(".", "").replace(",", ".")
-        try:
-            _b_amount = float(_b_val)
-            if _b_amount > 0:
-                return {"response": _call(set_category_budget, user_phone, _b_cat, _b_amount)}
-        except ValueError:
-            pass
-
-    # "remover limite alimentação", "tirar orçamento transporte"
-    _rm_budget_m = _re_router.match(
-        r'(?:remover?|tirar?|apagar?|excluir?|deletar?)\s+'
-        r'(?:o?\s*)?(?:limite|or[cç]amento|budget|teto)\s+'
-        r'(?:de\s+|d[aeo]\s+)?'
-        r'([a-záéíóúãõç]+(?:\s+[a-záéíóúãõç]+)?)',
-        msg
-    )
-    if _rm_budget_m:
-        _rm_cat = _rm_budget_m.group(1).strip()
-        return {"response": _call(remove_category_budget, user_phone, _rm_cat)}
-
-    # "meus limites", "orçamentos", "ver limites"
-    if _re_router.match(r'(?:meus?\s+)?(?:limites?|or[cç]amentos?|budgets?|tetos?)(?:\s+por\s+categoria)?', msg):
-        return {"response": _call(get_category_budgets, user_phone)}
-
-    # --- IMPORTAR FATURA (confirmação após parse-statement) ---
-    if _re_router.match(r'^importar?[\s\!\.\,]*$', msg):
-        try:
-            import json as _j_imp
-            conn = _get_conn()
-            cur = conn.cursor()
-            cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
-            _u = cur.fetchone()
-            if not _u:
-                conn.close()
-            else:
-                _uid = _u[0]
-                _now_imp = _now_br().strftime("%Y-%m-%dT%H:%M:%S")
-                cur.execute(
-                    "SELECT id, transactions_json, card_name, bill_month, expires_at "
-                    "FROM pending_statement_imports WHERE user_id = ? AND imported_at IS NULL "
-                    "ORDER BY created_at DESC LIMIT 1",
-                    (_uid,),
-                )
-                _prow = cur.fetchone()
-                if not _prow:
-                    conn.close()
-                else:
-                    _imp_id, _txns_json, _det_card, _bill_m, _exp_at = _prow
-                    if _now_imp > _exp_at:
-                        conn.close()
-                        return {"response": "⏰ O prazo expirou (30 min). Envie a fatura novamente."}
-
-                    _txns = _j_imp.loads(_txns_json)
-
-                    # Resolve card_id
-                    _card_id = None
-                    _card_created = False
-                    if _det_card:
-                        _card = _find_card(cur, _uid, _det_card)
-                        if _card:
-                            _card_id = _card[0]
-                        else:
-                            _card_id = str(uuid.uuid4())
-                            cur.execute(
-                                "INSERT INTO credit_cards (id, user_id, name, closing_day, due_day) VALUES (?, ?, ?, 0, 0)",
-                                (_card_id, _uid, _det_card),
-                            )
-                            _card_created = True
-
-                    # Aplica regras de categorização
-                    cur.execute(
-                        "SELECT merchant_pattern, category FROM merchant_category_rules WHERE user_id=?",
-                        (_uid,),
-                    )
-                    _rules = {r[0].upper(): r[1] for r in cur.fetchall()}
-                    if _rules:
-                        for _tx in _txns:
-                            _mu = _tx.get("merchant", "").upper()
-                            for _pat, _cat in _rules.items():
-                                if _pat in _mu:
-                                    _tx["category"] = _cat
-                                    break
-
-                    # Importa transações
-                    _imported = 0
-                    _skipped = 0
-                    _import_source = f"fatura:{_det_card}:{_bill_m}"
-                    for _tx in _txns:
-                        try:
-                            if _tx.get("type", "debit") == "credit":
-                                _skipped += 1
-                                continue
-                            _amt = round(_tx["amount"] * 100)
-                            if _amt <= 0:
-                                _skipped += 1
-                                continue
-                            # Duplicata check
-                            if _card_id:
-                                cur.execute(
-                                    "SELECT id FROM transactions WHERE user_id=? AND card_id=? AND amount_cents=? AND occurred_at LIKE ?",
-                                    (_uid, _card_id, _amt, f"{_tx['date']}%"),
-                                )
-                                if cur.fetchone():
-                                    _skipped += 1
-                                    continue
-                            cur.execute(
-                                "SELECT id FROM transactions WHERE user_id=? AND LOWER(merchant)=LOWER(?) AND amount_cents=? AND occurred_at LIKE ?",
-                                (_uid, _tx["merchant"], _amt, f"{_tx['date']}%"),
-                            )
-                            if cur.fetchone():
-                                _skipped += 1
-                                continue
-
-                            _tx_id = str(uuid.uuid4())
-                            _inst_t, _inst_n = 1, 1
-                            if _tx.get("installment") and "/" in _tx["installment"]:
-                                _parts = _tx["installment"].split("/")
-                                try:
-                                    _inst_n = int(_parts[0])
-                                    _inst_t = int(_parts[1])
-                                except Exception:
-                                    pass
-                            _group_id = None
-                            if _inst_t > 1:
-                                _gk = f"{_uid}:{_tx['merchant'].upper()}:{_inst_t}:{_bill_m}"
-                                _group_id = hashlib.md5(_gk.encode()).hexdigest()[:16]
-                            _total_amt = _amt * _inst_t if _inst_t > 1 else 0
-
-                            cur.execute(
-                                """INSERT INTO transactions
-                                   (id, user_id, type, amount_cents, total_amount_cents, installments, installment_number,
-                                    category, merchant, payment_method, occurred_at, card_id, import_source, installment_group_id)
-                                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                (_tx_id, _uid, "EXPENSE", _amt, _total_amt, _inst_t, _inst_n,
-                                 _tx["category"], _tx["merchant"], "CREDIT",
-                                 _tx["date"] + "T12:00:00", _card_id, _import_source, _group_id),
-                            )
-                            _imported += 1
-                        except Exception:
-                            _skipped += 1
-
-                    # Marca como importado
-                    cur.execute(
-                        "UPDATE pending_statement_imports SET imported_at=? WHERE id=?",
-                        (_now_imp, _imp_id),
-                    )
-                    conn.commit()
-                    conn.close()
-
-                    _card_note = f" _(cartão '{_det_card}' criado)_" if _card_created else f" _(cartão {_det_card})_" if _card_id else ""
-                    _skip_note = f"\n{_skipped} ignoradas (duplicatas/estornos)." if _skipped else ""
-                    return {"response": f"✅ *{_imported} transações importadas!*{_card_note}{_skip_note}\n\nDiga _\"como tá meu mês?\"_ pra ver o resumo atualizado."}
-        except Exception:
-            pass
-
-    # --- PARAR / ATIVAR RELATÓRIOS ---
-    if _re_router.match(r'(parar?|desligar?|desativar?|cancelar?|tirar?)\s*(os?\s+)?relat[oó]rios?', msg):
-        try:
-            conn = _get_conn()
-            cur = conn.cursor()
-            cur.execute("UPDATE users SET daily_report_enabled = 0 WHERE phone = ?", (user_phone,))
-            conn.commit()
-            conn.close()
-        except Exception:
-            pass
-        return {"response": "✅ Pronto! Você não vai mais receber o relatório diário.\n\nQuando quiser voltar, é só dizer *\"ativar relatórios\"*."}
-
-    if _re_router.match(r'(ativar?|ligar?|retomar?|voltar?)\s*(os?\s+)?relat[oó]rios?', msg):
-        try:
-            conn = _get_conn()
-            cur = conn.cursor()
-            cur.execute("UPDATE users SET daily_report_enabled = 1 WHERE phone = ?", (user_phone,))
-            conn.commit()
-            conn.close()
-        except Exception:
-            pass
-        return {"response": "✅ Relatórios diários reativados! Você vai receber seu resumo toda noite às 20h. 📊"}
-
-    # --- APAGAR ÚLTIMO / DESFAZER ---
-    if _re_router.match(r'(errei|apaga|desfaz|desfazer|undo|apagar?\s*(?:o\s+)?[uú]ltim[oa]|apaga\s*(?:o\s+)?[uú]ltim[oa]|deleta\s*(?:o\s+)?[uú]ltim[oa]|remove\s*(?:o\s+)?[uú]ltim[oa]|exclui\s*(?:o\s+)?[uú]ltim[oa]|tira\s*(?:o\s+)?[uú]ltim[oa]|cancela\s*(?:o\s+)?[uú]ltim[oa])[\s\?\!\.]*$', msg):
-        return {"response": _call(delete_last_transaction, user_phone)}
-
-    # --- MENU RÁPIDO POR NÚMERO ---
-    if _re_router.match(r'^[1-6][\s\.\)]*$', msg):
-        _menu_map = {
-            "1": lambda: _call(get_month_summary, user_phone, current_month, "ALL"),
-            "2": lambda: _call(get_cards, user_phone),
-            "3": lambda: _call(get_bills, user_phone),
-            "4": lambda: _call(get_today_total, user_phone),
-            "5": lambda: _call(get_goals, user_phone),
-            "6": lambda: _HELP_TEXT,
-        }
-        num = msg.strip().rstrip(".)")
-        if num in _menu_map:
-            return {"response": _menu_map[num]()}
-
-    # --- RESUMO MENSAL ---
-    if _re_router.match(r'(como t[aá] (?:o )?meu m[eê]s|resumo (?:do |mensal|deste |desse )?m[eê]s|meus gastos(?: do m[eê]s)?|como (?:foi|esta|está|tá|ta|anda|andou)(?: (?:o )?meu| o)? m[eê]s|me d[aá] (?:o )?resumo|resumo geral|vis[aã]o geral|saldo do m[eê]s|saldo mensal|quanto (?:eu )?(?:j[aá] )?gastei (?:esse|este|no) m[eê]s|total do m[eê]s|balan[çc]o do m[eê]s|extrato do m[eê]s|extrato mensal|como (?:est[aá]|tá|ta|anda) (?:minhas? )?finan[çc]as)[\s\?\!\.]*$', msg):
-        summary = _call(get_month_summary, user_phone, current_month, "ALL")
-        return {"response": summary}
-
-    # Resumo de dois meses: "resumo de março e abril", "gastos de fevereiro e março"
-    m_2m = _re_router.match(r'(?:como (?:foi|tá|ta|está)|resumo d[eo]|me mostr[ea].*(?:gastos?|resumo) d[eo]|gastos d[eo]|extrato d[eo]|saldo d[eo])\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro) e (janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)', msg)
-    if m_2m:
-        mo1 = _resolve_month(m_2m.group(1))
-        mo2 = _resolve_month(m_2m.group(2))
-        if mo1 and mo2:
-            r1 = _call(get_month_summary, user_phone, mo1, "ALL")
-            r2 = _call(get_month_summary, user_phone, mo2, "ALL")
-            return {"response": f"{r1}\n\n───────────────\n\n{r2}"}
-
-    # Resumo dos próximos N meses: "resumo dos próximos 3 meses"
-    m_nm = _re_router.match(r'(?:resumo|gastos?|saldo|extrato|como (?:vão|v[aã]o) (?:ficar )?(?:os |meus )?)(?: d?os)?pr[oó]ximos (\d) m[eê]s(?:es)?', msg)
-    if m_nm:
-        n = min(int(m_nm.group(1)), 6)
-        months = _next_months(n)
-        parts = [_call(get_month_summary, user_phone, mo, "ALL") for mo in months]
-        return {"response": "\n\n───────────────\n\n".join(parts)}
-
-    # Resumo de mês específico
-    m = _re_router.match(r'(?:como (?:foi|tá|ta|está)|resumo d[eo]|me mostr[ea].*(?:gastos?|resumo) d[eo]|gastos d[eo]|extrato d[eo]|saldo d[eo])\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)', msg)
-    if m:
-        mo = _resolve_month(m.group(1))
-        if mo:
-            return {"response": _call(get_month_summary, user_phone, mo, "ALL")}
-
-    # --- RESUMO SEMANAL ---
-    if _re_router.match(r'(como (?:foi|tá|ta|está|anda) (?:minha )?semana|resumo (?:da |desta |dessa |semanal)?semana|minha semana|gastos? (?:da |desta |dessa )?semana|extrato (?:da |desta )?semana|quanto gastei (?:essa|esta|na) semana)[\s\?\!\.]*$', msg):
-        return {"response": _call(get_week_summary, user_phone, "ALL")}
-
-    # --- MOVIMENTAÇÕES DE HOJE (ALL) ---
-    if _re_router.match(r'(?:mostre?|mostra|ver|exib[aei]r?)?(?:\s+as?)?\s*movimenta[çc][õo]es?\s+(?:de\s+)?hoje[\s\?\!\.]*$', msg):
-        return {"response": _call(get_today_total, user_phone, "ALL", 1)}
-
-    # --- GASTOS DE HOJE ---
-    if _re_router.match(r'(gastos? de hoje|o que (?:eu )?gastei hoje|hoje|quanto (?:eu )?gastei hoje|extrato (?:de )?hoje|saldo (?:de )?hoje|me (?:d[aá]|fala|mostra) (?:o )?(?:saldo|extrato|gastos?)(?: de)? (?:de )?hoje|como (?:tá|ta|está) (?:o )?(?:dia de )?hoje)[\s\?\!\.]*$', msg):
-        return {"response": _call(get_today_total, user_phone, "EXPENSE", 1)}
-
-    # --- COMPROMISSOS / CONTAS A PAGAR ---
-    # Helper: resolve nome de mês → YYYY-MM
-    _month_names_map = {"janeiro":"01","fevereiro":"02","março":"03","marco":"03","abril":"04","maio":"05","junho":"06","julho":"07","agosto":"08","setembro":"09","outubro":"10","novembro":"11","dezembro":"12"}
-
-    def _resolve_month(name):
-        mo = _month_names_map.get(name.lower().replace("ç","c"), "")
-        if mo:
-            y = today.year if int(mo) >= today.month else today.year + 1
-            return f"{y}-{mo}"
-        return None
-
-    def _next_months(n):
-        """Retorna lista de YYYY-MM para os próximos n meses (incluindo atual)."""
-        months = []
-        y, m = today.year, today.month
-        for _ in range(n):
-            months.append(f"{y}-{m:02d}")
-            m += 1
-            if m > 12:
-                m = 1
-                y += 1
-        return months
-
-    # Compromissos de mês específico: "compromissos de abril"
-    m_comp_mes = _re_router.match(r'(?:compromissos|contas)(?: (?:a pagar )?)?(?:d[eo]|em|pra) (janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)[\s\?\!\.]*$', msg)
-    if m_comp_mes:
-        mo = _resolve_month(m_comp_mes.group(1))
-        if mo:
-            return {"response": _call(get_bills, user_phone, mo)}
-
-    # Compromissos de dois meses: "compromissos de março e abril"
-    m_comp_2 = _re_router.match(r'(?:compromissos|contas)(?: (?:a pagar )?)?(?:d[eo]|em|pra) (janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro) e (janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)[\s\?\!\.]*$', msg)
-    if m_comp_2:
-        mo1 = _resolve_month(m_comp_2.group(1))
-        mo2 = _resolve_month(m_comp_2.group(2))
-        if mo1 and mo2:
-            r1 = _call(get_bills, user_phone, mo1)
-            r2 = _call(get_bills, user_phone, mo2)
-            return {"response": f"{r1}\n\n───────────────\n\n{r2}"}
-
-    # Compromissos dos próximos N meses: "compromissos dos próximos 2 meses", "contas próximos 3 meses"
-    m_comp_n = _re_router.match(r'(?:compromissos|contas)(?: a pagar)? (?:d?os )?pr[oó]ximos (\d) m[eê]s(?:es)?[\s\?\!\.]*$', msg)
-    if m_comp_n:
-        n = int(m_comp_n.group(1))
-        n = min(n, 6)  # máximo 6 meses
-        months = _next_months(n)
-        parts = []
-        for mo in months:
-            parts.append(_call(get_bills, user_phone, mo))
-        return {"response": "\n\n───────────────\n\n".join(parts)}
-
-    # Compromissos genéricos (mês atual)
-    if _re_router.match(r'(meus compromissos|compromissos(?: (?:do|deste|desse|este|esse) m[eê]s)?|quais (?:s[aã]o )?(?:os )?(?:meus )?compromissos|contas? (?:a |pra )pagar|o que (?:eu )?(?:tenho|vou ter) (?:pra|para) pagar|(?:minhas |ver )?contas(?: do m[eê]s)?|o que falta pagar)[\s\?\!\.]*$', msg):
-        return {"response": _call(get_bills, user_phone)}
-    # --- GASTOS FIXOS ---
-    if _re_router.match(r'((?:meus |ver |listar )?gastos? fixos|fixos)[\s\?\!\.]*$', msg):
-        return {"response": _call(get_recurring, user_phone)}
-
-    # --- APAGAR TODOS de merchant → vai pro LLM (precisa de fluxo 2 etapas com confirmação) ---
-
-    # --- CARTÕES ---
-    if _re_router.match(r'(meus cart[õo]es|(?:minhas )?faturas?|ver (?:meus )?cart[õo]es|quais (?:s[aã]o )?(?:os )?(?:meus )?cart[õo]es|lista(?:r)? cart[õo]es)[\s\?\!\.]*$', msg):
-        return {"response": _call(get_cards, user_phone)}
-
-    # --- EXTRATO DE CARTÃO ESPECÍFICO ---
-    m_card = _re_router.match(r'(?:extrato|gastos?|como (?:t[aá]|est[aá])|fatura|me mostr[ea]|mostr[ea])(?: d[eo]| (?:no|do) (?:meu )?| (?:meu )?)?(?:cart[aã]o )?(?:d[aeo] )?(\w[\w\s]*?)[\s\?\!\.]*$', msg)
-    if m_card:
-        card_q = m_card.group(1).strip()
-        # Evita match genérico (mês, semana, hoje, etc)
-        skip_words = {"mês", "mes", "março", "marco", "fevereiro", "janeiro", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro", "hoje", "semana", "dia", "meu mes", "meu mês"}
-        if card_q.lower() not in skip_words and len(card_q) >= 2:
-            result = _call(get_card_statement, user_phone, card_q)
-            if "não encontrado" not in result.lower():
-                return {"response": result}
-
-    # --- METAS ---
-    if _re_router.match(r'((?:minhas |ver |listar )?metas|objetivos|(?:minhas |ver )?metas financeiras)[\s\?\!\.]*$', msg):
-        return {"response": _call(get_goals, user_phone)}
-
-    # --- GASTOS FIXOS / RECORRENTES ---
-    if _re_router.match(r'((?:meus |ver |listar )?(?:gastos? )?(?:fixos|recorrentes)|assinaturas|despesas? fixas)[\s\?\!\.]*$', msg):
-        return {"response": _call(get_recurring, user_phone)}
-
-    # --- SCORE FINANCEIRO ---
-    if _re_router.match(r'((?:meu )?score|nota financeira|sa[uú]de financeira|como (?:tá|ta|está) (?:minha )?sa[uú]de financeira)[\s\?\!\.]*$', msg):
-        return {"response": _call(get_financial_score, user_phone)}
-
-    # --- PARCELAS ---
-    if _re_router.match(r'((?:minhas |ver )?parcelas|parcelamentos?|compras? parceladas?)[\s\?\!\.]*$', msg):
-        return {"response": _call(get_installments_summary, user_phone)}
-
-    # --- MUDAR CATEGORIA de merchant ---
-    # "iFood é Lazer", "mudar iFood pra Lazer", "trocar iFood para Lazer", "iFood agora é Lazer"
-    _cat_change = _re_router.match(
-        r'(?:mudar?|trocar?|alterar?|colocar?|botar?|por|mover?)\s+(.+?)\s+(?:pra|para|como|em)\s+(.+?)$'
-        r'|(.+?)\s+(?:é|eh|agora é|agora eh|virou|passa a ser|muda pra|muda para)\s+(.+?)$',
-        msg
-    )
-    if _cat_change:
-        _merchant = (_cat_change.group(1) or _cat_change.group(3) or "").strip()
-        _new_cat = (_cat_change.group(2) or _cat_change.group(4) or "").strip()
-        # Valida se _new_cat parece categoria (não é frase longa)
-        if _merchant and _new_cat and len(_new_cat.split()) <= 3 and len(_merchant.split()) <= 4:
-            return {"response": _call(update_merchant_category, user_phone, _merchant, _new_cat)}
-
-    # --- CATEGORIAS (breakdown geral) ---
-    if _re_router.match(r'((?:ver )?categorias|gastos? por categoria|breakdown|quanto (?:gastei )?(?:em |por )cada categoria)[\s\?\!\.]*$', msg):
-        return {"response": _call(get_all_categories_breakdown, user_phone, current_month)}
-
-    # --- MÉDIAS (keyword fallback) ---
-    if ("media" in msg or "média" in msg) and any(k in msg for k in ("gasto", "consumo", "despesa", "diaria", "semanal", "mensal", "por dia", "por semana")):
-        return {"response": _call(get_spending_averages, user_phone, "", current_month)}
-    if "quanto" in msg and "gasto" in msg and ("por dia" in msg or "por semana" in msg or "em media" in msg or "em média" in msg):
-        return {"response": _call(get_spending_averages, user_phone, "", current_month)}
-
-    # --- EDITAR CARTÃO (link do painel) ---
-    if _re_router.match(r'(?:editar?|configurar?|alterar?|mudar?)\s+(?:o\s+|meu\s+|meus\s+)?(?:cart[aã]o|cart[oõ]es|dados?\s+do\s+cart[aã]o)(?:\s+.+?)?[\s\?\!\.]*$', msg):
-        panel_url = get_panel_url(user_phone)
-        if panel_url:
-            return {"response": f"📊 *Seu painel está pronto!*\n\n👉 {panel_url}\n\nLá você pode editar cartões, ver transações e muito mais.\n_Link válido por 30 minutos._"}
-
-    # (mentor + analytical checks movidos pro topo do _pre_route)
-
-    # --- AJUDA INTERATIVA (tema específico) ---
-    _help_topic_m = _re_router.match(
-        r'(?:como (?:eu )?(?:fa[çc]o|lan[çc]o|registro|uso|funciona|vejo|configuro)|'
-        r'me (?:explica|ensina|mostra como)|'
-        r'ajuda (?:com|sobre|pra)|'
-        r'o que [eé]|como (?:que )?(?:funciona|faz))\s*'
-        r'(?:pra |para |a |o |os |as )?(.+?)[\s\?\!\.]*$',
-        msg
-    )
-    if _help_topic_m:
-        _topic_text = _get_help_topic(_help_topic_m.group(1))
-        if _topic_text:
-            return {"response": _topic_text}
-
-    # --- AJUDA GERAL ---
-    if _re_router.match(r'(ajuda|help|menu|o que voc[eê] faz|comandos|como (?:te )?(?:uso|usar)|(?:o que|oque) (?:vc|voc[eê]) (?:faz|sabe fazer)|funcionalidades|recursos)[\s\?\!\.]*$', msg):
-        return {"response": _HELP_TEXT}
-
-    # --- SAUDAÇÕES simples (sem chamar LLM) ---
-    if _re_router.match(r'(oi|ol[aá]|e a[ií]|boa (?:tarde|noite|dia)|fala|eae|eai|salve|bom dia|boa tarde|boa noite)[\s\?\!\.]*$', msg):
-        # Busca nome do usuário para saudação personalizada
+    if intent == "greeting":
         _uname = ""
         try:
             _conn = _get_conn()
@@ -11330,223 +10655,57 @@ def _pre_route(message: str) -> dict | None:
         except Exception:
             pass
         greeting = f"E aí, {_uname}!" if _uname else "E aí!"
-        return {"response": f"{greeting} 👋\n\nMe diz o que precisa:\n\n💸 Manda um gasto ou receita\n📊 _\"resumo\"_ — como tá seu mês\n💳 _\"cartões\"_ — faturas e vencimentos\n📋 _\"compromissos\"_ — contas a pagar\n🧠 _\"mentor\"_ — orientação financeira\n❓ _\"ajuda\"_ — tudo que sei fazer"}
+        return {"response": f"{greeting} 👋\n\nMe diz o que precisa:\n\n💸 Manda um gasto ou receita\n📊 _\"resumo\"_ — como tá seu mês\n💳 _\"cartões\"_ — faturas e vencimentos\n📋 _\"compromissos\"_ — contas a pagar\n🧠 _\"pri\"_ — consultora financeira\n❓ _\"ajuda\"_ — tudo que sei fazer"}
 
-    # ── DETECÇÃO DE PAGAMENTO DE FATURA / COMPROMISSO ───────────────
-    # "pagamento cartão caixa 4867", "paguei fatura nubank", "paguei o aluguel 1500"
-    # Deve chamar pay_bill / close_bill, NÃO registrar como gasto novo.
-    _pay_m = _re_router.match(
-        r'(?:pagamento|paguei|pago|quitei|pagar)\s+'
-        r'(?:d[aeo]\s+)?'
-        r'(?:fatura\s+(?:d[aeo]\s+)?)?'
-        r'(?:(?:cart[aã]o|cartao)\s+(?:d[aeo]\s+)?)?'
-        r'(.+?)(?:\s+(\d+(?:[.,]\d{1,2})?))?'
-        r'[\s\?\!\.]*$',
-        msg
-    )
-    if _pay_m:
-        _pay_name = _pay_m.group(1).strip()
-        _pay_val_str = _pay_m.group(2)
-        _pay_val = float(_pay_val_str.replace(",", ".")) if _pay_val_str else 0
+    if intent == "help":
+        topic_resp = _get_help_topic(body)
+        if topic_resp:
+            return {"response": topic_resp}
+        return {"response": _HELP_TEXT}
 
-        # "paguei 28 assinatura ElevenLabs" → valor vem primeiro, nome depois
-        # Tenta extrair valor + nome quando o padrão é "paguei [valor] [nome]"
-        _val_first_m = _re_router.match(
-            r'(?:pagamento|paguei|pago|quitei|pagar)\s+(?:d[aeo]\s+)?(\d+(?:[.,]\d{1,2})?)\s+(.+?)[\s\?\!\.]*$',
-            msg
-        )
-        if _val_first_m:
-            _pay_val = float(_val_first_m.group(1).replace(",", "."))
-            _pay_name = _val_first_m.group(2).strip()
+    if intent == "transaction":
+        msg = _extract_body(full_message)
+        parsed = _smart_expense_extract(user_phone, msg)
+        if parsed:
+            return parsed
+        body_raw = _extract_body_raw(full_message)
+        multi = _multi_expense_extract(user_phone, body_raw)
+        if multi:
+            return multi
+        return None  # fallback pro LLM
 
-        # Remove noise words do nome
-        _pay_name_clean = _re_router.sub(r'\b(?:do|da|de|no|na|o|a|meu|minha|pelo|pela|cart[aã]o|cartao|fatura)\b', '', _pay_name).strip()
-        if _pay_name_clean:
-            # GUARD: "paguei 35 mercado cartão caixa" = gasto no cartão, NÃO pagamento de fatura
-            # Se tem VALOR + texto com merchant E cartão junto, é gasto (cai no smart extractor)
-            _has_value_and_extra = False
-            if _val_first_m and _pay_val > 0:
-                # Checa se o nome limpo tem mais de 1 palavra-raiz (indica merchant + cartão)
-                _name_words = [w for w in _pay_name_clean.lower().split() if len(w) > 2]
-                if len(_name_words) >= 2:
-                    # Verifica se uma das palavras é cartão do usuário
-                    _check_conn = _get_conn()
-                    _check_cur = _check_conn.cursor()
-                    _check_uid = _get_user_id(_check_cur, user_phone)
-                    if _check_uid:
-                        _check_cur.execute("SELECT name FROM credit_cards WHERE user_id = ?", (_check_uid,))
-                        _card_names = [r[0].lower() for r in _check_cur.fetchall()]
-                        # Se alguma palavra-raiz é nome de cartão E sobram outras palavras → é gasto no cartão
-                        for _cname in _card_names:
-                            _remaining = _pay_name_clean.lower().replace(_cname, "").strip()
-                            _remaining = _re_router.sub(r'\b(?:do|da|de|no|na|o|a)\b', '', _remaining).strip()
-                            if _remaining and len(_remaining) > 2:
-                                _has_value_and_extra = True
-                                break
-                    _check_conn.close()
+    if intent == "query" and action in _QUERY_DISPATCH:
+        try:
+            resp = _QUERY_DISPATCH[action](user_phone, params)
+            if resp:
+                return {"response": resp}
+        except Exception:
+            pass
+        return None
 
-            if _has_value_and_extra:
-                pass  # Cai no smart extractor como gasto no cartão
-            else:
-                # Verifica se é cartão, compromisso existente, ou gasto novo
-                _pay_conn = _get_conn()
-                _pay_cur = _pay_conn.cursor()
-                _pay_uid = _get_user_id(_pay_cur, user_phone)
-                _is_card = False
-                _is_bill = False
-                if _pay_uid:
-                    # 1. É cartão?
-                    _pay_card = _find_card(_pay_cur, _pay_uid, _pay_name_clean)
-                    if _pay_card:
-                        _is_card = True
-                    else:
-                        # 2. É compromisso existente? (recurring_transactions ou bills)
-                        _pay_cur.execute(
-                            "SELECT id FROM recurring_transactions WHERE user_id = ? AND LOWER(name) LIKE ? AND active = 1 LIMIT 1",
-                            (_pay_uid, f"%{_pay_name_clean.lower()}%"),
-                        )
-                        if _pay_cur.fetchone():
-                            _is_bill = True
-                _pay_conn.close()
+    if intent == "agenda":
+        return _handle_agenda_intent(user_phone, action, params, body)
 
-                if _is_card:
-                    return {"response": _call(close_bill, user_phone, _pay_name_clean)}
-                elif _is_bill:
-                    return {"response": _call(pay_bill, user_phone, _pay_name_clean, _pay_val)}
-                # Não é cartão nem compromisso → cai no smart extractor como gasto normal
-
-    # ── GUARD: mensagens de agenda/lembrete NUNCA devem cair no smart extractor ──
-    # Se chegou aqui com trigger de agenda, deixa o LLM processar (não é gasto)
-    if _re_router.match(r'(?:me\s+)?(?:lembr[aeo]r?|avisa[r]?)\s+', msg):
-        return None  # Vai pro LLM que tem as tools de agenda
-
-    # ── MULTI-EXPENSE: vários gastos em linhas separadas ──────────
-    # "1000 relogio\n70 padaria\n150 farmacia\n2000 aluguel"
-    try:
-        _multi = _multi_expense_extract(user_phone, body_raw)
-        if _multi:
-            return _multi
-    except Exception as _multi_err:
-        import logging as _log_multi
-        _log_multi.getLogger("atlas").error(f"Multi expense extract error: {_multi_err}", exc_info=True)
-
-    # ── EXTRATOR INTELIGENTE DE GASTOS ──────────────────────────────
-    # Independente de ordem: acha VALOR, CARTÃO (DB), MERCHANT (resto).
-    # Funciona com qualquer estrutura de frase.
-    try:
-        _smart = _smart_expense_extract(user_phone, msg)
-        if _smart:
-            return _smart
-    except Exception as _smart_err:
-        import logging as _log_smart
-        _log_smart.getLogger("atlas").error(f"Smart expense extract error: {_smart_err}", exc_info=True)
-
-    return None  # Fallback ao keyword router
+    return None  # fallback pro LLM
 
 
-def _normalize_br(text: str) -> str:
-    """Remove acentos e normaliza texto brasileiro para matching fuzzy."""
-    import unicodedata
-    nfkd = unicodedata.normalize('NFKD', text.lower())
-    return ''.join(c for c in nfkd if not unicodedata.combining(c))
-
-
-def _keyword_route(user_phone: str, msg: str) -> dict | None:
-    """
-    Matcher por palavras-chave — fallback tolerante a typos.
-    Roda DEPOIS do regex e ANTES do LLM.
-    Checa presença de palavras-chave, não formato exato.
-    """
-    n = _normalize_br(msg)
-    today = _now_br()
-    current_month = today.strftime("%Y-%m")
-
-    def _call(tool_func, *args, **kwargs):
-        fn = getattr(tool_func, 'entrypoint', None) or tool_func
-        result = fn(*args, **kwargs)
-        if isinstance(result, str):
-            result = "\n".join(l for l in result.split("\n") if not l.startswith("__"))
-        return result
-
-    # --- COMPROMISSOS / CONTAS ---
-    if any(k in n for k in ("compromisso", "conta a pagar", "conta pra pagar", "falta pagar", "contas do mes")):
-        # Checa se menciona mês específico
-        _month_kw = {"janeiro":"01","fevereiro":"02","marco":"03","abril":"04","maio":"05","junho":"06",
-                     "julho":"07","agosto":"08","setembro":"09","outubro":"10","novembro":"11","dezembro":"12"}
-        found_month = None
-        for name, num in _month_kw.items():
-            if name in n:
-                y = today.year if int(num) >= today.month else today.year + 1
-                found_month = f"{y}-{num}"
-                break
-        return {"response": _call(get_bills, user_phone, found_month or current_month)}
-
-    # --- RESUMO MENSAL ---
-    if any(k in n for k in ("resumo", "visao geral", "balanco")) and any(k in n for k in ("mes", "mensal", "geral", "financ")):
-        return {"response": _call(get_month_summary, user_phone, current_month, "ALL")}
-
-    # --- COMO TÁ MEU MÊS / QUANTO GASTEI NO MÊS (variações) ---
-    # Só roteia para resumo geral se NÃO tiver qualificador de categoria/merchant
-    _has_specific_filter = _re_router.search(r'gastei (?:de |em |no |na |com |n[oa]s? )\w', n) and not _re_router.search(r'gastei (?:esse|este|no|nesse|neste) mes', n)
-    if ("como" in n or "mostr" in n or "gastei" in n or "quanto" in n or "movimenta" in n) and ("mes" in n or "financ" in n or "gasto" in n or "movimenta" in n):
-        if "semana" not in n and "hoje" not in n and not _has_specific_filter:
-            return {"response": _call(get_month_summary, user_phone, current_month, "ALL")}
-
-    # --- RESUMO SEMANAL ---
-    if any(k in n for k in ("semana", "semanal")) and any(k in n for k in ("resumo", "como", "gasto", "extrato", "movimenta")):
-        return {"response": _call(get_week_summary, user_phone, "ALL")}
-
-    # --- MOVIMENTAÇÕES DE HOJE (ALL) ---
-    if "hoje" in n and "movimenta" in n:
-        return {"response": _call(get_today_total, user_phone, "ALL", 1)}
-
-    # --- GASTOS DE HOJE ---
-    if "hoje" in n and any(k in n for k in ("gasto", "gastei", "quanto", "extrato", "saldo")):
-        return {"response": _call(get_today_total, user_phone, "EXPENSE", 1)}
-
-    # --- CARTÕES ---
-    _expense_kw = ("gastei", "paguei", "pagamento", "comprei", "abasteci", "almocei",
-                    "jantei", "pedi", "tomei", "comi", "bebi", "torrei", "saiu",
-                    "lancei", "assinei", "carreguei", "coloquei", "botei", "foram",
-                    "peguei", "meti", "larguei", "deixei", "dei", "renovei",
-                    "posto", "mercado", "uber", "ifood", "gasolina", "restaurante")
-    if any(k in n for k in ("cartao", "cartoes", "fatura")) and not any(k in n for k in ("extrato", "gasto", "limit") + _expense_kw):
-        return {"response": _call(get_cards, user_phone)}
-
-    # --- GASTOS FIXOS ---
-    if any(k in n for k in ("gasto fixo", "gastos fixos", "fixos", "recorrente")):
-        return {"response": _call(get_recurring, user_phone)}
-
-    # --- METAS ---
-    if any(k in n for k in ("meta", "metas", "objetivo")) and not any(k in n for k in ("guard", "depos")):
-        return {"response": _call(get_goals, user_phone)}
-
-    # --- SCORE ---
-    if any(k in n for k in ("score", "nota financeira", "saude financeira")):
-        return {"response": _call(get_financial_score, user_phone)}
-
-    # --- PARCELAS ---
-    if any(k in n for k in ("parcela", "parcelamento", "parcelada")):
-        return {"response": _call(get_installments_summary, user_phone)}
-
-    # --- CATEGORIAS ---
-    if any(k in n for k in ("categoria", "breakdown")) and any(k in n for k in ("gasto", "quanto", "ver", "mostr", "por")):
-        return {"response": _call(get_all_categories_breakdown, user_phone, current_month)}
-
-    # --- PAINEL ---
-    if any(k in n for k in ("painel", "dashboard")):
-        panel_url = get_panel_url(user_phone)
-        if panel_url:
-            return {"response": f"📊 *Seu painel está pronto!*\n\n👉 {panel_url}\n\n_Link válido por 30 minutos._"}
-
-    # --- AGENDA: listar ---
-    if any(k in n for k in ("agenda", "lembrete", "lembretes", "evento", "eventos")) and any(k in n for k in ("ver", "mostra", "lista", "minha", "meus", "proxim", "quais")):
+def _handle_agenda_intent(user_phone: str, action: str, params: dict, body: str) -> dict | None:
+    """Executa acoes de agenda baseado no intent do mini-router."""
+    if action == "list":
         return {"response": _call(list_agenda_events, user_phone)}
 
-    # --- AGENDA: criar (keyword fuzzy) ---
-    if any(k in n for k in ("lembra", "lembrar", "lembrete", "agendar", "agenda")) and len(n) > 15:
+    if action == "complete":
         try:
-            parsed = _parse_agenda_message(msg)
+            _r = _call(complete_agenda_event, user_phone, params.get("title", "last"))
+            if "não encontrei" not in _r.lower():
+                return {"response": _r}
+        except Exception:
+            pass
+        return None
+
+    if action == "create":
+        try:
+            parsed = _parse_agenda_message(body)
         except Exception:
             parsed = None
         if parsed and parsed.get("confidence", 0) >= 0.7:
@@ -11560,37 +10719,67 @@ def _keyword_route(user_phone: str, msg: str) -> dict | None:
                 category="geral",
             )
             return {"response": result}
+        return None
 
-    # --- AGENDA: pausar/retomar (keyword) ---
-    if any(k in n for k in ("pausar", "pausa", "silenciar", "desativar")) and any(k in n for k in ("lembrete", "evento", "alarme", "agenda")):
-        # Extrai nome do evento: remove verbos e palavras-chave
-        _pn = msg
-        for _rm in ("pausar", "pausa", "silenciar", "desativar", "o", "a", "lembrete", "evento", "alarme", "de", "do", "da"):
-            _pn = _pn.replace(_rm, "")
-        _pn = _pn.strip()
-        if _pn:
-            return {"response": _call(pause_agenda_event, user_phone, _pn)}
+    if action == "pause":
+        title = params.get("title", "")
+        if title:
+            return {"response": _call(pause_agenda_event, user_phone, title)}
+        return None
 
-    if any(k in n for k in ("retomar", "reativar", "ativar", "voltar")) and any(k in n for k in ("lembrete", "evento", "alarme", "agenda")):
-        _rn = msg
-        for _rm in ("retomar", "reativar", "ativar", "voltar", "a", "avisar", "o", "lembrete", "evento", "alarme", "de", "do", "da"):
-            _rn = _rn.replace(_rm, "")
-        _rn = _rn.strip()
-        if _rn:
-            return {"response": _call(resume_agenda_event, user_phone, _rn)}
+    if action == "resume":
+        title = params.get("title", "")
+        if title:
+            return {"response": _call(resume_agenda_event, user_phone, title)}
+        return None
 
-    # --- AJUDA INTERATIVA (keyword) ---
-    if any(k in n for k in ("como faço", "como faco", "como funciona", "me explica", "me ensina", "ajuda com", "ajuda sobre")):
-        _topic_resp = _get_help_topic(msg)
-        if _topic_resp:
-            return {"response": _topic_resp}
+    if action == "delete":
+        title = params.get("title", "")
+        if title:
+            return {"response": _call(delete_agenda_event, user_phone, title)}
+        return None
 
-    # --- AJUDA (keyword) — não captura se tem palavras de mentoria ---
-    if any(k in n for k in ("ajuda", "help", "menu", "comando", "o que voce faz", "o que você faz", "o que vc faz")):
-        if not any(k in n for k in _MENTOR_KEYWORDS):
-            return {"response": _HELP_TEXT}
+    if action == "snooze":
+        try:
+            today = _now_br()
+            conn_sn = _get_conn()
+            cur_sn = conn_sn.cursor()
+            user_id_sn = _get_user_id(cur_sn, user_phone)
+            if user_id_sn:
+                cutoff = (today - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+                cur_sn.execute(
+                    """SELECT id, title FROM agenda_events
+                       WHERE user_id = ? AND status = 'active' AND last_notified_at >= ?
+                       ORDER BY last_notified_at DESC LIMIT 1""",
+                    (user_id_sn, cutoff),
+                )
+                sn_row = cur_sn.fetchone()
+                if sn_row:
+                    sn_id, sn_title = sn_row
+                    snooze_min = 60
+                    try:
+                        snooze_min = int(params.get("minutes", 60))
+                    except (ValueError, TypeError):
+                        pass
+                    new_alert = (today + timedelta(minutes=snooze_min)).strftime("%Y-%m-%d %H:%M:%S")
+                    cur_sn.execute(
+                        "UPDATE agenda_events SET next_alert_at = ?, last_notified_at = '', updated_at = ? WHERE id = ?",
+                        (new_alert, today.strftime("%Y-%m-%d %H:%M:%S"), sn_id),
+                    )
+                    conn_sn.commit()
+                    conn_sn.close()
+                    if snooze_min >= 1440:
+                        return {"response": f"⏰ *{sn_title}* adiado para amanhã!"}
+                    elif snooze_min >= 60:
+                        return {"response": f"⏰ *{sn_title}* adiado por {snooze_min // 60}h!"}
+                    else:
+                        return {"response": f"⏰ *{sn_title}* adiado por {snooze_min} min!"}
+            conn_sn.close()
+        except Exception:
+            pass
+        return None
 
-    return None  # Fallback ao LLM
+    return None
 
 
 _HELP_TEXT = """📋 *ATLAS — Manual Rápido*
@@ -11806,99 +10995,6 @@ def _get_help_topic(msg: str) -> str | None:
             return _HELP_TOPICS[topic]
     return None
 
-# ═══ CLASSIFICADOR DE INTENÇÃO ═══
-from enum import Enum as _Enum
-
-class _Intent(str, _Enum):
-    CLEAR_TRANSACTION = "tx"
-    CLEAR_QUERY = "query"
-    CLEAR_MENTOR = "mentor"
-    AMBIGUOUS = "ambiguous"
-
-# Regex simples para detectar valor monetário na mensagem
-# Valor monetário: R$X, ou número >= 2 dígitos, ou número + "reais"/"conto"
-# NÃO casa "2 adultos", "1 criança" etc.
-_VALUE_PATTERN = _re_router.compile(r'(?:r\$\s?\d+(?:[.,]\d{2})?|\d{2,}(?:[.,]\d{2})?|\d+\s*(?:reais|conto|pila))')
-
-def _classify_message_intent(body: str, in_mentor: bool) -> _Intent:
-    """Classifica intenção da mensagem: transação, mentor, query, ou ambíguo."""
-    low = body.lower().strip()
-
-    # ═══ TRIGGER "PRI" — PRIORIDADE ABSOLUTA ═══
-    # Qualquer msg que começa com "pri" ou "priscila" → MENTOR. Sem exceção.
-    if (low.startswith("pri ") or low.startswith("pri,") or low.startswith("pri.")
-            or low == "pri" or low.startswith("priscila")):
-        return _Intent.CLEAR_MENTOR
-
-    # Comando explícito de mentor — match exato
-    if low in _MENTOR_COMMANDS:
-        return _Intent.CLEAR_MENTOR
-
-    has_mentor_kw = any(k in low for k in _MENTOR_KEYWORDS)
-    has_analytical = any(k in low for k in _ANALYTICAL_PATTERNS)
-    has_referential = _has_referential_markers(low)
-    has_possession = any(k in low for k in _POSSESSION_MARKERS)
-    has_value = bool(_VALUE_PATTERN.search(low))
-
-    # TX precisa de: (verbo de ação OU sinal monetário) + valor
-    # Só local ("no mercado") + valor NÃO basta (pode ser "financiamento no mercado livre")
-    has_action_verb = any(k in low for k in _TX_ACTION_VERBS)
-    has_money_signal = any(k in low for k in _TX_MONEY_SIGNALS)
-    has_tx_signal = (has_action_verb or has_money_signal) and has_value
-
-    # Posse/dívida + valor = NÃO é transação nova ("tenho financiamento de 1000")
-    if has_possession and has_tx_signal:
-        has_tx_signal = False
-
-    # Referencial + valor = NÃO é transação nova (fala de gasto existente)
-    if has_referential and has_tx_signal:
-        has_tx_signal = False
-
-    # Analítico sempre vai pro LLM
-    if has_analytical:
-        return _Intent.CLEAR_MENTOR
-
-    if has_mentor_kw and not has_tx_signal:
-        return _Intent.CLEAR_MENTOR
-    if has_tx_signal and not has_mentor_kw:
-        return _Intent.CLEAR_TRANSACTION
-    if has_mentor_kw and has_tx_signal:
-        return _Intent.AMBIGUOUS
-
-    return _Intent.CLEAR_QUERY
-
-# Sessões de mentor ativas: {user_phone: timestamp}
-# Quando o mentor é ativado, marca o user. Próximas mensagens bypass pre-router.
-_mentor_sessions: dict = {}
-_MENTOR_SESSION_TTL = 600  # 10 minutos de inatividade encerra a sessão
-
-async def _micro_classify(body: str) -> str:
-    """Micro-classificador LLM para mensagens ambíguas. Custo: ~150 tokens."""
-    import openai as _oai_mc
-    try:
-        resp = await _oai_mc.AsyncOpenAI().chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content":
-                 "Classifique a intenção desta mensagem de WhatsApp financeiro. "
-                 "Responda UMA palavra: TRANSACTION (registrar gasto/receita novo) "
-                 "ou MENTOR (conselho/análise financeira) ou QUERY (consultar dados existentes)."},
-                {"role": "user", "content": body}
-            ],
-            max_tokens=5,
-            temperature=0
-        )
-        result = resp.choices[0].message.content.strip().upper()
-        if "TRANSACTION" in result:
-            return "tx"
-        if "MENTOR" in result:
-            return "mentor"
-        return "query"
-    except Exception:
-        return "query"  # fallback seguro
-
-from fastapi import Form as _Form
-
 def _strip_whatsapp_bold(text: str) -> str:
     """Converte *negrito* WhatsApp → **negrito** markdown para Chatwoot.
     Chatwoot interpreta markdown: **bold** → WhatsApp *bold*.
@@ -11960,6 +11056,12 @@ def _strip_trailing_questions(text: str) -> str:
             break
     return "\n".join(lines).strip()
 
+# Sessões de mentor ativas: {user_phone: timestamp}
+_mentor_sessions: dict = {}
+_MENTOR_SESSION_TTL = 600  # 10 minutos de inatividade encerra a sessão
+
+from fastapi import Form as _Form
+
 @app.post("/v1/chat")
 async def chat_endpoint(
     user_phone: str = _Form(""),
@@ -11986,69 +11088,46 @@ async def chat_endpoint(
     body = _extract_body(full_message).strip()
     _body_lower = body.lower() if body else ""
 
-    # ═══ ROTEADOR HÍBRIDO COM CLASSIFICAÇÃO DE INTENÇÃO ═══
+    # ═══ ROTEAMENTO UNIVERSAL VIA LLM-MINI ═══
     import logging as _log_rt
     _rt_logger = _log_rt.getLogger("atlas.router")
 
-    # 1. Estado da sessão mentor
-    _in_mentor_session = False
-    if user_phone in _mentor_sessions:
-        _elapsed = time.time() - _mentor_sessions[user_phone]
-        if _elapsed < _MENTOR_SESSION_TTL:
-            _in_mentor_session = True
-            _rt_logger.warning(f"[ROUTER] SESSAO ATIVA phone={user_phone} elapsed={_elapsed:.0f}s")
-        else:
-            del _mentor_sessions[user_phone]  # expirou
-            _rt_logger.warning(f"[ROUTER] SESSAO EXPIRADA phone={user_phone} elapsed={_elapsed:.0f}s")
-    else:
-        _rt_logger.warning(f"[ROUTER] SEM SESSAO phone={user_phone} sessions={list(_mentor_sessions.keys())}")
+    # 1. Onboarding: se usuário é novo, retorna boas-vindas fixas
+    onboard = _onboard_if_new(user_phone, full_message)
+    if onboard:
+        return {"content": _strip_whatsapp_bold(onboard["response"]), "routed": True}
 
-    _is_mentor_mode = False
+    # 2. Estado da sessão mentor
+    _in_mentor_session = user_phone in _mentor_sessions and (time.time() - _mentor_sessions[user_phone]) < _MENTOR_SESSION_TTL
+    if user_phone in _mentor_sessions and not _in_mentor_session:
+        del _mentor_sessions[user_phone]
 
-    # 2. PORTÃO DE SESSÃO (prioridade absoluta quando mentor está ativo)
-    if _in_mentor_session:
-        # Saída do mentor (msg curta com padrão de despedida)
-        if _is_mentor_exit(body):
-            _mentor_sessions.pop(user_phone, None)
-            return {"content": "Beleza! Quando precisar da Pri de novo, é só digitar *pri*. 💪", "routed": True}
+    # 3. Saída rápida do mentor (regex, sem LLM)
+    if _in_mentor_session and _is_mentor_exit(body):
+        _mentor_sessions.pop(user_phone, None)
+        return {"content": "Beleza! Quando precisar da Pri, digita **pri**. 💪", "routed": True}
 
-        # Classifica intenção dentro da sessão
-        _intent = _classify_message_intent(body, True)
-        _rt_logger.warning(f"[ROUTER] IN_SESSION intent={_intent.value} body={body[:80]}")
-        if _intent == _Intent.CLEAR_TRANSACTION and not _has_referential_markers(_body_lower):
-            # Transação NOVA real durante mentoria → registra mas mantém sessão
-            routed = _pre_route(full_message)
-            if routed:
-                _mentor_sessions[user_phone] = time.time()  # renova
-                _rt_logger.warning(f"[ROUTER] TX DURANTE MENTOR → pre-route")
-                return {"content": _strip_whatsapp_bold(routed["response"]), "routed": True}
-        # Qualquer outra coisa na sessão mentor → LLM mentor
-        _mentor_sessions[user_phone] = time.time()  # renova
-        _is_mentor_mode = True
-        _rt_logger.warning(f"[ROUTER] → LLM MENTOR (sessão)")
+    # 4. Confirmação/cancelamento de ações pendentes (regex + DB, sem LLM)
+    _confirm_result = _check_pending_action(user_phone, _body_lower)
+    if _confirm_result:
+        return {"content": _strip_whatsapp_bold(_confirm_result["response"]), "routed": True}
 
-    # 3. FORA DE SESSÃO — classificar intenção
-    if not _in_mentor_session:
-        _intent = _classify_message_intent(body, False)
-        _rt_logger.warning(f"[ROUTER] NO_SESSION intent={_intent.value} body={body[:80]}")
-        if _intent == _Intent.CLEAR_MENTOR:
-            _mentor_sessions[user_phone] = time.time()
-            _is_mentor_mode = True
-        elif _intent == _Intent.AMBIGUOUS:
-            _resolved = await _micro_classify(body)
-            if _resolved == "mentor":
-                _mentor_sessions[user_phone] = time.time()
-                _is_mentor_mode = True
+    # 5. Mini-router (gpt-5-mini, ~200ms)
+    _route = await _mini_route(body, user_phone, _in_mentor_session)
+    _rt_logger.warning(f"[MINI_ROUTE] phone={user_phone} result={_route} body={body[:80]}")
+    _is_mentor_mode = (_route.get("intent") == "mentor")
 
-    # 4. Se NÃO é mentor → roteamento normal (pre-router + keyword)
+    # 6. Dispatch
     if not _is_mentor_mode:
-        routed = _pre_route(full_message)
-        if routed:
-            return {"content": _strip_whatsapp_bold(routed["response"]), "routed": True}
+        _executed = await _execute_intent(_route, user_phone, body, full_message)
+        if _executed:
+            if _in_mentor_session:
+                _mentor_sessions[user_phone] = time.time()
+            return {"content": _strip_whatsapp_bold(_executed["response"]), "routed": True}
 
-        kw_routed = _keyword_route(user_phone, body)
-        if kw_routed:
-            return {"content": _strip_whatsapp_bold(kw_routed["response"]), "routed": True}
+    # 7. Se é mentor → ativa/renova sessão
+    if _is_mentor_mode:
+        _mentor_sessions[user_phone] = time.time()
 
     # 5. Fallback: chama o agente LLM
     if not session_id:
