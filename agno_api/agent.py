@@ -284,6 +284,18 @@ def _init_sqlite_tables():
             created_at TEXT DEFAULT (datetime('now')),
             UNIQUE(user_id, category)
         );
+
+        CREATE TABLE IF NOT EXISTS mentor_dialog_state (
+            user_phone TEXT PRIMARY KEY,
+            mode TEXT NOT NULL DEFAULT 'inactive',
+            last_open_question TEXT DEFAULT '',
+            open_question_key TEXT DEFAULT '',
+            expected_answer_type TEXT DEFAULT '',
+            memory_json TEXT DEFAULT '[]',
+            expires_at TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
     """)
     conn.commit()
     conn.close()
@@ -490,6 +502,19 @@ def _init_postgres_tables():
             budget_cents INTEGER NOT NULL,
             created_at TEXT DEFAULT (now()::text),
             UNIQUE(user_id, category)
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS mentor_dialog_state (
+            user_phone TEXT PRIMARY KEY,
+            mode TEXT NOT NULL DEFAULT 'inactive',
+            last_open_question TEXT DEFAULT '',
+            open_question_key TEXT DEFAULT '',
+            expected_answer_type TEXT DEFAULT '',
+            memory_json TEXT DEFAULT '[]',
+            expires_at TEXT NOT NULL,
+            created_at TEXT DEFAULT (now()::text),
+            updated_at TEXT DEFAULT (now()::text)
         );
     """)
     # Migração: normaliza type para UPPER (LLM pode ter salvo lowercase)
@@ -11159,15 +11184,308 @@ def _strip_trailing_questions(text: str) -> str:
             break
     return "\n".join(lines).strip()
 
-# Sessões de mentor ativas: {user_phone: timestamp}
-_mentor_sessions: dict = {}
 _MENTOR_SESSION_TTL = 600  # 10 minutos de inatividade encerra a sessão
-_mentor_short_memory: dict = {}
 _MENTOR_MEMORY_TURNS = 6
 
 
+def _ensure_mentor_dialog_state_table(cur) -> None:
+    try:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mentor_dialog_state (
+                user_phone TEXT PRIMARY KEY,
+                mode TEXT NOT NULL DEFAULT 'inactive',
+                last_open_question TEXT DEFAULT '',
+                open_question_key TEXT DEFAULT '',
+                expected_answer_type TEXT DEFAULT '',
+                memory_json TEXT DEFAULT '[]',
+                expires_at TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        if DB_TYPE == "sqlite":
+            cur.execute("PRAGMA table_info(mentor_dialog_state)")
+            cols = {row[1] for row in (cur.fetchall() or [])}
+            if "open_question_key" not in cols:
+                cur.execute("ALTER TABLE mentor_dialog_state ADD COLUMN open_question_key TEXT DEFAULT ''")
+        else:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'mentor_dialog_state'"
+            )
+            cols = {row[0] for row in (cur.fetchall() or [])}
+            if "open_question_key" not in cols:
+                cur.execute(
+                    "ALTER TABLE mentor_dialog_state ADD COLUMN IF NOT EXISTS open_question_key TEXT DEFAULT ''"
+                )
+    except Exception:
+        pass
+
+
+def _mentor_expiry_iso() -> str:
+    return (_now_br() + timedelta(seconds=_MENTOR_SESSION_TTL)).isoformat()
+
+
+def _load_mentor_state(user_phone: str) -> dict | None:
+    if not user_phone:
+        return None
+    try:
+        with _db() as (conn, cur):
+            _ensure_mentor_dialog_state_table(cur)
+            conn.commit()
+            cur.execute(
+                """
+                SELECT mode, last_open_question, open_question_key, expected_answer_type, memory_json, expires_at
+                FROM mentor_dialog_state
+                WHERE user_phone = ?
+                """,
+                (user_phone,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            mode, last_open_question, open_question_key, expected_answer_type, memory_json, expires_at = row
+            now_iso = _now_br().isoformat()
+            if not expires_at or expires_at <= now_iso or mode != "mentor":
+                try:
+                    cur.execute("DELETE FROM mentor_dialog_state WHERE user_phone = ?", (user_phone,))
+                    conn.commit()
+                except Exception:
+                    pass
+                return None
+            turns = []
+            try:
+                import json as _json_mentor
+                turns = _json_mentor.loads(memory_json or "[]")
+                if not isinstance(turns, list):
+                    turns = []
+            except Exception:
+                turns = []
+            return {
+                "mode": mode or "inactive",
+                "last_open_question": (last_open_question or "").strip(),
+                "open_question_key": (open_question_key or "").strip(),
+                "expected_answer_type": (expected_answer_type or "").strip(),
+                "memory_turns": turns[-_MENTOR_MEMORY_TURNS:],
+                "expires_at": expires_at,
+            }
+    except Exception:
+        return None
+
+
+def _save_mentor_state(
+    user_phone: str,
+    *,
+    mode: str = "mentor",
+    last_open_question: str = "",
+    open_question_key: str = "",
+    expected_answer_type: str = "",
+    memory_turns: list | None = None,
+    expires_at: str | None = None,
+) -> None:
+    if not user_phone:
+        return
+    turns = list(memory_turns or [])[-_MENTOR_MEMORY_TURNS:]
+    try:
+        import json as _json_mentor
+        payload = _json_mentor.dumps(turns, ensure_ascii=False)
+    except Exception:
+        payload = "[]"
+    expires = expires_at or _mentor_expiry_iso()
+    now_iso = _now_br().isoformat()
+    try:
+        with _db() as (conn, cur):
+            _ensure_mentor_dialog_state_table(cur)
+            conn.commit()
+            cur.execute("SELECT user_phone FROM mentor_dialog_state WHERE user_phone = ?", (user_phone,))
+            exists = cur.fetchone()
+            if exists:
+                cur.execute(
+                    """
+                    UPDATE mentor_dialog_state
+                    SET mode = ?, last_open_question = ?, open_question_key = ?, expected_answer_type = ?,
+                        memory_json = ?, expires_at = ?, updated_at = ?
+                    WHERE user_phone = ?
+                    """,
+                    (
+                        mode,
+                        last_open_question.strip(),
+                        open_question_key.strip(),
+                        expected_answer_type.strip(),
+                        payload,
+                        expires,
+                        now_iso,
+                        user_phone,
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO mentor_dialog_state (
+                        user_phone, mode, last_open_question, open_question_key, expected_answer_type,
+                        memory_json, expires_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_phone,
+                        mode,
+                        last_open_question.strip(),
+                        open_question_key.strip(),
+                        expected_answer_type.strip(),
+                        payload,
+                        expires,
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+            conn.commit()
+    except Exception:
+        pass
+
+
+def _clear_mentor_state(user_phone: str) -> None:
+    if not user_phone:
+        return
+    try:
+        with _db() as (conn, cur):
+            _ensure_mentor_dialog_state_table(cur)
+            conn.commit()
+            cur.execute("DELETE FROM mentor_dialog_state WHERE user_phone = ?", (user_phone,))
+            conn.commit()
+    except Exception:
+        pass
+
+
+def _touch_mentor_state(user_phone: str) -> None:
+    state = _load_mentor_state(user_phone)
+    if not state:
+        return
+    _save_mentor_state(
+        user_phone,
+        mode="mentor",
+        last_open_question=state.get("last_open_question", ""),
+        open_question_key=state.get("open_question_key", ""),
+        expected_answer_type=state.get("expected_answer_type", ""),
+        memory_turns=state.get("memory_turns", []),
+        expires_at=_mentor_expiry_iso(),
+    )
+
+
+def _extract_last_open_question(text: str) -> str:
+    if not text:
+        return ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in reversed(lines):
+        if "?" in line:
+            q = line.rsplit("?", 1)[0].strip()
+            if q:
+                return f"{q}?"
+    return ""
+
+
+def _infer_expected_answer_type(question: str) -> str:
+    q = (question or "").strip().lower()
+    if not q:
+        return ""
+    if "reserva" in q:
+        return "has_reserve"
+    if any(term in q for term in ("rotativo", "mínimo", "minimo", "dívida", "divida", "financiamento", "devendo")):
+        return "debt_status"
+    if any(term in q for term in ("veio pra ficar", "veio para ficar", "pontual", "recorrente", "todo mês", "todo mes", "fixa", "fixo")):
+        return "income_recurrence"
+    if any(term in q for term in ("quanto", "qual valor", "de quanto", "quanto entra", "quanto sobra", "quanto tem")):
+        return "number_amount"
+    if q.startswith(("tem ", "é ", "e ", "foi ", "tá ", "ta ", "usa ", "consegue ", "pagando ")):
+        return "yes_no"
+    return "open_text"
+
+
+def _infer_open_question_key(question: str, expected_answer_type: str = "") -> str:
+    q = (question or "").strip().lower()
+    expected = (expected_answer_type or "").strip().lower()
+    if not q:
+        return ""
+    if any(term in q for term in ("veio pra ficar", "veio para ficar", "foi pontual", "pontual ou", "recorrente ou pontual")):
+        return "income_extra_recurrence"
+    if any(term in q for term in ("veio de onde", "veio do que", "foi por que", "foi porque", "de onde veio", "qual foi a origem")):
+        return "income_extra_origin"
+    if "reserva" in q:
+        return "has_emergency_reserve"
+    if any(term in q for term in ("fora dos cart", "fora do cart", "alem do cart", "além do cart", "outra dívida", "outra divida")):
+        return "debt_outside_cards"
+    if any(term in q for term in ("pagando m", "rotativo", "mínimo", "minimo")):
+        return "card_repayment_behavior"
+    if any(term in q for term in ("quanto consegue", "quanto sobr", "qual valor", "de quanto", "quanto entra", "quanto tem")):
+        return "amount_followup"
+    if any(term in q for term in ("categoria outros", "nessa categoria", "em outros", "esse outros")):
+        return "category_other_breakdown"
+    if expected == "yes_no":
+        return "yes_no_followup"
+    if expected == "number_amount":
+        return "amount_followup"
+    if expected == "open_text":
+        return "open_text_followup"
+    return ""
+
+
+def _looks_like_answer_to_open_mentor_question(body: str, state: dict | None) -> bool:
+    if not state:
+        return False
+    text = (body or "").strip().lower()
+    if not text:
+        return False
+    words = text.split()
+    expected = (state.get("expected_answer_type") or "").strip()
+    question_key = (state.get("open_question_key") or "").strip()
+    if question_key == "income_extra_recurrence":
+        return any(
+            token in text for token in (
+                "pontual", "fixa", "fixo", "recorrente", "plantão", "plantao",
+                "freela", "freelance", "extra", "temporário", "temporario",
+                "só esse mês", "so esse mes", "todo mês", "todo mes",
+            )
+        )
+    if question_key == "income_extra_origin":
+        return (
+            len(words) <= 12
+            and any(
+                token in text for token in (
+                    "plantão", "plantao", "freela", "freelance", "bonus", "bônus",
+                    "comissão", "comissao", "hora extra", "venda", "pix", "trampo",
+                )
+            )
+        )
+    if question_key == "has_emergency_reserve":
+        return any(token in text for token in ("sim", "não", "nao", "tenho", "guardo", "reserva"))
+    if question_key == "debt_outside_cards":
+        return any(token in text for token in ("sim", "não", "nao", "financiamento", "empréstimo", "emprestimo", "parcelado"))
+    if question_key == "card_repayment_behavior":
+        return any(token in text for token in ("mínimo", "minimo", "rotativo", "total", "parcial", "parcelo", "atraso"))
+    if question_key == "category_other_breakdown":
+        return len(words) <= 16 and not _has_explicit_amount(text)
+    if expected == "number_amount":
+        return len(words) <= 8 and bool(_re_router.search(r'(?<!\w)\d+(?:[.,]\d{1,2})?(?!\w)', text))
+    if expected == "yes_no":
+        return any(token in text for token in ("sim", "não", "nao", "só", "so", "total", "mínimo", "minimo"))
+    if expected == "income_recurrence":
+        return any(token in text for token in ("pontual", "fixa", "fixo", "plantão", "plantao", "freela", "extra", "todo mês", "todo mes", "recorrente"))
+    if expected == "has_reserve":
+        return any(token in text for token in ("sim", "não", "nao", "tenho", "guardo", "reserva"))
+    if expected == "debt_status":
+        return any(token in text for token in ("rotativo", "mínimo", "minimo", "parcela", "parcelo", "atrasado", "financiamento", "pago"))
+    strong_tx_verbs = (
+        "gastei", "comprei", "recebi", "ganhei", "paguei", "almocei", "jantei",
+        "abasteci", "transferi", "pix", "uber", "ifood",
+    )
+    if any(verb in text for verb in strong_tx_verbs):
+        return False
+    return len(words) <= 10
+
+
 def _get_mentor_memory_context(user_phone: str) -> str:
-    turns = _mentor_short_memory.get(user_phone) or []
+    state = _load_mentor_state(user_phone)
+    turns = (state or {}).get("memory_turns") or []
     if not turns:
         return ""
     lines = []
@@ -11186,10 +11504,20 @@ def _append_mentor_memory(user_phone: str, role: str, content: str) -> None:
     text = (content or "").strip()
     if not text:
         return
-    bucket = _mentor_short_memory.setdefault(user_phone, [])
+    state = _load_mentor_state(user_phone) or {}
+    bucket = list(state.get("memory_turns") or [])
     bucket.append({"role": role, "content": text[:1200]})
     if len(bucket) > _MENTOR_MEMORY_TURNS:
-        _mentor_short_memory[user_phone] = bucket[-_MENTOR_MEMORY_TURNS:]
+        bucket = bucket[-_MENTOR_MEMORY_TURNS:]
+    _save_mentor_state(
+        user_phone,
+        mode="mentor",
+        last_open_question=state.get("last_open_question", ""),
+        open_question_key=state.get("open_question_key", ""),
+        expected_answer_type=state.get("expected_answer_type", ""),
+        memory_turns=bucket,
+        expires_at=_mentor_expiry_iso(),
+    )
 
 
 def _trim_agent_input(text: str) -> str:
@@ -11239,16 +11567,13 @@ async def chat_endpoint(
     if onboard:
         return {"content": _strip_whatsapp_bold(onboard["response"]), "routed": True}
 
-    # 2. Estado da sessão mentor
-    _in_mentor_session = user_phone in _mentor_sessions and (time.time() - _mentor_sessions[user_phone]) < _MENTOR_SESSION_TTL
-    if user_phone in _mentor_sessions and not _in_mentor_session:
-        del _mentor_sessions[user_phone]
-        _mentor_short_memory.pop(user_phone, None)
+    # 2. Estado persistente da sessão mentor
+    _mentor_state = _load_mentor_state(user_phone)
+    _in_mentor_session = bool(_mentor_state)
 
     # 3. Saída rápida do mentor (regex, sem LLM)
     if _in_mentor_session and _is_mentor_exit(body):
-        _mentor_sessions.pop(user_phone, None)
-        _mentor_short_memory.pop(user_phone, None)
+        _clear_mentor_state(user_phone)
         return {"content": "Beleza! Quando precisar da Pri, digita **pri**. 💪", "routed": True}
 
     # 4. Confirmação/cancelamento de ações pendentes (regex + DB, sem LLM)
@@ -11260,8 +11585,11 @@ async def chat_endpoint(
     _route = await _mini_route(body, user_phone, _in_mentor_session)
     _rt_logger.warning(f"[MINI_ROUTE] phone={user_phone} result={_route} body={body[:80]}")
 
-    # Sessão mentor ativa + sem valor explícito = resposta de conversa, nunca lançamento.
-    if _in_mentor_session and not _has_explicit_amount(body):
+    # Sessão mentor ativa + resposta curta ao que a Pri perguntou = mentor, não lançamento.
+    if _in_mentor_session and (
+        not _has_explicit_amount(body)
+        or _looks_like_answer_to_open_mentor_question(body, _mentor_state)
+    ):
         _route = {"intent": "mentor", "action": "", "params": {}}
 
     _is_mentor_mode = (_route.get("intent") == "mentor")
@@ -11271,12 +11599,21 @@ async def chat_endpoint(
         _executed = await _execute_intent(_route, user_phone, body, full_message)
         if _executed:
             if _in_mentor_session:
-                _mentor_sessions[user_phone] = time.time()
+                _touch_mentor_state(user_phone)
             return {"content": _strip_whatsapp_bold(_executed["response"]), "routed": True}
 
     # 7. Se é mentor → ativa/renova sessão
     if _is_mentor_mode:
-        _mentor_sessions[user_phone] = time.time()
+        _save_mentor_state(
+            user_phone,
+            mode="mentor",
+            last_open_question=(_mentor_state or {}).get("last_open_question", ""),
+            open_question_key=(_mentor_state or {}).get("open_question_key", ""),
+            expected_answer_type=(_mentor_state or {}).get("expected_answer_type", ""),
+            memory_turns=(_mentor_state or {}).get("memory_turns", []),
+            expires_at=_mentor_expiry_iso(),
+        )
+        _mentor_state = _load_mentor_state(user_phone)
 
     # 5. Fallback: chama o agente LLM
     if ATLAS_PERSIST_SESSIONS:
@@ -11301,6 +11638,9 @@ async def chat_endpoint(
     _time_ctx = f"[CONTEXTO: Agora são {_now_ctx.strftime('%H:%M')} do dia {_now_ctx.strftime('%d/%m/%Y')} (horário de Brasília). Use SEMPRE este horário como referência.]"
     _mentor_ctx = ""
     _mentor_memory_ctx = _get_mentor_memory_context(user_phone)
+    _mentor_open_question = (_mentor_state or {}).get("last_open_question", "")
+    _mentor_open_question_key = (_mentor_state or {}).get("open_question_key", "")
+    _mentor_expected_answer = (_mentor_state or {}).get("expected_answer_type", "")
     if _is_mentor_mode and not _in_mentor_session:
         # Nova sessão mentor — prompt conversacional estilo Nat
         _mentor_ctx = (
@@ -11407,6 +11747,21 @@ async def chat_endpoint(
             "Sem headers. Sem formatação de relatório. É um PAPO.\n"
             "Máximo 15 linhas por mensagem.\n"
         )
+        if _mentor_open_question:
+            _mentor_ctx += (
+                f"\n\n[ULTIMA PERGUNTA ABERTA DA PRI]\n"
+                f"{_mentor_open_question}\n"
+            )
+        if _mentor_expected_answer:
+            _mentor_ctx += (
+                f"\n[TIPO DE RESPOSTA ESPERADA]\n"
+                f"{_mentor_expected_answer}\n"
+            )
+        if _mentor_open_question_key:
+            _mentor_ctx += (
+                f"\n[CHAVE FORMAL DA PERGUNTA ABERTA]\n"
+                f"{_mentor_open_question_key}\n"
+            )
         if _mentor_memory_ctx:
             _mentor_ctx += f"\n\n{_mentor_memory_ctx}\n"
 
@@ -11452,6 +11807,18 @@ async def chat_endpoint(
     if _is_mentor_mode:
         _append_mentor_memory(user_phone, "Usuário", body)
         _append_mentor_memory(user_phone, "Pri", content)
+        _updated_mentor_state = _load_mentor_state(user_phone) or {}
+        _next_open_question = _extract_last_open_question(content)
+        _next_expected_answer = _infer_expected_answer_type(_next_open_question)
+        _save_mentor_state(
+            user_phone,
+            mode="mentor",
+            last_open_question=_next_open_question,
+            open_question_key=_infer_open_question_key(_next_open_question, _next_expected_answer),
+            expected_answer_type=_next_expected_answer,
+            memory_turns=_updated_mentor_state.get("memory_turns", []),
+            expires_at=_mentor_expiry_iso(),
+        )
     del response  # libera memória do response do LLM
     import gc as _gc; _gc.collect()
     return {"content": content, "routed": False, "session_id": session_id}
