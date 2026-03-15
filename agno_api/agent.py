@@ -38,9 +38,19 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = (os.getenv(name) or "").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 ATLAS_MODEL_ID = os.getenv("ATLAS_MODEL_ID", "gpt-4.1-mini").strip() or "gpt-4.1-mini"
 ATLAS_MAX_TOKENS = _env_int("ATLAS_MAX_TOKENS", 1200)
-ATLAS_HISTORY_RUNS = _env_int("ATLAS_HISTORY_RUNS", 3)
+ATLAS_ENABLE_HISTORY = _env_bool("ATLAS_ENABLE_HISTORY", False)
+ATLAS_HISTORY_RUNS = _env_int("ATLAS_HISTORY_RUNS", 2)
 ATLAS_MAX_INPUT_CHARS = _env_int("ATLAS_MAX_INPUT_CHARS", 4000)
 
 # ============================================================
@@ -8173,10 +8183,13 @@ atlas_agent = Agent(
     instructions=ATLAS_INSTRUCTIONS,
     model=get_model(),
     db=db,
-    add_history_to_context=True,
+    add_history_to_context=ATLAS_ENABLE_HISTORY,
     num_history_runs=ATLAS_HISTORY_RUNS,
+    max_tool_calls_from_history=2,
     tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event, pause_agenda_event, resume_agenda_event, edit_agenda_event_time, set_category_budget, get_category_budgets, remove_category_budget, get_user_financial_snapshot, get_market_rates, simulate_debt_payoff, simulate_investment],
     add_datetime_to_context=False,
+    store_tool_messages=False,
+    telemetry=False,
     markdown=True,
 )
 
