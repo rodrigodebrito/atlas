@@ -8065,6 +8065,128 @@ def _get_pri_month_opening_snapshot(user_phone: str) -> dict:
     }
 
 
+def _resolve_pri_snapshot_scope(text: str) -> str:
+    body = (text or "").strip().lower()
+    if any(signal in body for signal in ("analise do dia", "análise do dia", "analise de hoje", "análise de hoje", "meu dia")):
+        return "today"
+    if "analise de ontem" in body or "análise de ontem" in body or "meu ontem" in body:
+        return "yesterday"
+    if "analise da semana passada" in body or "análise da semana passada" in body or "semana passada" in body:
+        return "last_week"
+    if any(signal in body for signal in ("ultimos 7 dias", "últimos 7 dias", "ultima semana", "última semana")):
+        return "last_7_days"
+    if any(signal in body for signal in ("analise da semana", "análise da semana", "minha semana", "essa semana", "esta semana")):
+        return "week"
+    return "month"
+
+
+def _get_pri_opening_snapshot(user_phone: str, scope: str = "month") -> dict:
+    if (scope or "month").strip().lower() == "month":
+        snapshot = _get_pri_month_opening_snapshot(user_phone)
+        if snapshot:
+            snapshot["scope"] = "month"
+            snapshot["period_label"] = "este mes"
+        return snapshot
+
+    conn = _get_conn()
+    cur = conn.cursor()
+    row = _find_user(cur, user_phone)
+    if not row:
+        conn.close()
+        return {}
+
+    user_id, name, income = row
+    now = _now_br()
+    normalized_scope = (scope or "month").strip().lower()
+    if normalized_scope == "today":
+        start_date = end_date = now.date()
+        period_label = "hoje"
+    elif normalized_scope == "yesterday":
+        start_date = end_date = (now - timedelta(days=1)).date()
+        period_label = "ontem"
+    elif normalized_scope == "week":
+        start_date = (now - timedelta(days=now.weekday())).date()
+        end_date = now.date()
+        period_label = "esta semana"
+    elif normalized_scope == "last_week":
+        current_week_start = (now - timedelta(days=now.weekday())).date()
+        end_date = current_week_start - timedelta(days=1)
+        start_date = end_date - timedelta(days=6)
+        period_label = "semana passada"
+    else:
+        start_date = (now - timedelta(days=6)).date()
+        end_date = now.date()
+        period_label = "ultimos 7 dias"
+
+    start_str = start_date.strftime("%Y-%m-%d")
+    end_str = end_date.strftime("%Y-%m-%d")
+
+    cur.execute(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+        "WHERE user_id = ? AND type = 'EXPENSE' "
+        "AND substr(occurred_at, 1, 10) >= ? AND substr(occurred_at, 1, 10) <= ?",
+        (user_id, start_str, end_str),
+    )
+    expense_total = cur.fetchone()[0] or 0
+
+    cur.execute(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+        "WHERE user_id = ? AND type = 'INCOME' "
+        "AND substr(occurred_at, 1, 10) >= ? AND substr(occurred_at, 1, 10) <= ?",
+        (user_id, start_str, end_str),
+    )
+    actual_income = cur.fetchone()[0] or 0
+
+    cur.execute(
+        "SELECT category, SUM(amount_cents), COUNT(*) FROM transactions "
+        "WHERE user_id = ? AND type = 'EXPENSE' "
+        "AND substr(occurred_at, 1, 10) >= ? AND substr(occurred_at, 1, 10) <= ? "
+        "GROUP BY category ORDER BY SUM(amount_cents) DESC LIMIT 5",
+        (user_id, start_str, end_str),
+    )
+    top_categories = [
+        {
+            "name": category or "Outros",
+            "total_cents": total or 0,
+            "count": count or 0,
+        }
+        for category, total, count in (cur.fetchall() or [])
+    ]
+
+    total_card_debt = 0
+    try:
+        cur.execute(
+            "SELECT id, current_bill_opening_cents, closing_day FROM credit_cards WHERE user_id = ?",
+            (user_id,),
+        )
+        cards = cur.fetchall() or []
+    except Exception:
+        conn.rollback()
+        cards = []
+
+    for card_id, opening, closing in cards:
+        period_start = _bill_period_start(closing or 0)
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+            "WHERE user_id = ? AND card_id = ? AND occurred_at >= ?",
+            (user_id, card_id, period_start),
+        )
+        new_purchases = cur.fetchone()[0] or 0
+        total_card_debt += (opening or 0) + new_purchases
+
+    conn.close()
+    return {
+        "first_name": (name or "amigo").split()[0],
+        "scope": normalized_scope,
+        "period_label": period_label,
+        "declared_income_cents": income or 0,
+        "actual_income_cents": actual_income,
+        "expense_total_cents": expense_total,
+        "card_total_cents": total_card_debt,
+        "top_categories": top_categories,
+    }
+
+
 @tool
 def get_market_rates(user_phone: str) -> str:
     """Busca taxas de mercado atuais (Selic, CDI, IPCA, dólar, S&P 500, Bitcoin).
@@ -11819,9 +11941,10 @@ async def chat_endpoint(
         )
     _mentor_case_ctx = build_case_summary_context(_mentor_case_summary)
     _mentor_plan_ctx = build_consultant_plan_context(_mentor_case_summary, _mentor_stage)
-    _structured_opening_frame = infer_pri_opening_frame(body, _get_pri_month_opening_snapshot(user_phone), _mentor_case_summary) if (_is_mentor_mode and not _in_mentor_session) else ""
+    _opening_scope = _resolve_pri_snapshot_scope(body) if (_is_mentor_mode and not _in_mentor_session) else "month"
+    _opening_snapshot = _get_pri_opening_snapshot(user_phone, _opening_scope) if (_is_mentor_mode and not _in_mentor_session) else {}
+    _structured_opening_frame = infer_pri_opening_frame(body, _opening_snapshot, _mentor_case_summary) if (_is_mentor_mode and not _in_mentor_session) else ""
     if _is_mentor_mode and not _in_mentor_session and _structured_opening_frame:
-        _opening_snapshot = _get_pri_month_opening_snapshot(user_phone)
         if _opening_snapshot:
             _opening = build_structured_pri_opening(body, _opening_snapshot, _mentor_case_summary)
             content = (_opening.get("content") or "").strip()

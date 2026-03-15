@@ -226,9 +226,11 @@ async def test_first_pri_month_analysis_uses_structured_opening_without_llm(atla
     monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
     monkeypatch.setattr(
         atlas,
-        "_get_pri_month_opening_snapshot",
-        lambda _phone: {
+        "_get_pri_opening_snapshot",
+        lambda _phone, _scope="month": {
             "first_name": "Rodrigo",
+            "scope": "month",
+            "period_label": "este mes",
             "declared_income_cents": 1200000,
             "actual_income_cents": 1767754,
             "expense_total_cents": 1912147,
@@ -269,9 +271,11 @@ async def test_first_pri_debt_question_uses_debt_frame_without_llm(atlas, monkey
     monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
     monkeypatch.setattr(
         atlas,
-        "_get_pri_month_opening_snapshot",
-        lambda _phone: {
+        "_get_pri_opening_snapshot",
+        lambda _phone, _scope="month": {
             "first_name": "Rodrigo",
+            "scope": "month",
+            "period_label": "este mes",
             "declared_income_cents": 1200000,
             "actual_income_cents": 1200000,
             "expense_total_cents": 900000,
@@ -292,3 +296,45 @@ async def test_first_pri_debt_question_uses_debt_frame_without_llm(atlas, monkey
     assert state is not None
     assert state["case_summary"]["main_issue_hypothesis"] == "high_interest_debt"
     assert state["consultant_stage"] == "diagnosis_clarification"
+
+
+@pytest.mark.asyncio
+async def test_first_pri_last_week_analysis_uses_temporal_frame_without_llm(atlas, monkeypatch):
+    phone = "+5511955554444"
+    stub_agent = _StubAtlasAgent([])
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return {"intent": "mentor", "action": "", "params": {}}
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+    monkeypatch.setattr(
+        atlas,
+        "_get_pri_opening_snapshot",
+        lambda _phone, _scope="month": {
+            "first_name": "Rodrigo",
+            "scope": "last_week",
+            "period_label": "semana passada",
+            "declared_income_cents": 1200000,
+            "actual_income_cents": 0,
+            "expense_total_cents": 356700,
+            "card_total_cents": 473420,
+            "top_categories": [
+                {"name": "Outros", "total_cents": 160000, "count": 2},
+                {"name": "Alimentacao", "total_cents": 82000, "count": 6},
+            ],
+        },
+    )
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="pri faz minha analise da semana passada")
+
+    content = result["content"].lower()
+    assert "semana passada" in content
+    assert "outros" in content
+    assert stub_agent.calls == []
+
+    state = atlas._load_mentor_state(phone)
+    assert state is not None
+    assert state["open_question_key"] == "category_other_breakdown"

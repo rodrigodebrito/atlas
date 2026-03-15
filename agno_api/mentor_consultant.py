@@ -294,6 +294,16 @@ def infer_pri_opening_frame(
         "onde ta indo meu dinheiro",
         "onde tá indo meu dinheiro",
     )
+    if any(signal in text for signal in ("analise do dia", "análise do dia", "analise de hoje", "análise de hoje", "meu dia")):
+        return "daily_analysis"
+    if "analise de ontem" in text or "análise de ontem" in text or "meu ontem" in text:
+        return "yesterday_analysis"
+    if "analise da semana passada" in text or "análise da semana passada" in text or "semana passada" in text:
+        return "last_week_analysis"
+    if any(signal in text for signal in ("ultimos 7 dias", "últimos 7 dias", "ultima semana", "última semana")):
+        return "last_7_days_analysis"
+    if any(signal in text for signal in ("analise da semana", "análise da semana", "minha semana", "essa semana", "esta semana")):
+        return "weekly_analysis"
     if any(signal in text for signal in monthly_signals):
         return "monthly_analysis"
 
@@ -350,6 +360,7 @@ def build_structured_pri_opening(
     food_total = int(food.get("total_cents") or 0)
     food_count = int(food.get("count") or 0)
     housing_total = int(housing.get("total_cents") or 0)
+    period_label = str(snapshot.get("period_label") or "esse periodo").strip() or "esse periodo"
 
     issue = "general_leak"
     question = "Me responde uma coisa: hoje voce sente mais aperto com cartao, com gasto do dia a dia ou com conta fixa?"
@@ -357,7 +368,32 @@ def build_structured_pri_opening(
     expected_answer_type = "open_text"
     main_hypothesis = summary.get("main_issue_hypothesis") or "cashflow_pressure"
 
-    if frame == "high_interest_debt":
+    if frame in {"daily_analysis", "yesterday_analysis", "weekly_analysis", "last_week_analysis", "last_7_days_analysis"}:
+        if others_total >= max(8000, int(expense_total * 0.18) if expense_total else 8000):
+            issue = "temporal_others_leak"
+            question = f"Me diz: esse *Outros* de {period_label} voce ja sabe o que foi ou saiu tudo no automatico?"
+            question_key = "category_other_breakdown"
+            expected_answer_type = "open_text"
+            main_hypothesis = "cashflow_pressure"
+        elif food_count >= 3 and food_total >= 3000:
+            issue = "temporal_food_frequency"
+            question = f"Nesse recorte de {period_label}, isso foi mais mercado, delivery ou comer fora?"
+            question_key = "open_text_followup"
+            expected_answer_type = "open_text"
+            main_hypothesis = "cashflow_pressure"
+        elif housing_total > 0:
+            issue = "temporal_housing_weight"
+            question = f"Em {period_label}, essa moradia foi so conta fixa normal ou entrou alguma coisa fora da curva?"
+            question_key = "open_text_followup"
+            expected_answer_type = "open_text"
+            main_hypothesis = "cashflow_pressure"
+        else:
+            issue = "temporal_general_leak"
+            question = f"Em {period_label}, o que mais te deu sensacao de descontrole: comida, impulso ou conta fixa?"
+            question_key = "open_text_followup"
+            expected_answer_type = "open_text"
+            main_hypothesis = "cashflow_pressure"
+    elif frame == "high_interest_debt":
         issue = "high_interest_debt"
         debt_amount = explicit_amount or card_total
         question = "Me responde com sinceridade: voce consegue levantar parte disso ainda este mes ou vai precisar montar uma saida parcelada?"
@@ -419,7 +455,35 @@ def build_structured_pri_opening(
         expected_answer_type = "open_text"
         main_hypothesis = "cashflow_pressure"
 
-    if issue == "high_interest_debt":
+    if issue == "temporal_others_leak":
+        content = (
+            f"Pri aqui. Em {period_label}, o problema nao parece ser uma compra isolada. Parece dinheiro saindo sem clareza.\n\n"
+            "O ponto mais suspeito pra mim e *Outros*. Quando essa categoria aparece forte num recorte curto, quase sempre teve gasto no automatico.\n\n"
+            "Se eu estivesse organizando isso com voce, eu abriria esse bloco primeiro antes de procurar problema no resto.\n\n"
+            f"{question}"
+        )
+    elif issue == "temporal_food_frequency":
+        content = (
+            f"Pri aqui. Em {period_label}, o que me chama atencao nao e um valor gigante. E repeticao.\n\n"
+            "Quando alimentacao aparece varias vezes em pouco tempo, o dinheiro vai embora pingando e o aperto vem depois.\n\n"
+            "Se eu estivesse organizando isso com voce, eu destrinchava essa categoria primeiro.\n\n"
+            f"{question}"
+        )
+    elif issue == "temporal_housing_weight":
+        content = (
+            f"Pri aqui. Em {period_label}, o peso maior veio de conta grande, nao de gasto bobo.\n\n"
+            "Quando moradia domina o recorte, a pergunta certa nao e onde cortar cafe. E o que entrou aqui alem do normal.\n\n"
+            "Se eu estivesse olhando isso com voce, eu separaria o fixo do que foi excecao.\n\n"
+            f"{question}"
+        )
+    elif issue == "temporal_general_leak":
+        content = (
+            f"Pri aqui. Em {period_label}, teu dinheiro nao sumiu num lugar so. Ele espalhou.\n\n"
+            "Quando isso acontece, normalmente o problema e frequencia ou gasto no automatico, nao uma compra unica.\n\n"
+            "Se eu estivesse organizando isso com voce, eu escolheria primeiro o bloco mais repetido pra atacar.\n\n"
+            f"{question}"
+        )
+    elif issue == "high_interest_debt":
         debt_amount = explicit_amount or card_total
         debt_label = _fmt_cents_brl(debt_amount) if debt_amount else "essa divida"
         content = (
