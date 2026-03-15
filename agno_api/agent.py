@@ -11162,6 +11162,34 @@ def _strip_trailing_questions(text: str) -> str:
 # Sessões de mentor ativas: {user_phone: timestamp}
 _mentor_sessions: dict = {}
 _MENTOR_SESSION_TTL = 600  # 10 minutos de inatividade encerra a sessão
+_mentor_short_memory: dict = {}
+_MENTOR_MEMORY_TURNS = 6
+
+
+def _get_mentor_memory_context(user_phone: str) -> str:
+    turns = _mentor_short_memory.get(user_phone) or []
+    if not turns:
+        return ""
+    lines = []
+    for turn in turns[-_MENTOR_MEMORY_TURNS:]:
+        role = turn.get("role", "")
+        content = (turn.get("content") or "").strip()
+        if not role or not content:
+            continue
+        lines.append(f"{role}: {content}")
+    if not lines:
+        return ""
+    return "[MEMÓRIA CURTA DA CONVERSA RECENTE]\n" + "\n".join(lines)
+
+
+def _append_mentor_memory(user_phone: str, role: str, content: str) -> None:
+    text = (content or "").strip()
+    if not text:
+        return
+    bucket = _mentor_short_memory.setdefault(user_phone, [])
+    bucket.append({"role": role, "content": text[:1200]})
+    if len(bucket) > _MENTOR_MEMORY_TURNS:
+        _mentor_short_memory[user_phone] = bucket[-_MENTOR_MEMORY_TURNS:]
 
 
 def _trim_agent_input(text: str) -> str:
@@ -11215,10 +11243,12 @@ async def chat_endpoint(
     _in_mentor_session = user_phone in _mentor_sessions and (time.time() - _mentor_sessions[user_phone]) < _MENTOR_SESSION_TTL
     if user_phone in _mentor_sessions and not _in_mentor_session:
         del _mentor_sessions[user_phone]
+        _mentor_short_memory.pop(user_phone, None)
 
     # 3. Saída rápida do mentor (regex, sem LLM)
     if _in_mentor_session and _is_mentor_exit(body):
         _mentor_sessions.pop(user_phone, None)
+        _mentor_short_memory.pop(user_phone, None)
         return {"content": "Beleza! Quando precisar da Pri, digita **pri**. 💪", "routed": True}
 
     # 4. Confirmação/cancelamento de ações pendentes (regex + DB, sem LLM)
@@ -11270,6 +11300,7 @@ async def chat_endpoint(
     _now_ctx = _now_br()
     _time_ctx = f"[CONTEXTO: Agora são {_now_ctx.strftime('%H:%M')} do dia {_now_ctx.strftime('%d/%m/%Y')} (horário de Brasília). Use SEMPRE este horário como referência.]"
     _mentor_ctx = ""
+    _mentor_memory_ctx = _get_mentor_memory_context(user_phone)
     if _is_mentor_mode and not _in_mentor_session:
         # Nova sessão mentor — prompt conversacional estilo Nat
         _mentor_ctx = (
@@ -11376,6 +11407,8 @@ async def chat_endpoint(
             "Sem headers. Sem formatação de relatório. É um PAPO.\n"
             "Máximo 15 linhas por mensagem.\n"
         )
+        if _mentor_memory_ctx:
+            _mentor_ctx += f"\n\n{_mentor_memory_ctx}\n"
 
     _agent_input = _trim_agent_input(f"{_time_ctx}{_mentor_ctx}\n\n{full_message}")
     _agent_started_at = time.time()
@@ -11416,6 +11449,9 @@ async def chat_endpoint(
     if not _is_mentor_mode:
         content = _strip_trailing_questions(content)
     content = _strip_whatsapp_bold(content)
+    if _is_mentor_mode:
+        _append_mentor_memory(user_phone, "Usuário", body)
+        _append_mentor_memory(user_phone, "Pri", content)
     del response  # libera memória do response do LLM
     import gc as _gc; _gc.collect()
     return {"content": content, "routed": False, "session_id": session_id}
