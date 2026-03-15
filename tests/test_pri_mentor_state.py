@@ -184,6 +184,8 @@ async def test_chat_endpoint_keeps_short_reply_inside_pri_flow(atlas, monkeypatc
 
     first = await atlas.chat_endpoint(user_phone=phone, message="pri me ajuda")
     assert "pontual" in first["content"].lower()
+    assert "ABERTURA OBRIGATÓRIA DA PRI" in stub_agent.calls[0]["input"]
+    assert "você NÃO faz um resumo completo do mês" in stub_agent.calls[0]["input"]
 
     state_after_first = atlas._load_mentor_state(phone)
     assert state_after_first is not None
