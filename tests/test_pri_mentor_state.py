@@ -186,6 +186,80 @@ def test_pri_month_snapshot_only_uses_complete_month_history(atlas):
     assert snapshot["average_complete_month_expense_cents"] == 0
 
 
+def test_pri_month_snapshot_uses_card_due_month_for_cashflow_commitment(atlas):
+    phone = "+5511944445555"
+    user_id = f"user_{uuid.uuid4().hex}"
+    card_id = f"card_{uuid.uuid4().hex}"
+    now = atlas._now_br()
+    current_month = now.strftime("%Y-%m")
+    prev_year, prev_month = atlas._shift_year_month(now.year, now.month, -1)
+
+    current_day = max(6, min(now.day, 20))
+    prev_month_day = 20
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO credit_cards
+               (id, user_id, name, closing_day, due_day, current_bill_opening_cents)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (card_id, user_id, "Caixa", 5, 15, 0),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, occurred_at)
+               VALUES (?, ?, 'EXPENSE', ?, ?, ?)""",
+            (f"tx_{uuid.uuid4().hex}", user_id, 10000, "Alimentacao", f"{current_month}-{current_day:02d}"),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, occurred_at, card_id)
+               VALUES (?, ?, 'EXPENSE', ?, ?, ?, ?)""",
+            (
+                f"tx_{uuid.uuid4().hex}",
+                user_id,
+                20000,
+                "Outros",
+                f"{prev_year}-{prev_month:02d}-{prev_month_day:02d}",
+                card_id,
+            ),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, occurred_at, card_id)
+               VALUES (?, ?, 'EXPENSE', ?, ?, ?, ?)""",
+            (
+                f"tx_{uuid.uuid4().hex}",
+                user_id,
+                30000,
+                "Outros",
+                f"{current_month}-{current_day:02d}",
+                card_id,
+            ),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, occurred_at)
+               VALUES (?, ?, 'EXPENSE', ?, ?, ?)""",
+            (f"tx_{uuid.uuid4().hex}", user_id, 5000, "Pagamento Fatura", f"{current_month}-{current_day:02d}"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    snapshot = atlas._get_pri_month_opening_snapshot(phone)
+
+    assert snapshot["expense_total_cents"] == 30000
+    top_by_name = {item["name"]: item["total_cents"] for item in snapshot["top_categories"]}
+    assert top_by_name["Outros"] == 20000
+    assert top_by_name["Alimentacao"] == 10000
+
+
 def test_strip_whatsapp_bold_removes_null_bytes_and_controls(atlas):
     cleaned = atlas._strip_whatsapp_bold("Oi\x00 mundo\x07 *forte*")
 

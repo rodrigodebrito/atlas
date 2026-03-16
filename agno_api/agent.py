@@ -7800,23 +7800,16 @@ def get_user_financial_snapshot(user_phone: str) -> str:
 
     # Mês atual
     current_month = now.strftime("%Y-%m")
-    cur.execute(
-        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
-        "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
-        (user_id, current_month + "%"),
-    )
-    month_total = cur.fetchone()[0] or 0
+    month_rollup = _get_cashflow_expense_rollup_for_month(cur, user_id, current_month)
+    month_total = month_rollup["total_cents"]
     lines.append(f"📆 *Gastos mês atual ({now.strftime('%b')}):* {_fmt_brl(month_total)}")
     lines.append("")
 
     # Top 5 categorias (mês atual)
-    cur.execute(
-        "SELECT category, SUM(amount_cents), COUNT(*) FROM transactions "
-        "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ? "
-        "GROUP BY category ORDER BY SUM(amount_cents) DESC LIMIT 5",
-        (user_id, current_month + "%"),
-    )
-    cats = cur.fetchall()
+    cats = [
+        (item["name"], item["total_cents"], item["count"])
+        for item in month_rollup["top_categories"]
+    ]
     if cats:
         lines.append("📂 *Top categorias (mês):*")
         for cat, total, count in cats:
@@ -7987,6 +7980,62 @@ def _shift_year_month(year: int, month: int, delta: int) -> tuple[int, int]:
     return absolute // 12, (absolute % 12) + 1
 
 
+_NON_BUDGET_EXPENSE_CATEGORIES = {"Pagamento Fatura", "Pagamento Conta"}
+
+
+def _get_cashflow_expense_rollup_for_month(cur, user_id: str, month: str) -> dict:
+    """Retorna despesas do mês pelo critério de impacto no caixa.
+
+    - À vista: entra no mês de `occurred_at`
+    - Cartão: entra no mês de vencimento da fatura
+    - Pagamento de fatura/conta é ignorado para não duplicar gasto já reconhecido
+    """
+    cur.execute(
+        """SELECT t.category, t.amount_cents, t.occurred_at, t.card_id,
+                  c.closing_day, c.due_day
+           FROM transactions t
+           LEFT JOIN credit_cards c ON t.card_id = c.id
+           WHERE t.user_id = ? AND UPPER(t.type) = 'EXPENSE'""",
+        (user_id,),
+    )
+
+    total_cents = 0
+    category_totals: dict[str, int] = {}
+    category_counts: dict[str, int] = {}
+
+    for category, amount_cents, occurred_at, card_id, closing_day, due_day in cur.fetchall() or []:
+        normalized_category = category or "Outros"
+        if normalized_category in _NON_BUDGET_EXPENSE_CATEGORIES:
+            continue
+
+        if card_id:
+            effective_month = _compute_due_month(occurred_at or "", closing_day or 0, due_day or 0)
+        else:
+            effective_month = (occurred_at or "")[:7]
+
+        if effective_month != month:
+            continue
+
+        amount = amount_cents or 0
+        total_cents += amount
+        category_totals[normalized_category] = category_totals.get(normalized_category, 0) + amount
+        category_counts[normalized_category] = category_counts.get(normalized_category, 0) + 1
+
+    top_categories = [
+        {
+            "name": category,
+            "total_cents": total,
+            "count": category_counts.get(category, 0),
+        }
+        for category, total in sorted(category_totals.items(), key=lambda item: -item[1])[:5]
+    ]
+
+    return {
+        "total_cents": total_cents,
+        "top_categories": top_categories,
+    }
+
+
 def _get_complete_expense_month_totals(cur, user_id: str, now=None, limit: int = 3) -> list[int]:
     now = now or _now_br()
     current_month_start = datetime(now.year, now.month, 1).date()
@@ -8020,13 +8069,8 @@ def _get_complete_expense_month_totals(cur, user_id: str, now=None, limit: int =
         if month_start < first_full_month_start:
             continue
         month_prefix = f"{y}-{m:02d}"
-        cur.execute(
-            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
-            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
-            (user_id, month_prefix + "%"),
-        )
-        total = cur.fetchone()[0] or 0
-        month_totals.append(total)
+        rollup = _get_cashflow_expense_rollup_for_month(cur, user_id, month_prefix)
+        month_totals.append(rollup["total_cents"])
 
     return month_totals
 
@@ -8042,13 +8086,8 @@ def _get_pri_month_opening_snapshot(user_phone: str) -> dict:
     user_id, name, income = row
     now = _now_br()
     current_month = now.strftime("%Y-%m")
-
-    cur.execute(
-        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
-        "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
-        (user_id, current_month + "%"),
-    )
-    expense_total = cur.fetchone()[0] or 0
+    expense_rollup = _get_cashflow_expense_rollup_for_month(cur, user_id, current_month)
+    expense_total = expense_rollup["total_cents"]
 
     cur.execute(
         "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
@@ -8057,20 +8096,7 @@ def _get_pri_month_opening_snapshot(user_phone: str) -> dict:
     )
     actual_income = cur.fetchone()[0] or 0
 
-    cur.execute(
-        "SELECT category, SUM(amount_cents), COUNT(*) FROM transactions "
-        "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ? "
-        "GROUP BY category ORDER BY SUM(amount_cents) DESC LIMIT 5",
-        (user_id, current_month + "%"),
-    )
-    top_categories = [
-        {
-            "name": category or "Outros",
-            "total_cents": total or 0,
-            "count": count or 0,
-        }
-        for category, total, count in (cur.fetchall() or [])
-    ]
+    top_categories = expense_rollup["top_categories"]
 
     total_card_debt = 0
     try:
