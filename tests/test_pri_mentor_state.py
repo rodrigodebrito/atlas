@@ -260,6 +260,81 @@ def test_pri_month_snapshot_uses_card_due_month_for_cashflow_commitment(atlas):
     assert top_by_name["Alimentacao"] == 10000
 
 
+def test_month_summary_shows_card_purchase_but_separates_next_bill_cashflow(atlas):
+    phone = "+5511944446666"
+    user_id = f"user_{uuid.uuid4().hex}"
+    card_id = f"card_{uuid.uuid4().hex}"
+    now = atlas._now_br()
+    current_month = now.strftime("%Y-%m")
+    prev_year, prev_month = atlas._shift_year_month(now.year, now.month, -1)
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 100000),
+        )
+        cur.execute(
+            """INSERT INTO credit_cards
+               (id, user_id, name, closing_day, due_day, current_bill_opening_cents)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (card_id, user_id, "Caixa", 5, 15, 0),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'INCOME', ?, ?, ?, ?)""",
+            (f"tx_{uuid.uuid4().hex}", user_id, 100000, "Salario", "Salario", f"{current_month}-01"),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'EXPENSE', ?, ?, ?, ?)""",
+            (f"tx_{uuid.uuid4().hex}", user_id, 10000, "Alimentacao", "Mercado", f"{current_month}-10"),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at, card_id)
+               VALUES (?, ?, 'EXPENSE', ?, ?, ?, ?, ?)""",
+            (
+                f"tx_{uuid.uuid4().hex}",
+                user_id,
+                20000,
+                "Outros",
+                "Fatura antiga",
+                f"{prev_year}-{prev_month:02d}-20",
+                card_id,
+            ),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at, card_id)
+               VALUES (?, ?, 'EXPENSE', ?, ?, ?, ?, ?)""",
+            (
+                f"tx_{uuid.uuid4().hex}",
+                user_id,
+                30000,
+                "Outros",
+                "Compra nova",
+                f"{current_month}-10",
+                card_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    summary = atlas.get_month_summary.entrypoint(phone, current_month, "ALL")
+
+    assert "Compra nova" in summary
+    assert "Total comprado no mês" in summary
+    assert "Peso no caixa deste mês" in summary
+    assert "próxima fatura" in summary.lower()
+    assert "R$400.00" in summary
+    assert "R$300.00" in summary
+
+
 def test_strip_whatsapp_bold_removes_null_bytes_and_controls(atlas):
     cleaned = atlas._strip_whatsapp_bold("Oi\x00 mundo\x07 *forte*")
 

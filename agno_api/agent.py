@@ -1061,13 +1061,9 @@ def save_transaction(
 
                 # Total do mês + saldo restante
                 _month_str = today_str[:7]
-                _ctx_cur.execute(
-                    "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
-                    "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
-                    (user_id, _month_str + "%"),
-                )
-                _month_total = _ctx_cur.fetchone()[0] or 0
-                result += f"\n📊 Mês: {_fmt_brl(_month_total)}"
+                _month_rollup = _get_cashflow_expense_rollup_for_month(_ctx_cur, user_id, _month_str)
+                _month_total = _month_rollup["total_cents"]
+                result += f"\n📊 Mês (caixa): {_fmt_brl(_month_total)}"
 
                 # Streak: dias consecutivos lançando gastos
                 _ctx_cur.execute(
@@ -1308,6 +1304,8 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
     day_totals: dict = defaultdict(int)  # para insight: dia mais gastador
     merchant_freq: Counter = Counter()   # para insight: merchant mais frequente
     bill_payment_lines = []
+    current_month_credit_expenses = 0
+    deferred_credit_expenses = 0
     for cat, merchant, amount, occurred, card_id, inst_total, inst_num, card_name, closing_day, due_day, total_amt in tx_rows:
         # Pagamento de fatura/conta: mostrar separado, não somar nos gastos
         if cat in _BILL_PAY_CATS:
@@ -1321,10 +1319,12 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
             merchant_freq[merchant.strip()] += 1
         if card_id:
             credit_expenses += amount
-            if closing_day and due_day:
-                due_lbl = _month_label_pt(_compute_due_month(occurred, closing_day, due_day))
+            due_month = _compute_due_month(occurred, closing_day or 0, due_day or 0)
+            if due_month == month:
+                current_month_credit_expenses += amount
             else:
-                due_lbl = "?"
+                deferred_credit_expenses += amount
+            due_lbl = _month_label_pt(due_month) if due_month else "?"
             short_card = card_name.split()[0] if card_name else "cartão"
             # Label mostra o total da compra se parcelado (contexto), mas amount é a parcela do mês
             if inst_total and inst_total > 1 and total_amt and total_amt > amount:
@@ -1346,8 +1346,9 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         "Outros": "📦",
     }
 
-    # Saldo: caixa + crédito do mês (toda parcela em tx_rows pertence ao ciclo desta fatura)
-    balance = income - cash_expenses - credit_expenses
+    # Compras feitas no mês podem incluir cartão que só vence depois.
+    month_cashflow_total = cash_expenses + current_month_credit_expenses
+    balance = income - month_cashflow_total
 
     # Filter type label
     type_label_m = {"EXPENSE": "gastos", "INCOME": "receitas", "ALL": "resumo"}.get(filter_type, "resumo")
@@ -1379,11 +1380,14 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         lines.append(f"─────────────────────")
         if credit_expenses > 0:
             lines.append(
-                f"💸 *Total gasto:* R${total_expenses/100:,.2f}"
+                f"💸 *Total comprado no mês:* R${total_expenses/100:,.2f}"
                 f"  (R${cash_expenses/100:,.2f} à vista · R${credit_expenses/100:,.2f} 💳 cartão)".replace(",", ".")
             )
+            lines.append(f"🗓️ *Peso no caixa deste mês:* R${month_cashflow_total/100:,.2f}".replace(",", "."))
+            if deferred_credit_expenses > 0:
+                lines.append(f"⏭️ Compra no cartão que entra só na próxima fatura: R${deferred_credit_expenses/100:,.2f}".replace(",", "."))
         else:
-            lines.append(f"💸 *Total gasto:* R${total_expenses/100:,.2f}".replace(",", "."))
+            lines.append(f"💸 *Total gasto no mês:* R${total_expenses/100:,.2f}".replace(",", "."))
 
     # Pagamentos de fatura (saída real, mas não duplica nos gastos)
     if bill_payment_lines:
@@ -13399,12 +13403,7 @@ def reactivation_nudge():
             continue
 
         # Inativo há 3-14 dias → nudge com dados
-        cur.execute(
-            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
-            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
-            (user_id, month_str + "%"),
-        )
-        month_total = cur.fetchone()[0] or 0
+        month_total = _get_cashflow_expense_rollup_for_month(cur, user_id, month_str)["total_cents"]
 
         if month_total > 0:
             month_fmt = f"R${month_total/100:,.2f}".replace(",", ".")
