@@ -1188,7 +1188,7 @@ def save_transaction(
         except Exception:
             pass
 
-    # --- PRIMEIRO GASTO + RESUMO DO DIA ---
+    # --- PRIMEIRO GASTO / CONTEXTO LEVE ---
     if transaction_type == "EXPENSE":
         try:
             _ctx_conn = _get_conn()
@@ -1236,39 +1236,8 @@ def save_transaction(
                 )
                 if _microcopy:
                     result += f"\n{_microcopy}"
-            else:
-                # Total do mês + saldo restante
-                _month_str = today_str[:7]
-                result += "\n\n" + _build_pri_month_quick_closure(
-                    _ctx_cur,
-                    user_id=user_id,
-                    month_str=_month_str,
-                    day_count=day_count or 0,
-                    day_total=day_total or 0,
-                )
-                if _microcopy:
-                    result += f"\n{_microcopy}"
-
-                # Streak: dias consecutivos lançando gastos
-                _ctx_cur.execute(
-                    "SELECT DISTINCT SUBSTRING(occurred_at, 1, 10) AS d FROM transactions "
-                    "WHERE user_id = ? AND type = 'EXPENSE' ORDER BY d DESC LIMIT 30",
-                    (user_id,),
-                )
-                _dates = [r[0] for r in _ctx_cur.fetchall()]
-                if _dates:
-                    from datetime import date as _date_streak
-                    _streak = 1
-                    _today_d = today.date() if hasattr(today, 'date') else _date_streak.fromisoformat(today_str)
-                    for i in range(1, len(_dates)):
-                        _d = _date_streak.fromisoformat(_dates[i]) if isinstance(_dates[i], str) else _dates[i]
-                        _prev = _date_streak.fromisoformat(_dates[i-1]) if isinstance(_dates[i-1], str) else _dates[i-1]
-                        if (_prev - _d).days == 1:
-                            _streak += 1
-                        else:
-                            break
-                    if _streak >= 2:
-                        result += f"\n🔥 {_streak} dias seguidos lançando!"
+            elif _microcopy:
+                result += f"\n{_microcopy}"
 
             _ctx_conn.close()
         except Exception:
@@ -1346,27 +1315,6 @@ def save_transaction(
                 _bill_conn.commit()
                 result += f"\n✅ Compromisso *{_best_bill[1]}* marcado como pago!"
             _bill_conn.close()
-        except Exception:
-            pass
-
-    # --- DISCOVERY TIPS pós-ação (baseado no total de transações) ---
-    _DISCOVERY_TIPS = {
-        5: '💡 _Sabia que pode criar limites? Diga "limite alimentação 500"_',
-        10: '💡 _Quer ver gráficos dos seus gastos? Diga "painel"_',
-        20: "💡 _Tem foto de fatura do cartão? Me manda que importo tudo!_",
-        30: '💡 _Crie metas de economia: "meta viagem 5000"_',
-        50: '💡 _Diga "como tá meu mês?" pra um resumo completo_',
-    }
-    if transaction_type == "EXPENSE":
-        try:
-            _disc_conn = _get_conn()
-            _disc_cur = _disc_conn.cursor()
-            _disc_cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id = ? AND type = 'EXPENSE'", (user_id,))
-            _tx_total = _disc_cur.fetchone()[0]
-            _disc_conn.close()
-            _disc_tip = _DISCOVERY_TIPS.get(_tx_total)
-            if _disc_tip:
-                result += f"\n\n{_disc_tip}"
         except Exception:
             pass
 
@@ -10850,7 +10798,7 @@ def _parse_batch_expenses(raw_body: str) -> list[tuple[float, str]] | None:
 
 
 def _build_pri_batch_expense_response(user_phone: str, user_id: str, saved_items: list[dict]) -> str:
-    """Monta uma única confirmação premium da Pri para vários gastos."""
+    """Monta uma única confirmação humana para vários gastos."""
     lines = [_build_pri_batch_transaction_intro(saved_items), ""]
 
     _cat_emoji_conf = {
@@ -10872,35 +10820,8 @@ def _build_pri_batch_expense_response(user_phone: str, user_id: str, saved_items
             lines.append(item["next_bill_warning"])
         lines.append("")
 
-    conn = _get_conn()
-    try:
-        cur = conn.cursor()
-        today_str = _now_br().strftime("%Y-%m-%d")
-        month_str = today_str[:7]
-        cur.execute(
-            "SELECT COUNT(*), COALESCE(SUM(amount_cents), 0) FROM transactions "
-            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at >= ? AND occurred_at <= ?",
-            (user_id, today_str, today_str + " 23:59:59"),
-        )
-        day_count, day_total = cur.fetchone()
-        lines.append(_build_pri_month_quick_closure(
-            cur,
-            user_id=user_id,
-            month_str=month_str,
-            day_count=day_count or 0,
-            day_total=day_total or 0,
-        ))
-
-        month_total = sum(int(item["amount_cents"]) for item in saved_items)
-        same_cat = len({item["category"] for item in saved_items}) == 1
-        if same_cat and saved_items and saved_items[0]["category"] == "Alimentação":
-            lines.append(f"💡 Pri de olho: essa rodada sozinha já colocou {_fmt_brl(month_total)} em alimentação.")
-        elif any(item.get("card_name") for item in saved_items):
-            lines.append("💡 Pri de olho: nesse bloco já tem compra que entrou no cartão, então vale acompanhar a próxima fatura de perto.")
-        else:
-            lines.append(f"💡 Pri de olho: foram {len(saved_items)} saídas de uma vez, totalizando {_fmt_brl(month_total)}.")
-    finally:
-        conn.close()
+    month_total = sum(int(item["amount_cents"]) for item in saved_items)
+    lines.append(f"💰 *Total lançado agora:* {_fmt_brl(month_total)}")
 
     lines.append("_Errou? Digite *painel* pra editar ou apagar_")
     return "\n".join(line for line in lines if line is not None).strip()

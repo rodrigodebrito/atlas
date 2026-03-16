@@ -343,7 +343,7 @@ def test_month_summary_shows_card_purchase_but_separates_next_bill_cashflow(atla
     assert "__insight:" not in summary
 
 
-def test_save_transaction_expense_response_has_pri_tone_and_month_snapshot(atlas):
+def test_save_transaction_expense_response_is_human_and_compact(atlas):
     phone = "+5511944400001"
     user_id = f"user_{uuid.uuid4().hex}"
     now = atlas._now_br()
@@ -381,11 +381,11 @@ def test_save_transaction_expense_response_has_pri_tone_and_month_snapshot(atlas
     )
 
     assert "✨" in response
-    assert "Fechamento" in response
-    assert "Entradas:" in response
-    assert "Comprado" in response
-    assert "Peso no caixa:" in response
-    assert "Saldo" in response
+    assert "Fechamento" not in response
+    assert "Entradas:" not in response
+    assert "Comprado" not in response
+    assert "Peso no caixa:" not in response
+    assert "Saldo" not in response
     assert "painel" in response.lower()
 
 
@@ -499,8 +499,8 @@ def test_inline_multi_expense_returns_single_pri_batch_confirmation(atlas):
     assert "✨" in text
     assert "padaria" in text.lower()
     assert "almo" in text.lower()
-    assert text.count("Fechamento") == 1
-    assert "💡" in text
+    assert "Fechamento" not in text
+    assert "Total lançado agora" in text
 
     conn = atlas._get_conn()
     try:
