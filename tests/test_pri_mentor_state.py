@@ -186,6 +186,14 @@ def test_pri_month_snapshot_only_uses_complete_month_history(atlas):
     assert snapshot["average_complete_month_expense_cents"] == 0
 
 
+def test_strip_whatsapp_bold_removes_null_bytes_and_controls(atlas):
+    cleaned = atlas._strip_whatsapp_bold("Oi\x00 mundo\x07 *forte*")
+
+    assert "\x00" not in cleaned
+    assert "\x07" not in cleaned
+    assert "**forte**" in cleaned
+
+
 @pytest.mark.asyncio
 async def test_chat_endpoint_keeps_short_reply_inside_pri_flow(atlas, monkeypatch):
     phone = "+5511988887777"

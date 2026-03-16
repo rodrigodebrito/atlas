@@ -11433,7 +11433,23 @@ def _strip_whatsapp_bold(text: str) -> str:
     """
     import re as _re_bold
     # *texto* → **texto** (mas não toca em * isolados como "5 * 3")
-    return _re_bold.sub(r'\*([^*\n]+)\*', r'**\1**', text)
+    text = _sanitize_outbound_text(text)
+    return _sanitize_outbound_text(_re_bold.sub(r'\*([^*\n]+)\*', r'**\1**', text))
+
+
+def _sanitize_outbound_text(text: str) -> str:
+    """Remove bytes nulos, controles invisiveis e surrogates quebrados do texto de saida."""
+    import re as _re_out
+
+    if text is None:
+        return ""
+    if not isinstance(text, str):
+        text = str(text)
+
+    text = text.replace("\x00", "")
+    text = _LONE_SURROGATE_RE.sub("", text)
+    text = _re_out.sub(r"[\x01-\x08\x0B\x0C\x0E-\x1F]", "", text)
+    return text
 
 
 def _strip_trailing_questions(text: str) -> str:
@@ -12144,7 +12160,7 @@ async def chat_endpoint(
             )
             _append_mentor_memory(user_phone, "Usuario", body)
             _append_mentor_memory(user_phone, "Pri", content)
-            return {"content": content, "routed": False, "session_id": session_id}
+            return {"content": _strip_whatsapp_bold(content), "routed": False, "session_id": session_id}
     if _is_mentor_mode and not _in_mentor_session:
         # Nova sessão mentor — prompt conversacional estilo Nat
         _mentor_ctx = (
@@ -12403,7 +12419,7 @@ async def chat_endpoint(
             input=_agent_input,
             session_id=session_id,
         )
-        content = response.content if hasattr(response, "content") else str(response)
+        content = _sanitize_outbound_text(response.content if hasattr(response, "content") else str(response))
     except Exception as exc:
         logger.exception(
             "atlas_agent.arun failed phone=%s session_id=%s input_chars=%s",
@@ -12412,7 +12428,7 @@ async def chat_endpoint(
             len(_agent_input),
         )
         return {
-            "content": (
+            "content": _sanitize_outbound_text(
                 "Tive uma falha interna ao processar sua mensagem agora. "
                 "Tenta de novo em instantes."
             ),
