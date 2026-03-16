@@ -1032,7 +1032,17 @@ def _extract_card_payment_behavior(text: str) -> str:
         return "minimo"
     if any(token in text for token in ("parcial", "parcelo")):
         return "parcial"
-    if any(token in text for token in ("total", "pago tudo", "pago a fatura inteira")):
+    if any(
+        token in text
+        for token in (
+            "total",
+            "pago tudo",
+            "pago a fatura inteira",
+            "pago a fatura toda",
+            "pago toda a fatura",
+            "fatura toda",
+        )
+    ):
         return "total"
     return ""
 
