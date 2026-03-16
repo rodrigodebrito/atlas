@@ -8218,6 +8218,13 @@ def _get_pri_opening_snapshot(user_phone: str, scope: str = "month") -> dict:
         new_purchases = cur.fetchone()[0] or 0
         total_card_debt += (opening or 0) + new_purchases
 
+    complete_month_totals = _get_complete_expense_month_totals(cur, user_id, now=now, limit=3)
+    average_complete_month_expense = (
+        sum(complete_month_totals) // len(complete_month_totals)
+        if complete_month_totals
+        else 0
+    )
+
     conn.close()
     return {
         "first_name": (name or "amigo").split()[0],
@@ -8228,6 +8235,9 @@ def _get_pri_opening_snapshot(user_phone: str, scope: str = "month") -> dict:
         "expense_total_cents": expense_total,
         "card_total_cents": total_card_debt,
         "top_categories": top_categories,
+        "average_complete_month_expense_cents": average_complete_month_expense,
+        "complete_month_history_count": len(complete_month_totals),
+        "has_complete_month_history": bool(complete_month_totals),
     }
 
 
@@ -12182,6 +12192,13 @@ async def chat_endpoint(
             _mentor_ctx += (
                 f"\n[PLANO DE CONSULTORIA DA PRI]\n"
                 f"{_mentor_plan_ctx}\n"
+            )
+        if _opening_snapshot and not bool(_opening_snapshot.get("has_complete_month_history")):
+            _mentor_ctx += (
+                "\n[BASE DE HISTORICO DA PRI]\n"
+                "A Pri ainda nao tem pelo menos 1 mes completo fechado deste usuario.\n"
+                "Nao compare com media mensal como se fosse base confiavel.\n"
+                "Se isso for relevante, diga de forma natural que ainda nao ha mes fechado suficiente para comparar media com seguranca.\n"
             )
     elif _is_mentor_mode and _in_mentor_session:
         # Continuação de sessão mentor — conversa em andamento

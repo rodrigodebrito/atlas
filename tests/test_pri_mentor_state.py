@@ -345,6 +345,47 @@ async def test_first_pri_month_analysis_uses_structured_opening_without_llm(atla
 
 
 @pytest.mark.asyncio
+async def test_first_pri_month_analysis_explains_when_no_full_month_history(atlas, monkeypatch):
+    phone = "+5511977000001"
+    stub_agent = _StubAtlasAgent([])
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return {"intent": "mentor", "action": "", "params": {}}
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+    monkeypatch.setattr(
+        atlas,
+        "_get_pri_opening_snapshot",
+        lambda _phone, _scope="month": {
+            "first_name": "Rodrigo",
+            "scope": "month",
+            "period_label": "este mes",
+            "declared_income_cents": 1200000,
+            "actual_income_cents": 1767754,
+            "expense_total_cents": 1912147,
+            "card_total_cents": 473420,
+            "top_categories": [
+                {"name": "Outros", "total_cents": 531700, "count": 3},
+            ],
+            "average_complete_month_expense_cents": 0,
+            "complete_month_history_count": 0,
+            "has_complete_month_history": False,
+        },
+    )
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="pri faz uma analise do meu mes")
+
+    content = result["content"].lower()
+    assert "mes fechado" in content
+    assert "media mensal" in content
+    assert "seguranca" in content
+    assert stub_agent.calls == []
+
+
+@pytest.mark.asyncio
 async def test_first_pri_debt_question_uses_debt_frame_without_llm(atlas, monkeypatch):
     phone = "+5511966665555"
     stub_agent = _StubAtlasAgent([])

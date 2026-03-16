@@ -361,6 +361,13 @@ def build_structured_pri_opening(
     food_count = int(food.get("count") or 0)
     housing_total = int(housing.get("total_cents") or 0)
     period_label = str(snapshot.get("period_label") or "esse periodo").strip() or "esse periodo"
+    has_complete_month_history = bool(snapshot.get("has_complete_month_history"))
+    no_history_note = ""
+    if not has_complete_month_history:
+        no_history_note = (
+            "E um detalhe importante: eu ainda nao tenho pelo menos 1 mes fechado teu "
+            "pra comparar media mensal com seguranca.\n\n"
+        )
 
     issue = "general_leak"
     question = "Me responde uma coisa: hoje voce sente mais aperto com cartao, com gasto do dia a dia ou com conta fixa?"
@@ -459,6 +466,7 @@ def build_structured_pri_opening(
         content = (
             f"Pri aqui. Em {period_label}, teu dinheiro nao explodiu num lugar so. Ele vazou.\n\n"
             "E o ponto mais suspeito pra mim e *Outros*. Quando essa categoria pesa num recorte curto, quase sempre teve gasto saindo no automatico.\n\n"
+            f"{no_history_note}"
             "Se eu estivesse arrumando isso com voce, eu abriria esse bloco primeiro. Porque e ali que normalmente fica o ralo.\n\n"
             f"{question}"
         )
@@ -466,6 +474,7 @@ def build_structured_pri_opening(
         content = (
             f"Pri aqui. Em {period_label}, o problema nao parece ser um gasto gigante. E repeticao.\n\n"
             "Quando alimentacao aparece toda hora, o dinheiro vai embora pingando e voce so sente o tranco depois.\n\n"
+            f"{no_history_note}"
             "Se eu estivesse organizando isso com voce, eu comecaria por aqui. Porque esse tipo de vazamento e rapido de sentir no bolso.\n\n"
             f"{question}"
         )
@@ -473,6 +482,7 @@ def build_structured_pri_opening(
         content = (
             f"Pri aqui. Em {period_label}, o peso veio de conta grande, nao de besteira do dia a dia.\n\n"
             "Quando moradia domina o recorte, nao adianta procurar culpado em cafezinho. A pergunta certa e: o que entrou aqui alem do normal?\n\n"
+            f"{no_history_note}"
             "Se eu estivesse olhando isso com voce, eu separaria o fixo do que foi fora da curva.\n\n"
             f"{question}"
         )
@@ -480,6 +490,7 @@ def build_structured_pri_opening(
         content = (
             f"Pri aqui. Em {period_label}, teu dinheiro nao sumiu numa compra so. Ele foi escapando aos poucos.\n\n"
             "Quando isso acontece, normalmente o problema e rotina sem controle, nao uma decisao gigante.\n\n"
+            f"{no_history_note}"
             "Se eu estivesse organizando isso com voce, eu atacaria primeiro o bloco mais repetido. Porque e ali que o dinheiro escapa sem pedir permissao.\n\n"
             f"{question}"
         )
@@ -498,6 +509,7 @@ def build_structured_pri_opening(
             "E cartao puxando teu caixa.\n\n"
             f"Hoje voce tem *{_fmt_cents_brl(card_total)}* em faturas abertas. Se isso escorrega pra minimo ou rotativo, "
             "vira dinheiro queimando sem trazer nada em troca.\n\n"
+            f"{no_history_note}"
             "Se eu estivesse organizando isso com voce, eu travaria esse risco antes de mexer no resto.\n\n"
             f"{question}"
         )
@@ -533,6 +545,7 @@ def build_structured_pri_opening(
         content = (
             "Pri aqui. Vou te falar sem rodeio: teu problema esse mes nao e falta de renda. E vazamento.\n\n"
             f"O maior alerta pra mim e *Outros* com *{_fmt_cents_brl(others_total)}*. Quando muito dinheiro cai em categoria generica, quase sempre tem gasto escondido ali.\n\n"
+            f"{no_history_note}"
             "Se eu estivesse arrumando isso com voce, eu comecaria abrindo esse *Outros* hoje. Porque e ali que o dinheiro some sem fazer barulho.\n\n"
             f"{question}"
         )
@@ -540,6 +553,7 @@ def build_structured_pri_opening(
         content = (
             "Pri aqui. O problema aqui nao e mercado. E frequencia.\n\n"
             f"Alimentacao ja bateu *{_fmt_cents_brl(food_total)}* em *{food_count} compras*. Quando a frequencia sobe assim, o dinheiro vai embora sem fazer barulho.\n\n"
+            f"{no_history_note}"
             "Se eu estivesse organizando isso com voce, eu abriria os ultimos 15 dias dessa categoria antes de falar de qualquer outro ajuste.\n\n"
             f"{question}"
         )
@@ -547,6 +561,7 @@ def build_structured_pri_opening(
         content = (
             "Pri aqui. Vou direto na ferida: teu mes ta pesado demais nas contas que voce nao consegue empurrar pra depois.\n\n"
             f"Moradia sozinha ta em *{_fmt_cents_brl(housing_total)}*. Quando esse bloco pesa assim, o resto do orcamento fica sem ar.\n\n"
+            f"{no_history_note}"
             "Se eu estivesse te assessorando, eu separaria o que e fixo de verdade e o que entrou junto nessa conta.\n\n"
             f"{question}"
         )
@@ -555,6 +570,7 @@ def build_structured_pri_opening(
         content = (
             f"Pri aqui. Vou te falar sem rodeio: o problema aqui nao e detalhe pequeno. E que {problem_text}.\n\n"
             "Quando o mes fica sem um centro claro de controle, qualquer categoria comeca a puxar mais do que deveria.\n\n"
+            f"{no_history_note}"
             "Se eu estivesse organizando isso com voce, eu escolheria primeiro onde atacar de verdade em vez de sair cortando tudo no susto.\n\n"
             f"{question}"
         )
