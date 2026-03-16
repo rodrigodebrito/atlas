@@ -2,6 +2,7 @@ import importlib
 import sqlite3
 import sys
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -149,6 +150,40 @@ def test_transition_consultant_stage_promotes_to_action_plan_when_case_is_ready(
     )
 
     assert next_stage == "action_plan"
+
+
+def test_pri_month_snapshot_only_uses_complete_month_history(atlas):
+    phone = "+5511933334444"
+    user_id = f"user_{uuid.uuid4().hex}"
+    now = atlas._now_br()
+    current_month_start = datetime(now.year, now.month, 1)
+    prev_year, prev_month = atlas._shift_year_month(now.year, now.month, -1)
+    prev_month_mid = datetime(prev_year, prev_month, 20)
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            "INSERT INTO transactions (id, user_id, type, amount_cents, category, occurred_at) VALUES (?, ?, 'EXPENSE', ?, ?, ?)",
+            (f"tx_{uuid.uuid4().hex}", user_id, 8000, "Alimentacao", prev_month_mid.strftime("%Y-%m-%d")),
+        )
+        cur.execute(
+            "INSERT INTO transactions (id, user_id, type, amount_cents, category, occurred_at) VALUES (?, ?, 'EXPENSE', ?, ?, ?)",
+            (f"tx_{uuid.uuid4().hex}", user_id, 12000, "Alimentacao", current_month_start.strftime("%Y-%m-%d")),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    snapshot = atlas._get_pri_month_opening_snapshot(phone)
+
+    assert snapshot["has_complete_month_history"] is False
+    assert snapshot["complete_month_history_count"] == 0
+    assert snapshot["average_complete_month_expense_cents"] == 0
 
 
 @pytest.mark.asyncio

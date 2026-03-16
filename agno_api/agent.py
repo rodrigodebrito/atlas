@@ -7783,30 +7783,15 @@ def get_user_financial_snapshot(user_phone: str) -> str:
     lines = [f"📊 *Snapshot Financeiro — {first_name}*", ""]
 
     # Gasto médio mensal (últimos 3 meses)
-    monthly_totals = []
-    for i in range(1, 4):
-        m = now.month - i
-        y = now.year
-        if m <= 0:
-            m += 12
-            y -= 1
-        ms = f"{y}-{m:02d}"
-        cur.execute(
-            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
-            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
-            (user_id, ms + "%"),
-        )
-        total = cur.fetchone()[0] or 0
-        if total > 0:
-            monthly_totals.append(total)
+    monthly_totals = _get_complete_expense_month_totals(cur, user_id, now=now, limit=3)
 
     if monthly_totals:
         avg = sum(monthly_totals) // len(monthly_totals)
-        lines.append(f"💸 *Gasto médio mensal:* {_fmt_brl(avg)} (últimos {len(monthly_totals)} meses)")
+        lines.append(f"💸 *Gasto médio mensal:* {_fmt_brl(avg)} (últimos {len(monthly_totals)} mês(es) completos)")
         if len(monthly_totals) < 3:
-            lines.append(f"  ⚠️ ATENÇÃO: só {len(monthly_totals)} mês(es) de histórico — média pode ser imprecisa. Não tire conclusões fortes comparando com o mês atual.")
+            lines.append(f"  ⚠️ ATENÇÃO: só {len(monthly_totals)} mês(es) completos de histórico — média ainda pode ser imprecisa.")
     else:
-        lines.append("💸 *Gasto médio mensal:* ainda sem histórico (usuário começou a usar recentemente)")
+        lines.append("💸 *Gasto médio mensal:* ainda sem base suficiente (precisa de pelo menos 1 mês completo de uso)")
 
     # Mês atual
     current_month = now.strftime("%Y-%m")
@@ -7992,6 +7977,55 @@ def _is_generic_pri_analysis_request(text: str) -> bool:
     return any(signal in body for signal in signals)
 
 
+def _shift_year_month(year: int, month: int, delta: int) -> tuple[int, int]:
+    absolute = year * 12 + (month - 1) + delta
+    return absolute // 12, (absolute % 12) + 1
+
+
+def _get_complete_expense_month_totals(cur, user_id: str, now=None, limit: int = 3) -> list[int]:
+    now = now or _now_br()
+    current_month_start = datetime(now.year, now.month, 1).date()
+
+    cur.execute(
+        "SELECT MIN(substr(occurred_at, 1, 10)) FROM transactions WHERE user_id = ?",
+        (user_id,),
+    )
+    first_row = cur.fetchone()
+    first_date_str = (first_row[0] if first_row else None) or ""
+    if not first_date_str:
+        return []
+
+    try:
+        first_tx_date = datetime.strptime(first_date_str[:10], "%Y-%m-%d").date()
+    except Exception:
+        return []
+
+    first_full_month_start = datetime(first_tx_date.year, first_tx_date.month, 1).date()
+    if first_tx_date.day != 1:
+        next_year, next_month = _shift_year_month(first_tx_date.year, first_tx_date.month, 1)
+        first_full_month_start = datetime(next_year, next_month, 1).date()
+
+    if first_full_month_start >= current_month_start:
+        return []
+
+    month_totals: list[int] = []
+    for delta in range(1, limit + 1):
+        y, m = _shift_year_month(now.year, now.month, -delta)
+        month_start = datetime(y, m, 1).date()
+        if month_start < first_full_month_start:
+            continue
+        month_prefix = f"{y}-{m:02d}"
+        cur.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
+            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+            (user_id, month_prefix + "%"),
+        )
+        total = cur.fetchone()[0] or 0
+        month_totals.append(total)
+
+    return month_totals
+
+
 def _get_pri_month_opening_snapshot(user_phone: str) -> dict:
     conn = _get_conn()
     cur = conn.cursor()
@@ -8054,6 +8088,13 @@ def _get_pri_month_opening_snapshot(user_phone: str) -> dict:
         new_purchases = cur.fetchone()[0] or 0
         total_card_debt += (opening or 0) + new_purchases
 
+    complete_month_totals = _get_complete_expense_month_totals(cur, user_id, now=now, limit=3)
+    average_complete_month_expense = (
+        sum(complete_month_totals) // len(complete_month_totals)
+        if complete_month_totals
+        else 0
+    )
+
     conn.close()
     return {
         "first_name": (name or "amigo").split()[0],
@@ -8062,6 +8103,9 @@ def _get_pri_month_opening_snapshot(user_phone: str) -> dict:
         "expense_total_cents": expense_total,
         "card_total_cents": total_card_debt,
         "top_categories": top_categories,
+        "average_complete_month_expense_cents": average_complete_month_expense,
+        "complete_month_history_count": len(complete_month_totals),
+        "has_complete_month_history": bool(complete_month_totals),
     }
 
 
