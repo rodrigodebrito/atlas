@@ -13,9 +13,13 @@ O ATLAS ja saiu do estagio de "bot financeiro util" e entrou numa fase de produt
 - media mensal so com meses completos fechados
 - comando `painel` priorizado mesmo com a Pri ativa
 - suite automatizada de regressao da Pri
+- controller arquitetural da Pri para consultoria read-only
+- onboarding Atlas ignorado quando a mensagem e explicitamente da Pri
+- confirmacoes pendentes antigas bloqueadas durante consultoria
+- rotas legadas de escrita bloqueadas por padrao durante a Pri
 
 Estado atual da suite da Pri:
-- `12 passed`
+- `23 passed`
 
 ---
 
@@ -43,12 +47,25 @@ Estado atual da suite da Pri:
 ### Qualidade
 - testes automatizados dos fluxos da Pri
 - testes de regressao para continuidade, frames, historico insuficiente e atalho de painel
+- testes arquiteturais da Fase 1 para impedir escrita automatica em consultoria
 
 ---
 
 ## Prioridades imediatas
 
-### P0. Continuidade da Pri nos segundos turnos
+### P0. Fechar validacao manual da Fase 1
+Impacto: critico
+
+Arquitetura ja implementada:
+- Pri explicita com prioridade
+- consultoria read-only por padrao
+- conversa nao executa acao automaticamente
+
+O que falta:
+- validar os cenarios reais no WhatsApp usando `CHECKLIST_FASE_1_PRI.md`
+- marcar a Fase 1 como concluida formalmente
+
+### P1. Continuidade da Pri nos segundos turnos
 Impacto: muito alto
 
 A abertura da Pri esta mais forte, mas os turnos seguintes ainda podem ficar mais neutros do que o desejado.
@@ -66,7 +83,7 @@ Implementacoes sugeridas:
 - regras de saida por contexto
 - mais testes de follow-up
 
-### P1. Maquina de estados mais rigida
+### P2. Maquina de estados mais rigida
 Impacto: muito alto
 
 Hoje a Pri ja tem estagios, mas ainda ha espaco para mais determinismo.
@@ -79,7 +96,7 @@ Implementacoes sugeridas:
 - impedir saltos incoerentes
 - guardar a ultima proxima-acao no estado
 
-### P2. Observabilidade da Pri
+### P3. Observabilidade da Pri
 Impacto: alto
 
 Hoje ja existe teste. O proximo ganho e entender melhor o comportamento real em producao.
@@ -93,7 +110,7 @@ Implementacoes sugeridas:
   - se a resposta caiu em fallback
 - endpoint/admin view simples para investigar rotas mais frequentes
 
-### P3. Refatoracao do monolito
+### P4. Refatoracao do monolito
 Impacto: alto
 
 `agno_api/agent.py` continua sendo o principal gargalo de manutencao.
@@ -108,7 +125,7 @@ Ordem sugerida:
 - `panel_shortcuts.py`
 - `financial_snapshots.py`
 
-### P4. Seguranca e confianca
+### P5. Seguranca e confianca
 Impacto: critico
 
 Antes de escalar usuarios, o produto precisa endurecer pontos operacionais.
@@ -119,7 +136,7 @@ Itens:
 - revisar trilha de auditoria
 - deixar explicita a origem dos numeros em respostas sensiveis
 
-### P5. Onboarding e wow moment
+### P6. Onboarding e wow moment
 Impacto: alto
 
 A Pri precisa encantar no primeiro minuto.
@@ -128,7 +145,7 @@ Objetivo:
 - primeiro insight memoravel em ate 60 segundos
 - menos cadastro seco, mais diagnostico imediato
 
-### P6. Produto desejavel
+### P7. Produto desejavel
 Impacto: alto
 
 Depois da confiabilidade, o maior ganho sera emocional.
@@ -143,13 +160,14 @@ Itens:
 
 ## Ordem recomendada
 
-1. Pri nos segundos turnos com o mesmo nivel da abertura
-2. Maquina de estados mais rigida
-3. Observabilidade da Pri
-4. Refatoracao do monolito
-5. Seguranca e confianca
-6. Onboarding forte
-7. Produto mais desejavel
+1. Fechar validacao manual da Fase 1
+2. Pri nos segundos turnos com o mesmo nivel da abertura
+3. Maquina de estados mais rigida
+4. Observabilidade da Pri
+5. Refatoracao do monolito
+6. Seguranca e confianca
+7. Onboarding forte
+8. Produto mais desejavel
 
 ---
 
@@ -157,8 +175,10 @@ Itens:
 
 - `agno_api/agent.py`
 - `agno_api/mentor_consultant.py`
+- `agno_api/pri_controller.py`
 - `tests/test_pri_mentor_state.py`
 - `PRI_CONSULTORA_ARQUITETURA.md`
+- `CHECKLIST_FASE_1_PRI.md`
 
 ---
 

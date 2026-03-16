@@ -80,13 +80,43 @@ Existe suite de regressao dedicada em:
 - `tests/test_pri_mentor_state.py`
 
 Estado atual:
-- `12 passed`
+- `23 passed`
+
+### 8. Controller arquitetural da Pri
+Agora existe uma camada dedicada em:
+
+- `agno_api/pri_controller.py`
+
+Essa camada centraliza:
+
+- deteccao de mensagens explicitamente enderecadas a Pri
+- deteccao de comandos explicitos de escrita
+- classificacao de rotas de escrita
+- regra arquitetural de consultoria read-only por padrao
+- bloqueio de confirmacoes pendentes antigas durante a consultoria
+
+### 9. Fase 1 implementada
+A primeira fase da nova arquitetura ja foi implementada:
+
+- Pri explicita tem prioridade
+- onboarding Atlas nao sequestra mensagens da Pri
+- consultoria da Pri nao escreve no banco por padrao
+- respostas contextuais com valor nao viram lancamento automatico
+- respostas contextuais sobre categoria nao viram recategorizacao automatica
+- comandos como `painel` continuam prioritarios
 
 ---
 
 ## O que ainda falta
 
-### Fase 1. Pri forte nos segundos turnos
+### Fase 1. Validacao manual final
+A Fase 1 ja esta implementada tecnicamente.
+
+O que falta agora:
+- validar no WhatsApp os cenarios do arquivo `CHECKLIST_FASE_1_PRI.md`
+- marcar a fase como encerrada formalmente
+
+### Fase 2. Pri forte nos segundos turnos
 A abertura melhorou bastante, mas os turnos seguintes ainda podem perder intensidade.
 
 Meta:
@@ -96,7 +126,7 @@ Meta:
   - primeira acao
   - proxima pergunta
 
-### Fase 2. Planner por estagio
+### Fase 3. Planner por estagio
 Hoje a Pri ja conhece o estagio. O proximo salto e usar um planner explicito por fase.
 
 Exemplo:
@@ -107,14 +137,14 @@ Exemplo:
 - `action_plan` -> gerar passos
 - `follow_up` -> cobrar execucao
 
-### Fase 3. Mais determinismo
+### Fase 4. Mais determinismo
 O LLM ainda interpreta demais em alguns turnos.
 
 Meta:
 - app governa ainda mais a fase da conversa
 - reduzir improviso em transicoes
 
-### Fase 4. Observabilidade
+### Fase 5. Observabilidade
 Precisamos enxergar melhor o comportamento da Pri em producao.
 
 Itens:
@@ -123,7 +153,7 @@ Itens:
 - log da pergunta aberta
 - log de fallback
 
-### Fase 5. Extracao do monolito
+### Fase 6. Extracao do monolito
 Parte da logica da Pri ainda esta acoplada ao monolito principal.
 
 Meta:
