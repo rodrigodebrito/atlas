@@ -602,11 +602,13 @@ def build_structured_pri_followup(
     expected_answer_type: str = "",
     case_summary: dict[str, Any] | None = None,
     stage: str = "",
+    last_open_question: str = "",
 ) -> dict[str, Any]:
     text = (user_message or "").strip()
     lowered = text.lower()
     normalized_key = (question_key or "").strip().lower()
     normalized_expected = (expected_answer_type or "").strip().lower()
+    normalized_last_question = (last_open_question or "").strip().lower()
     merged_summary = merge_case_summary(case_summary, text, normalized_key, normalized_expected)
     amount_cents = _extract_brl_amount_cents(text)
 
@@ -872,6 +874,47 @@ def build_structured_pri_followup(
                 "open_question_key": "open_text_followup",
                 "expected_answer_type": "open_text",
                 "consultant_stage": "action_plan",
+                "case_summary": merged_summary,
+            }
+
+    if normalized_key == "open_text_followup":
+        asking_for_invoice_breakdown = (
+            any(token in normalized_last_question for token in ("fatura", "maiores gastos", "listar"))
+            or any(token in " ".join(merged_summary.get("notes", [])) for token in ("fatura", "cartao", "caixa"))
+        )
+        if _is_affirmative() and asking_for_invoice_breakdown:
+            question = (
+                "Boa. Entao me fala os 3 maiores gastos que voce lembra dessa fatura: "
+                "mercado, aluguel, app, transporte, qualquer coisa nessa linha."
+            )
+            content = (
+                "Perfeito. Entao a gente nao precisa voltar pro resumo do mes agora. "
+                "A gente precisa abrir essa fatura por partes.\n\n"
+                "Se voce me trouxer os maiores blocos, eu separo com voce o que e cartao, "
+                "o que e gasto fixo e o que e vazamento de verdade.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "open_text_followup",
+                "expected_answer_type": "open_text",
+                "consultant_stage": "diagnosis_clarification",
+                "case_summary": merged_summary,
+            }
+        if _is_negative() and asking_for_invoice_breakdown:
+            question = "Sem problema. Qual e o primeiro gasto dessa fatura que voce lembra agora, mesmo que seja so um?"
+            content = (
+                "Fechado. Nao precisa me trazer tudo de uma vez.\n\n"
+                "Se voce lembrar de um gasto so, a gente ja comeca a desmontar esse bolo sem chute.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "open_text_followup",
+                "expected_answer_type": "open_text",
+                "consultant_stage": "diagnosis_clarification",
                 "case_summary": merged_summary,
             }
 

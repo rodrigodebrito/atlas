@@ -788,6 +788,47 @@ async def test_structured_followup_handles_cheque_especial_answer_without_llm(at
 
 
 @pytest.mark.asyncio
+async def test_open_text_followup_affirmative_keeps_invoice_breakdown_flow_without_llm(atlas, monkeypatch):
+    phone = "+5511944442222"
+    atlas._save_mentor_state(
+        phone,
+        mode="mentor",
+        last_open_question="Enquanto isso, me diz: voce tem como listar os maiores gastos que lembra dessa fatura?",
+        open_question_key="open_text_followup",
+        expected_answer_type="open_text",
+        consultant_stage="diagnosis_clarification",
+        case_summary={
+            "main_issue_hypothesis": "cashflow_pressure",
+            "notes": ["Categoria Outros citada pelo usuario: esta tudo misturado porque e uma fatura de cartao"],
+        },
+        memory_turns=[],
+        expires_at=atlas._mentor_expiry_iso(),
+    )
+    stub_agent = _StubAtlasAgent([])
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return {"intent": "mentor", "action": "", "params": {}}
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="tenho sim")
+
+    content = result["content"].lower()
+    assert "3 maiores gastos" in content
+    assert "fatura" in content
+    assert "receita real" not in content
+    assert stub_agent.calls == []
+
+    state = atlas._load_mentor_state(phone)
+    assert state is not None
+    assert state["open_question_key"] == "open_text_followup"
+    assert state["consultant_stage"] == "diagnosis_clarification"
+
+
+@pytest.mark.asyncio
 async def test_first_pri_month_analysis_explains_when_no_full_month_history(atlas, monkeypatch):
     phone = "+5511977000001"
     stub_agent = _StubAtlasAgent([])

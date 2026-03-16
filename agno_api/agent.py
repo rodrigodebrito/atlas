@@ -12416,6 +12416,7 @@ async def chat_endpoint(
             _mentor_expected_answer,
             _mentor_case_summary,
             _mentor_stage,
+            _mentor_open_question,
         )
         if _structured_followup:
             content = (_structured_followup.get("content") or "").strip()
