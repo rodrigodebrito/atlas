@@ -299,6 +299,35 @@ async def test_chat_endpoint_keeps_affirmative_reply_for_plan_offer_inside_pri_f
 
 
 @pytest.mark.asyncio
+async def test_explicit_panel_request_bypasses_active_mentor_session(atlas, monkeypatch):
+    phone = "+5511912340000"
+    atlas._save_mentor_state(
+        phone,
+        mode="mentor",
+        last_open_question="Quer que eu monte um plano pra isso?",
+        open_question_key="plan_help_offer",
+        expected_answer_type="yes_no",
+        consultant_stage="action_plan",
+        case_summary={"main_issue_hypothesis": "cashflow_pressure"},
+        memory_turns=[],
+        expires_at=atlas._mentor_expiry_iso(),
+    )
+
+    async def _unexpected_mini_route(*_args, **_kwargs):
+        raise AssertionError("mini-router nao deveria rodar para o comando explicito 'painel'")
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _unexpected_mini_route)
+    monkeypatch.setattr(atlas, "get_panel_url", lambda _phone: "https://atlas.test/painel")
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="painel")
+
+    assert "atlas.test/painel" in result["content"]
+    assert "painel" in result["content"].lower()
+
+
+@pytest.mark.asyncio
 async def test_first_pri_month_analysis_uses_structured_opening_without_llm(atlas, monkeypatch):
     phone = "+5511977776666"
     stub_agent = _StubAtlasAgent([])

@@ -11027,6 +11027,21 @@ def _panel_url_response(user_phone: str) -> str:
     return "Não consegui gerar o painel agora. Tente novamente."
 
 
+def _is_explicit_panel_request(body: str) -> bool:
+    text = (body or "").strip().lower()
+    if not text:
+        return False
+    if _re_router.match(r"^(meu\s+)?(painel|panel|dashboard)[\s\!\?\.]*$", text):
+        return True
+    return bool(
+        _re_router.match(
+            r"^(abre|abrir|manda|manda\s+a[ií]|me\s+manda|mostra|mostrar|ver|veja)\s+"
+            r"(o\s+|meu\s+)?(painel|panel|dashboard)[\s\!\?\.]*$",
+            text,
+        )
+    )
+
+
 _QUERY_DISPATCH = {
     "month_summary":    lambda ph, p: _call(get_month_summary, ph, p.get("month") or _current_month(), "ALL"),
     "week_summary":     lambda ph, p: _call(get_week_summary, ph, "ALL"),
@@ -11938,6 +11953,12 @@ async def chat_endpoint(
     _confirm_result = _check_pending_action(user_phone, _body_lower)
     if _confirm_result:
         return {"content": _strip_whatsapp_bold(_confirm_result["response"]), "routed": True}
+
+    # 4b. Atalhos explÃ­citos como "painel" nÃ£o devem ser sequestrados pelo modo mentor.
+    if _is_explicit_panel_request(body):
+        if _in_mentor_session:
+            _touch_mentor_state(user_phone)
+        return {"content": _strip_whatsapp_bold(_panel_url_response(user_phone)), "routed": True}
 
     # 5. Mini-router (gpt-5-mini, ~200ms)
     _route = await _mini_route(body, user_phone, _in_mentor_session)
