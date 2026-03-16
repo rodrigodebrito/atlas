@@ -1040,6 +1040,9 @@ def _extract_card_payment_behavior(text: str) -> str:
             "pago a fatura inteira",
             "pago a fatura toda",
             "pago toda a fatura",
+            "paguei a fatura toda",
+            "paguei toda a fatura",
+            "quitei a fatura",
             "fatura toda",
         )
     ):

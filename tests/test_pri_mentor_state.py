@@ -870,7 +870,7 @@ async def test_open_text_followup_card_type_answer_stays_in_pri_without_llm(atla
 
 
 @pytest.mark.asyncio
-async def test_card_repayment_behavior_accepts_paga_a_fatura_toda_without_llm(atlas, monkeypatch):
+async def test_card_repayment_behavior_accepts_paguei_a_fatura_toda_without_llm(atlas, monkeypatch):
     phone = "+5511944445555"
     atlas._save_mentor_state(
         phone,
@@ -893,7 +893,7 @@ async def test_card_repayment_behavior_accepts_paga_a_fatura_toda_without_llm(at
     monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
     monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
 
-    result = await atlas.chat_endpoint(user_phone=phone, message="eu pago a fatura toda")
+    result = await atlas.chat_endpoint(user_phone=phone, message="paguei a fatura toda")
 
     content = result["content"].lower()
     assert "pagar a fatura inteira" in content or "pagar a fatura inteira ja tira um risco grande" in content or "boa. pagar a fatura inteira" in content
@@ -906,6 +906,9 @@ async def test_card_repayment_behavior_accepts_paga_a_fatura_toda_without_llm(at
     assert state["open_question_key"] == "has_emergency_reserve"
     assert state["consultant_stage"] == "reserve_check"
     assert state["case_summary"]["card_payment_behavior"] == "total"
+    turns = state.get("memory_turns") or []
+    assert any("paguei a fatura toda" in (turn.get("content") or "").lower() for turn in turns)
+    assert any("alguma reserva" in (turn.get("content") or "").lower() or "colchao de seguranca" in (turn.get("content") or "").lower() for turn in turns)
 
 
 @pytest.mark.asyncio
@@ -944,7 +947,7 @@ async def test_llm_repeated_question_is_recovered_by_pri_loop_guard(atlas, monke
 
     monkeypatch.setattr(atlas, "build_structured_pri_followup", _fake_followup)
 
-    result = await atlas.chat_endpoint(user_phone=phone, message="eu pago a fatura toda")
+    result = await atlas.chat_endpoint(user_phone=phone, message="paguei a fatura toda")
 
     content = result["content"].lower()
     assert "alguma reserva" in content or "colchao de seguranca" in content

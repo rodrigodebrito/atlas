@@ -11938,6 +11938,9 @@ def _looks_like_answer_to_open_mentor_question_v2(body: str, state: dict | None)
                 "atraso",
                 "pago a fatura toda",
                 "pago toda a fatura",
+                "paguei a fatura toda",
+                "paguei toda a fatura",
+                "quitei a fatura",
                 "fatura toda",
             )
         )
@@ -11958,7 +11961,7 @@ def _looks_like_answer_to_open_mentor_question_v2(body: str, state: dict | None)
             token in text
             for token in (
                 "rotativo", "minimo", "parcela", "parcelo", "atrasado", "financiamento",
-                "pago", "cheque especial", "especial", "emprestimo",
+                "pago", "paguei", "quitei", "cheque especial", "especial", "emprestimo",
             )
         )
     strong_tx_verbs = (
