@@ -112,6 +112,8 @@ def should_force_pri_readonly(
         return True
     if not in_mentor_session:
         return False
+    if not explicit_write_command:
+        return True
     if looks_like_followup_answer:
         return True
     if is_write_intent_route(route) and not explicit_write_command:

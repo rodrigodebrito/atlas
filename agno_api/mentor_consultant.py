@@ -882,6 +882,31 @@ def build_structured_pri_followup(
             any(token in normalized_last_question for token in ("fatura", "maiores gastos", "listar"))
             or any(token in " ".join(merged_summary.get("notes", [])) for token in ("fatura", "cartao", "caixa"))
         )
+        asking_for_card_type = any(
+            token in normalized_last_question
+            for token in ("cartao de credito", "cartão de crédito", "emprestimo", "empréstimo", "financiamento")
+        )
+        if asking_for_card_type and any(
+            token in lowered for token in ("cartao de credito", "cartão de crédito", "credito", "crédito")
+        ):
+            question = (
+                "Boa. Agora me diz o que mais pesa nessa fatura: mercado do dia a dia, "
+                "parcela grande, aluguel ou outra coisa?"
+            )
+            content = (
+                "Perfeito. Entao a raiz nao e emprestimo nem financiamento. E *cartao de credito* mesmo.\n\n"
+                "Isso ajuda porque agora eu sei que esse bolo em Outros esta misturando fatura com gasto do mes. "
+                "O proximo passo e separar o que nessa fatura e rotina e o que e peso fora do normal.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "open_text_followup",
+                "expected_answer_type": "open_text",
+                "consultant_stage": "diagnosis_clarification",
+                "case_summary": merged_summary,
+            }
         if _is_affirmative() and asking_for_invoice_breakdown:
             question = (
                 "Boa. Entao me fala os 3 maiores gastos que voce lembra dessa fatura: "
