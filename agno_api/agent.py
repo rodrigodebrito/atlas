@@ -12040,10 +12040,12 @@ async def chat_endpoint(
         )
     _mentor_case_ctx = build_case_summary_context(_mentor_case_summary)
     _mentor_plan_ctx = build_consultant_plan_context(_mentor_case_summary, _mentor_stage)
-    _opening_scope = _resolve_pri_snapshot_scope(body) if (_is_mentor_mode and not _in_mentor_session) else "month"
-    _opening_snapshot = _get_pri_opening_snapshot(user_phone, _opening_scope) if (_is_mentor_mode and not _in_mentor_session) else {}
-    _structured_opening_frame = infer_pri_opening_frame(body, _opening_snapshot, _mentor_case_summary) if (_is_mentor_mode and not _in_mentor_session) else ""
-    if _is_mentor_mode and not _in_mentor_session and _structured_opening_frame:
+    _explicit_pri_restart = bool(_body_lower.strip().startswith(("pri", "priscila")))
+    _should_attempt_structured_opening = _is_mentor_mode and (not _in_mentor_session or _explicit_pri_restart)
+    _opening_scope = _resolve_pri_snapshot_scope(body) if _should_attempt_structured_opening else "month"
+    _opening_snapshot = _get_pri_opening_snapshot(user_phone, _opening_scope) if _should_attempt_structured_opening else {}
+    _structured_opening_frame = infer_pri_opening_frame(body, _opening_snapshot, _mentor_case_summary) if _should_attempt_structured_opening else ""
+    if _should_attempt_structured_opening and _structured_opening_frame:
         if _opening_snapshot:
             _opening = build_structured_pri_opening(body, _opening_snapshot, _mentor_case_summary)
             content = (_opening.get("content") or "").strip()

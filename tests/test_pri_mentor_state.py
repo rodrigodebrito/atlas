@@ -374,6 +374,63 @@ async def test_first_pri_month_analysis_uses_structured_opening_without_llm(atla
 
 
 @pytest.mark.asyncio
+async def test_explicit_pri_month_analysis_restarts_with_structured_opening_during_active_session(atlas, monkeypatch):
+    phone = "+5511977444400"
+    atlas._save_mentor_state(
+        phone,
+        mode="mentor",
+        last_open_question="Quer que eu monte um plano pra isso?",
+        open_question_key="plan_help_offer",
+        expected_answer_type="yes_no",
+        consultant_stage="action_plan",
+        case_summary={"main_issue_hypothesis": "cashflow_pressure"},
+        memory_turns=[],
+        expires_at=atlas._mentor_expiry_iso(),
+    )
+    stub_agent = _StubAtlasAgent([])
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return {"intent": "mentor", "action": "", "params": {}}
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+    monkeypatch.setattr(
+        atlas,
+        "_get_pri_opening_snapshot",
+        lambda _phone, _scope="month": {
+            "first_name": "Rodrigo",
+            "scope": "month",
+            "period_label": "este mes",
+            "declared_income_cents": 1200000,
+            "actual_income_cents": 1777344,
+            "expense_total_cents": 1918795,
+            "card_total_cents": 473420,
+            "top_categories": [
+                {"name": "Moradia", "total_cents": 821143, "count": 5},
+                {"name": "Outros", "total_cents": 535700, "count": 3},
+                {"name": "Alimentacao", "total_cents": 198052, "count": 34},
+            ],
+        },
+    )
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="pri faz uma analise do meu mes")
+
+    content = result["content"].lower()
+    assert "vazamento" in content
+    assert "outros" in content
+    assert "ta tudo misturado" in content
+    assert "?" in result["content"]
+    assert stub_agent.calls == []
+
+    state = atlas._load_mentor_state(phone)
+    assert state is not None
+    assert state["open_question_key"] == "category_other_breakdown"
+    assert state["consultant_stage"] == "diagnosis_clarification"
+
+
+@pytest.mark.asyncio
 async def test_first_pri_month_analysis_explains_when_no_full_month_history(atlas, monkeypatch):
     phone = "+5511977000001"
     stub_agent = _StubAtlasAgent([])
