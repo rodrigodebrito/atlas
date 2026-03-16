@@ -380,13 +380,94 @@ def test_save_transaction_expense_response_has_pri_tone_and_month_snapshot(atlas
         merchant="almoco",
     )
 
-    assert "✨ Pri anotou" in response
+    assert "✨ Pri" in response
     assert "Fechamento rápido do mês" in response
     assert "Entradas:" in response
     assert "Comprado no mês:" in response
     assert "Peso no caixa:" in response
     assert "Saldo do mês:" in response
     assert "painel" in response.lower()
+
+
+def test_save_transaction_card_purchase_mentions_next_bill_queue(atlas):
+    phone = "+5511944400002"
+    user_id = f"user_{uuid.uuid4().hex}"
+    card_id = f"card_{uuid.uuid4().hex}"
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 300000),
+        )
+        cur.execute(
+            "INSERT INTO credit_cards (id, user_id, name, closing_day, due_day) VALUES (?, ?, ?, ?, ?)",
+            (card_id, user_id, "Caixa", 5, 16),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'INCOME', ?, ?, ?, ?)""",
+            (f"tx_{uuid.uuid4().hex}", user_id, 300000, "Salario", "Empresa", f"{atlas._now_br().strftime('%Y-%m')}-01"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = atlas.save_transaction.entrypoint(
+        user_phone=phone,
+        transaction_type="EXPENSE",
+        amount=120,
+        category="Vestuário",
+        merchant="Tenis",
+        card_name="Caixa",
+    )
+
+    assert "✨ Pri anotou essa compra no cartão" in response
+    assert "próxima fatura" in response.lower()
+    assert "fila da próxima fatura" in response.lower()
+
+
+def test_save_transaction_repeated_merchant_mentions_pattern(atlas):
+    phone = "+5511944400003"
+    user_id = f"user_{uuid.uuid4().hex}"
+    current_month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 300000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'INCOME', ?, ?, ?, ?)""",
+            (f"tx_{uuid.uuid4().hex}", user_id, 300000, "Salario", "Empresa", f"{current_month}-01"),
+        )
+        for day in ("02", "06"):
+            cur.execute(
+                """INSERT INTO transactions
+                   (id, user_id, type, amount_cents, category, merchant, occurred_at)
+                   VALUES (?, ?, 'EXPENSE', ?, ?, ?, ?)""",
+                (f"tx_{uuid.uuid4().hex}", user_id, 2500, "Alimentacao", "Deville", f"{current_month}-{day}"),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = atlas.save_transaction.entrypoint(
+        user_phone=phone,
+        transaction_type="EXPENSE",
+        amount=30,
+        category="Alimentacao",
+        merchant="Deville",
+    )
+
+    assert "✨ Pri guardou esse gasto" in response
+    assert "*Deville* já apareceu 3x" in response
 
 
 def test_strip_whatsapp_bold_removes_null_bytes_and_controls(atlas):

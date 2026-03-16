@@ -106,6 +106,13 @@ def _fmt_brl(cents):
     return "R$" + s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _normalize_pt_text(raw: str) -> str:
+    import unicodedata
+
+    text = unicodedata.normalize("NFKD", (raw or "").lower())
+    return "".join(ch for ch in text if not unicodedata.combining(ch))
+
+
 def _get_purchase_expense_total_for_month(cur, user_id: str, month: str) -> int:
     """Total comprado no mês pelo mês de compra, sem duplicar pagamentos de fatura/conta."""
     cur.execute(
@@ -129,26 +136,75 @@ def _build_pri_transaction_intro(
     card_name: str = "",
 ) -> str:
     """Abre confirmações de lançamento com voz mais humana da Pri."""
-    merchant_l = (merchant or "").lower()
+    merchant_l = _normalize_pt_text(merchant)
+    category_l = _normalize_pt_text(category)
 
     if transaction_type == "INCOME":
-        if category == "Salário":
-            return "✨ Pri registrou essa entrada por aqui. Mês respirando um pouco melhor."
-        if category == "Freelance":
+        if category_l == "salario":
+            return "✨ Pri anotou teu salário por aqui. Esse é o tipo de mensagem que eu gosto de ver."
+        if category_l == "freelance":
             return "✨ Pri anotou esse freela. Grana extra no radar."
         return "✨ Pri registrou essa entrada por aqui."
 
     if installments > 1:
-        return "✨ Pri anotou esse parcelado sem deixar ele se esconder nas próximas faturas."
+        return "✨ Pri prendeu esse parcelado direitinho pra ele não se esconder nas próximas faturas."
     if card_name:
         return "✨ Pri anotou essa compra no cartão e já deixou claro em que fatura ela cai."
-    if category == "Alimentação" or any(k in merchant_l for k in ("padaria", "restaurante", "ifood", "mercado", "almoço", "almoco")):
-        return "✨ Pri anotou isso aqui antes de virar mais um gasto que some sem fazer barulho."
-    if category == "Transporte":
-        return "✨ Pri registrou esse deslocamento por aqui."
-    if category == "Vestuário":
-        return "✨ Pri anotou essa compra pra ela não se perder no meio do mês."
-    return "✨ Pri anotou isso por aqui."
+    if category_l == "alimentacao" or any(k in merchant_l for k in ("padaria", "restaurante", "ifood", "mercado", "almoco")):
+        return "✨ Pri guardou esse gasto antes dele sumir no meio do dia."
+    if category_l == "transporte":
+        return "✨ Pri registrou esse deslocamento sem deixar ele virar gasto invisível."
+    if category_l == "vestuario":
+        return "✨ Pri anotou essa compra pra ela não se camuflar no resto do mês."
+    return "✨ Pri anotou isso por aqui, do jeito certo."
+
+
+def _build_pri_transaction_microcopy(
+    *,
+    transaction_type: str,
+    category: str,
+    merchant: str,
+    amount_cents: int,
+    total_amount_cents: int,
+    installments: int,
+    card_name: str,
+    enters_next_bill: bool,
+    merchant_month_count: int,
+    day_count: int,
+    day_total: int,
+) -> str:
+    """Retorna uma linha curta e contextual com voz da Pri."""
+    if transaction_type != "EXPENSE":
+        return ""
+
+    if installments > 1 and total_amount_cents > 0:
+        return (
+            f"💡 Pri de olho: a parcela ficou em {_fmt_brl(amount_cents)}, mas a compra toda foi "
+            f"{_fmt_brl(total_amount_cents)}. Parcelado bom é o que continua cabendo nos próximos meses também."
+        )
+
+    if card_name and enters_next_bill:
+        return (
+            "💡 Pri de olho: isso não aperta teu caixa hoje, mas já entrou na fila da próxima fatura."
+        )
+
+    if merchant and merchant_month_count >= 3:
+        return (
+            f"💡 Pri reparou um padrão: *{merchant}* já apareceu {merchant_month_count}x neste mês. "
+            "Quando um lugar começa a repetir demais, vale atenção."
+        )
+
+    if category == "Alimentação" and day_count >= 3:
+        return (
+            f"💡 Pri sentiu o ritmo do dia: alimentação já bateu {_fmt_brl(day_total)} em {day_count} compras."
+        )
+
+    if amount_cents >= 50000:
+        return (
+            "💡 Pri levantou a sobrancelha aqui: compra mais parruda merece checagem pra ver se foi planejada ou impulso."
+        )
+
+    return ""
 
 
 # ============================================================
@@ -1061,6 +1117,8 @@ def save_transaction(
     )
     result = f"{intro_line}\n\n" + "\n".join(lines)
 
+    enters_next_bill = "próxima fatura" in next_bill_warning.lower()
+
     if next_bill_warning:
         result += next_bill_warning
     if ask_closing:
@@ -1092,6 +1150,32 @@ def save_transaction(
                 (user_id,),
             )
             total_expenses = _ctx_cur.fetchone()[0]
+            _merchant_month_count = 0
+            if merchant:
+                _ctx_cur.execute(
+                    "SELECT COUNT(*) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND UPPER(COALESCE(merchant, '')) = UPPER(?) AND occurred_at LIKE ?",
+                    (user_id, merchant, today_str[:7] + "%"),
+                )
+                _merchant_month_count = _ctx_cur.fetchone()[0] or 0
+            _ctx_cur.execute(
+                "SELECT COUNT(*), COALESCE(SUM(amount_cents), 0) FROM transactions "
+                "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at >= ? AND occurred_at <= ?",
+                (user_id, today_str, today_str + ' 23:59:59'),
+            )
+            day_count, day_total = _ctx_cur.fetchone()
+            _microcopy = _build_pri_transaction_microcopy(
+                transaction_type=transaction_type,
+                category=category,
+                merchant=merchant,
+                amount_cents=amount_cents,
+                total_amount_cents=total_amount_cents,
+                installments=installments,
+                card_name=card_name,
+                enters_next_bill=enters_next_bill,
+                merchant_month_count=_merchant_month_count,
+                day_count=day_count or 0,
+                day_total=day_total or 0,
+            )
 
             if total_expenses == 1:
                 # Primeiro gasto de todos!
@@ -1100,14 +1184,9 @@ def save_transaction(
                     "\nA partir de agora, todo dia às 9h te mando um resumo do dia anterior."
                     "\nContinua lançando — quanto mais registrar, melhor fico! 😊"
                 )
+                if _microcopy:
+                    result += f"\n{_microcopy}"
             else:
-                # Resumo do dia inline
-                _ctx_cur.execute(
-                    "SELECT COUNT(*), COALESCE(SUM(amount_cents), 0) FROM transactions "
-                    "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at >= ? AND occurred_at <= ?",
-                    (user_id, today_str, today_str + " 23:59:59"),
-                )
-                day_count, day_total = _ctx_cur.fetchone()
                 # Total do mês + saldo restante
                 _month_str = today_str[:7]
                 _month_rollup = _get_cashflow_expense_rollup_for_month(_ctx_cur, user_id, _month_str)
@@ -1127,6 +1206,8 @@ def save_transaction(
                 result += f"\n🛍️ Comprado no mês: {_fmt_brl(_month_purchased)}"
                 result += f"\n🗓️ Peso no caixa: {_fmt_brl(_month_total)}"
                 result += f"\n{'✅' if _month_balance >= 0 else '⚠️'} Saldo do mês: {_fmt_brl(_month_balance)}"
+                if _microcopy:
+                    result += f"\n{_microcopy}"
 
                 # Streak: dias consecutivos lançando gastos
                 _ctx_cur.execute(
