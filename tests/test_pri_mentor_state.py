@@ -403,6 +403,47 @@ async def test_debt_and_no_reserve_reply_stays_structured_without_monthly_averag
 
 
 @pytest.mark.asyncio
+async def test_combined_debt_and_reserve_reply_stays_structured_even_with_reserve_key(atlas, monkeypatch):
+    phone = "+5511944443335"
+    atlas._save_mentor_state(
+        phone,
+        mode="mentor",
+        last_open_question="Agora, me conta: tem alguma divida alem desses cartoes? Tem reserva guardada?",
+        open_question_key="has_emergency_reserve",
+        expected_answer_type="has_reserve",
+        consultant_stage="reserve_check",
+        case_summary={"main_issue_hypothesis": "cashflow_pressure"},
+        memory_turns=[],
+        expires_at=atlas._mentor_expiry_iso(),
+    )
+    stub_agent = _StubAtlasAgent([])
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return {"intent": "save_transaction", "action": "save_transaction", "params": {}}
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="tenho 1000 de divida no especial, e nao tenho reserva")
+
+    content = result["content"].lower()
+    assert "alerta vermelho" in content
+    assert "zero reserva" in content
+    assert "media mensal" not in content
+    assert stub_agent.calls == []
+
+    state = atlas._load_mentor_state(phone)
+    assert state is not None
+    assert state["open_question_key"] == "amount_followup"
+    assert state["consultant_stage"] == "action_plan"
+    assert state["case_summary"]["main_issue_hypothesis"] == "high_interest_debt"
+    assert state["case_summary"]["debt_outside_cards"] == "yes"
+    assert state["case_summary"]["has_emergency_reserve"] == "no"
+
+
+@pytest.mark.asyncio
 async def test_reserve_amount_followup_handles_no_capacity_reply(atlas, monkeypatch):
     phone = "+5511932100000"
     atlas._save_mentor_state(

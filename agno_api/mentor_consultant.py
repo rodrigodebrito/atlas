@@ -610,6 +610,30 @@ def build_structured_pri_followup(
     merged_summary = merge_case_summary(case_summary, text, normalized_key, normalized_expected)
     amount_cents = _extract_brl_amount_cents(text)
 
+    if any(token in lowered for token in ("cheque especial", "especial", "rotativo", "emprestimo", "empréstimo", "financiamento")) and any(
+        token in lowered
+        for token in ("nao tenho reserva", "não tenho reserva", "sem reserva", "nao tenho nenhuma reserva", "não tenho nenhuma reserva")
+    ):
+        amount_label = _fmt_cents_brl(amount_cents) if amount_cents else "essa divida"
+        question = "Me diz uma coisa: voce consegue levantar uma parte disso ainda este mes ou primeiro precisa abrir espaco no teu orcamento?"
+        merged_summary["debt_outside_cards"] = "yes"
+        merged_summary["has_emergency_reserve"] = "no"
+        merged_summary["main_issue_hypothesis"] = "high_interest_debt"
+        content = (
+            f"Pri aqui. Aí acendeu alerta vermelho de verdade: *{amount_label}* no cheque especial e *zero reserva*.\n\n"
+            "Isso e o tipo de combinacao que machuca rapido, porque o juros corre e voce fica sem colchao pra absorver qualquer imprevisto.\n\n"
+            "Se eu estivesse organizando isso com voce, a ordem seria bem clara: primeiro parar esse sangramento, depois criar uma reserva minima pra nao voltar pro especial.\n\n"
+            f"{question}"
+        )
+        return {
+            "content": content,
+            "question": question,
+            "open_question_key": "amount_followup",
+            "expected_answer_type": "open_text",
+            "consultant_stage": "action_plan",
+            "case_summary": merged_summary,
+        }
+
     def _is_affirmative() -> bool:
         return any(token in lowered for token in ("sim", "quero", "bora", "vamos", "pode", "claro", "quero sim"))
 
