@@ -637,6 +637,117 @@ async def test_explicit_pri_followup_stays_in_mentor_even_if_router_prefers_tran
 
 
 @pytest.mark.asyncio
+async def test_pri_consulting_mode_blocks_write_route_for_context_reply_with_amount(atlas, monkeypatch):
+    phone = "+5511911122233"
+    atlas._save_mentor_state(
+        phone,
+        mode="mentor",
+        last_open_question="Esses R$2.000 em Outros de receita extra sao recorrentes ou foi algo pontual esse mes?",
+        open_question_key="income_extra_recurrence",
+        expected_answer_type="income_recurrence",
+        consultant_stage="income_clarification",
+        case_summary={"main_issue_hypothesis": "income_volatility"},
+        memory_turns=[],
+        expires_at=atlas._mentor_expiry_iso(),
+    )
+    stub_agent = _StubAtlasAgent(
+        [
+            "Pri aqui. Entendi. Isso nao e renda recorrente, e alivio pontual. Entao eu nao montaria teu mes contando com esse valor de novo. Me diz: sem essa ajuda, quanto teu mes fica apertado?",
+        ]
+    )
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return {"intent": "transaction", "action": "save_transaction", "params": {"amount": 2000}}
+
+    async def _forbidden_execute(*_args, **_kwargs):
+        raise AssertionError("Nao deveria executar escrita durante consultoria da Pri")
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "_execute_intent", _forbidden_execute)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+
+    result = await atlas.chat_endpoint(
+        user_phone=phone,
+        message="esses 2.000 e uma ajuda pra pagar o aluguel que minha irma me passou vai ate abril",
+    )
+
+    content = result["content"].lower()
+    assert "alivio pontual" in content
+    assert "nao montaria teu mes contando com esse valor" in content
+    assert len(stub_agent.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_pending_action_is_ignored_during_pri_consulting_mode(atlas, monkeypatch):
+    phone = "+5511911122244"
+    atlas._save_mentor_state(
+        phone,
+        mode="mentor",
+        last_open_question="Voce consegue separar algum valor mensal pra essa reserva?",
+        open_question_key="amount_followup",
+        expected_answer_type="number_amount",
+        consultant_stage="reserve_check",
+        case_summary={"main_issue_hypothesis": "no_emergency_buffer"},
+        memory_turns=[],
+        expires_at=atlas._mentor_expiry_iso(),
+    )
+    stub_agent = _StubAtlasAgent(
+        [
+            "Pri aqui. Fechou. Se nao sobra valor agora, antes de falar de reserva bonita a gente precisa abrir espaco no teu mes. Me diz: onde hoje voce sente mais desperdicio, em delivery ou em gastos misturados?",
+        ]
+    )
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return {"intent": "mentor", "action": "", "params": {}}
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        atlas,
+        "_check_pending_action",
+        lambda *_args, **_kwargs: {"response": "CONFIRMACAO ANTIGA"},
+    )
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="nao separo valor")
+
+    assert "CONFIRMACAO ANTIGA" not in result["content"]
+    assert "delivery" in result["content"].lower()
+    assert len(stub_agent.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_explicit_pri_message_skips_atlas_onboarding(atlas, monkeypatch):
+    phone = "+5511911122255"
+    stub_agent = _StubAtlasAgent(
+        [
+            "Pri aqui. Bora olhar isso juntas. Me conta qual parte do teu dinheiro mais esta te incomodando hoje?",
+        ]
+    )
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return {"intent": "mentor", "action": "", "params": {}}
+
+    monkeypatch.setattr(
+        atlas,
+        "_onboard_if_new",
+        lambda *_args, **_kwargs: {"response": "Oi! Sou o ATLAS, seu assistente financeiro."},
+    )
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+    monkeypatch.setattr(atlas, "_get_pri_opening_snapshot", lambda *_args, **_kwargs: {})
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="pri me ajuda")
+
+    assert "atla" not in result["content"].lower()
+    assert "pri aqui" in result["content"].lower()
+    assert len(stub_agent.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_structured_followup_handles_cheque_especial_answer_without_llm(atlas, monkeypatch):
     phone = "+5511944441111"
     atlas._save_mentor_state(

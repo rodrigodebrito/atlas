@@ -42,6 +42,12 @@ from agno_api.mentor_consultant import (
     normalize_consultant_stage,
     transition_consultant_stage,
 )
+from agno_api.pri_controller import (
+    is_explicit_write_command,
+    message_addresses_pri,
+    should_force_pri_readonly,
+    should_skip_pending_action_check,
+)
 
 load_dotenv()
 
@@ -12015,13 +12021,14 @@ async def chat_endpoint(
 
     body = _extract_body(full_message).strip()
     _body_lower = body.lower() if body else ""
+    _explicit_pri_message = message_addresses_pri(body)
 
     # ═══ ROTEAMENTO UNIVERSAL VIA LLM-MINI ═══
     import logging as _log_rt
     _rt_logger = _log_rt.getLogger("atlas.router")
 
     # 1. Onboarding: se usuário é novo, retorna boas-vindas fixas
-    onboard = _onboard_if_new(user_phone, full_message)
+    onboard = None if _explicit_pri_message else _onboard_if_new(user_phone, full_message)
     if onboard:
         return {"content": _strip_whatsapp_bold(onboard["response"]), "routed": True}
 
@@ -12035,7 +12042,12 @@ async def chat_endpoint(
         return {"content": "Beleza! Quando precisar da Pri, digita **pri**. 💪", "routed": True}
 
     # 4. Confirmação/cancelamento de ações pendentes (regex + DB, sem LLM)
-    _confirm_result = _check_pending_action(user_phone, _body_lower)
+    _confirm_result = None
+    if not should_skip_pending_action_check(
+        explicit_pri_message=_explicit_pri_message,
+        in_mentor_session=_in_mentor_session,
+    ):
+        _confirm_result = _check_pending_action(user_phone, _body_lower)
     if _confirm_result:
         return {"content": _strip_whatsapp_bold(_confirm_result["response"]), "routed": True}
 
@@ -12045,17 +12057,29 @@ async def chat_endpoint(
             _touch_mentor_state(user_phone)
         return {"content": _strip_whatsapp_bold(_panel_url_response(user_phone)), "routed": True}
 
-    _explicit_pri_message = bool(_body_lower.strip().startswith(("pri", "priscila")))
+    _explicit_write_command = is_explicit_write_command(body)
 
     # 5. Mini-router (gpt-5-mini, ~200ms)
     _route = await _mini_route(body, user_phone, _in_mentor_session)
     _rt_logger.warning(f"[MINI_ROUTE] phone={user_phone} result={_route} body={body[:80]}")
 
-    if _explicit_pri_message:
+    _looks_like_followup_answer = bool(
+        _in_mentor_session and _looks_like_answer_to_open_mentor_question_v2(body, _mentor_state)
+    )
+    if should_force_pri_readonly(
+        explicit_pri_message=_explicit_pri_message,
+        in_mentor_session=_in_mentor_session,
+        route=_route,
+        explicit_write_command=_explicit_write_command,
+        looks_like_followup_answer=_looks_like_followup_answer,
+    ):
+        _route = {"intent": "mentor", "action": "", "params": {}}
+
+    if False and _explicit_pri_message:
         _route = {"intent": "mentor", "action": "", "params": {}}
 
     # Sessão mentor ativa + resposta curta ao que a Pri perguntou = mentor, não lançamento.
-    if _in_mentor_session and (
+    if False and _in_mentor_session and (
         not _has_explicit_amount(body)
         or _looks_like_answer_to_open_mentor_question_v2(body, _mentor_state)
     ):
