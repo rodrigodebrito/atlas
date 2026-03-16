@@ -470,6 +470,47 @@ def test_save_transaction_repeated_merchant_mentions_pattern(atlas):
     assert "*Deville* já apareceu 3x" in response
 
 
+def test_inline_multi_expense_returns_single_pri_batch_confirmation(atlas):
+    phone = "+5511944400004"
+    user_id = f"user_{uuid.uuid4().hex}"
+    current_month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 300000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'INCOME', ?, ?, ?, ?)""",
+            (f"tx_{uuid.uuid4().hex}", user_id, 300000, "Salario", "Empresa", f"{current_month}-01"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = atlas._multi_expense_extract(phone, "gastei 30 na padaria e 25 no almoço")
+
+    assert response is not None
+    text = response["response"]
+    assert "Pri" in text
+    assert "padaria" in text.lower()
+    assert "almo" in text.lower()
+    assert text.count("Fechamento") == 1
+    assert "Pri" in text
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id = ? AND type = 'EXPENSE'", (user_id,))
+        assert cur.fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
 def test_strip_whatsapp_bold_removes_null_bytes_and_controls(atlas):
     cleaned = atlas._strip_whatsapp_bold("Oi\x00 mundo\x07 *forte*")
 

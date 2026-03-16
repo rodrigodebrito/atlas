@@ -207,6 +207,62 @@ def _build_pri_transaction_microcopy(
     return ""
 
 
+def _build_pri_batch_transaction_intro(items: list[dict]) -> str:
+    """Abertura curta e humana para confirmação de vários gastos de uma vez."""
+    if not items:
+        return "✨ Pri amarrou esses gastos num bloco só pra você não perder o fio do dia."
+
+    categories = [str(item.get("category") or "") for item in items]
+    normalized_categories = [_normalize_pt_text(cat) for cat in categories]
+    total_cents = sum(int(item.get("amount_cents") or 0) for item in items)
+
+    if normalized_categories and all(cat == "alimentacao" for cat in normalized_categories):
+        return (
+            f"✨ Pri juntou essas saídas de alimentação num bloco só. "
+            f"Nessa rodada já foram {_fmt_brl(total_cents)}."
+        )
+
+    if any(item.get("card_name") for item in items):
+        return (
+            "✨ Pri amarrou essas compras no mesmo pacote e já deixou claro "
+            "o que entra no caixa agora e o que escorrega pra próxima fatura."
+        )
+
+    return (
+        "✨ Pri amarrou esses gastos num bloco só pra você bater o olho rápido "
+        "e seguir o dia sem bagunça."
+    )
+
+
+def _build_pri_month_quick_closure(
+    cur,
+    *,
+    user_id: str,
+    month_str: str,
+    day_count: int = 0,
+    day_total: int = 0,
+) -> str:
+    """Resumo curto do mês usado nas confirmações de lançamento."""
+    month_rollup = _get_cashflow_expense_rollup_for_month(cur, user_id, month_str)
+    month_total = month_rollup["total_cents"]
+    month_purchased = _get_purchase_expense_total_for_month(cur, user_id, month_str)
+    cur.execute(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND type = 'INCOME' AND occurred_at LIKE ?",
+        (user_id, month_str + "%"),
+    )
+    month_income = cur.fetchone()[0] or 0
+    month_balance = month_income - month_total
+
+    lines = ["📌 *Fechamento rápido do mês*"]
+    if day_count and day_count > 1:
+        lines.append(f"📆 Hoje: {_fmt_brl(day_total)} em {day_count} gastos")
+    lines.append(f"💰 Entradas: {_fmt_brl(month_income)}")
+    lines.append(f"🛍️ Comprado no mês: {_fmt_brl(month_purchased)}")
+    lines.append(f"🗓️ Peso no caixa: {_fmt_brl(month_total)}")
+    lines.append(f"{'✅' if month_balance >= 0 else '⚠️'} Saldo do mês: {_fmt_brl(month_balance)}")
+    return "\n".join(lines)
+
+
 # ============================================================
 # TABELAS FINANCEIRAS — criadas automaticamente no SQLite
 # (No PostgreSQL do Render, rodar o script SQL uma vez)
@@ -1189,23 +1245,13 @@ def save_transaction(
             else:
                 # Total do mês + saldo restante
                 _month_str = today_str[:7]
-                _month_rollup = _get_cashflow_expense_rollup_for_month(_ctx_cur, user_id, _month_str)
-                _month_total = _month_rollup["total_cents"]
-                _month_purchased = _get_purchase_expense_total_for_month(_ctx_cur, user_id, _month_str)
-                _ctx_cur.execute(
-                    "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND type = 'INCOME' AND occurred_at LIKE ?",
-                    (user_id, _month_str + "%"),
+                result += "\n\n" + _build_pri_month_quick_closure(
+                    _ctx_cur,
+                    user_id=user_id,
+                    month_str=_month_str,
+                    day_count=day_count or 0,
+                    day_total=day_total or 0,
                 )
-                _month_income = _ctx_cur.fetchone()[0] or 0
-                _month_balance = _month_income - _month_total
-
-                result += "\n\n📌 *Fechamento rápido do mês*"
-                if day_count and day_count > 1:
-                    result += f"\n📆 Hoje: {_fmt_brl(day_total)} em {day_count} gastos"
-                result += f"\n💰 Entradas: {_fmt_brl(_month_income)}"
-                result += f"\n🛍️ Comprado no mês: {_fmt_brl(_month_purchased)}"
-                result += f"\n🗓️ Peso no caixa: {_fmt_brl(_month_total)}"
-                result += f"\n{'✅' if _month_balance >= 0 else '⚠️'} Saldo do mês: {_fmt_brl(_month_balance)}"
                 if _microcopy:
                     result += f"\n{_microcopy}"
 
@@ -1348,13 +1394,13 @@ def _build_pri_month_summary_insight(
     if pending_commitments > 0 and remaining_after < 0:
         return (
             f"💡 Pri acendeu a luz vermelha aqui: depois dos compromissos que ainda faltam, teu caixa "
-            f"fica em {_fmt_brl(remaining_after)}. Antes de pensar em qualquer gasto novo, o foco é tapar esse buraco."
+            f"fica em {_fmt_brl(remaining_after)}. Antes de pensar em qualquer gasto novo, o jogo é tapar esse buraco."
         )
 
     if top_cat_name == "Outros":
         return (
-            "💡 Pri viu o vazamento mais suspeito em *Outros*: essa categoria vira caixa-preta muito fácil. "
-            "Se você abrir isso primeiro, acha mais rápido o que está drenando teu mês."
+            "💡 Pri sem rodeio: o vazamento mais suspeito está em *Outros*. "
+            "Essa categoria vira caixa-preta muito fácil — abriu isso, você acha mais rápido onde o dinheiro está sumindo."
         )
 
     if deferred_credit_expenses > 0:
@@ -1373,13 +1419,13 @@ def _build_pri_month_summary_insight(
 
     if balance < 0:
         return (
-            "💡 Pri vai direto no ponto: este mês tá saindo mais do que entrando. "
+            "💡 Pri vai direto no ponto: este mês está saindo mais do que entrando. "
             f"Se eu estivesse arrumando isso com você, atacaria *{top_cat_name or 'o maior gasto'}* antes de qualquer outra coisa."
         )
 
     return (
         "💡 Pri viu um mês puxado, mas com um ponto claro pra agir. "
-        f"Se você começar por *{top_cat_name or 'onde mais pesou'}*, já deve sentir diferença mais rápido no caixa."
+        f"Se você começar por *{top_cat_name or 'onde mais pesou'}*, a diferença aparece mais rápido no caixa."
     )
 
 
@@ -10747,46 +10793,144 @@ _MULTI_LINE_PATTERN_REV = _re_router.compile(
 )
 
 
+def _parse_batch_expenses(raw_body: str) -> list[tuple[float, str]] | None:
+    """Extrai vários gastos da mesma mensagem, em linhas separadas ou na mesma frase."""
+    text = (raw_body or "").strip()
+    if not text:
+        return None
+
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    if len(lines) >= 2:
+        parsed = []
+        for line in lines:
+            m = _MULTI_LINE_PATTERN.match(line)
+            if m:
+                val = float(m.group(1).replace(",", "."))
+                merchant = m.group(2).strip()
+                if val > 0 and merchant:
+                    parsed.append((val, merchant))
+                    continue
+            m2 = _MULTI_LINE_PATTERN_REV.match(line)
+            if m2:
+                merchant = m2.group(1).strip()
+                val = float(m2.group(2).replace(",", "."))
+                if val > 0 and merchant and not merchant.replace(" ", "").isdigit():
+                    parsed.append((val, merchant))
+                    continue
+            return None
+        return parsed if len(parsed) >= 2 else None
+
+    if "\n" in text:
+        return None
+
+    low = text.lower()
+    if any(token in low for token in ("parcelad", "parcelei", "vezes", " 2x", " 3x", " 4x", " 5x", " 6x", " 7x", " 8x", " 9x", " 10x", " 12x")):
+        return None
+    if " e " not in low and "," not in low:
+        return None
+    if not any(token in low for token in ("gastei", "paguei", "comprei", "almo", "jantei", "mercado", "padaria", "uber")):
+        return None
+
+    matches = list(_re_router.finditer(r'(?:[Rr][$]\s*)?(\d+(?:[.,]\d{1,2})?)', text))
+    if len(matches) < 2:
+        return None
+
+    parsed = []
+    for idx, match in enumerate(matches):
+        val = float(match.group(1).replace(",", "."))
+        if val <= 0:
+            return None
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        merchant = text[start:end]
+        merchant = _re_router.sub(r'^[\s,;:–—-]+', '', merchant)
+        merchant = _re_router.sub(r'^(?:e|e também|tambem|mais)\s+', '', merchant, flags=_re_router.IGNORECASE)
+        merchant = _re_router.sub(r'^(?:na|no|em|de|da|do|pra|pro)\s+', '', merchant, flags=_re_router.IGNORECASE)
+        merchant = _re_router.sub(r'\s*(?:e|,)\s*$', '', merchant, flags=_re_router.IGNORECASE)
+        merchant = merchant.strip(" .,-")
+        if not merchant:
+            return None
+        parsed.append((val, merchant))
+
+    return parsed if len(parsed) >= 2 else None
+
+
+def _build_pri_batch_expense_response(user_phone: str, user_id: str, saved_items: list[dict]) -> str:
+    """Monta uma única confirmação premium da Pri para vários gastos."""
+    lines = [_build_pri_batch_transaction_intro(saved_items), ""]
+
+    _cat_emoji_conf = {
+        "Alimentação": "🍽", "Transporte": "🚗", "Moradia": "🏠",
+        "Saúde": "💊", "Lazer": "🎮", "Assinaturas": "📱",
+        "Educação": "📚", "Vestuário": "👟", "Pets": "🐾",
+        "Investimento": "📈", "Outros": "📦",
+    }
+
+    for item in saved_items:
+        amount_fmt = _fmt_brl(int(item["amount_cents"]))
+        local_parts = [str(item["merchant"]).strip()]
+        if item.get("card_name"):
+            local_parts.append(str(item["card_name"]).strip())
+        local = "  •  ".join(part for part in local_parts if part)
+        lines.append(f"✅ *{amount_fmt} — {local}*")
+        lines.append(f"{_cat_emoji_conf.get(item['category'], '💸')} {item['category']}  •  {item['date_label']}")
+        if item.get("next_bill_warning"):
+            lines.append(item["next_bill_warning"])
+        lines.append("")
+
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        today_str = _now_br().strftime("%Y-%m-%d")
+        month_str = today_str[:7]
+        cur.execute(
+            "SELECT COUNT(*), COALESCE(SUM(amount_cents), 0) FROM transactions "
+            "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at >= ? AND occurred_at <= ?",
+            (user_id, today_str, today_str + " 23:59:59"),
+        )
+        day_count, day_total = cur.fetchone()
+        lines.append(_build_pri_month_quick_closure(
+            cur,
+            user_id=user_id,
+            month_str=month_str,
+            day_count=day_count or 0,
+            day_total=day_total or 0,
+        ))
+
+        month_total = sum(int(item["amount_cents"]) for item in saved_items)
+        same_cat = len({item["category"] for item in saved_items}) == 1
+        if same_cat and saved_items and saved_items[0]["category"] == "Alimentação":
+            lines.append(f"💡 Pri de olho: essa rodada sozinha já colocou {_fmt_brl(month_total)} em alimentação.")
+        elif any(item.get("card_name") for item in saved_items):
+            lines.append("💡 Pri de olho: nesse bloco já tem compra que entrou no cartão, então vale acompanhar a próxima fatura de perto.")
+        else:
+            lines.append(f"💡 Pri de olho: foram {len(saved_items)} saídas de uma vez, totalizando {_fmt_brl(month_total)}.")
+    finally:
+        conn.close()
+
+    lines.append("_Errou? Digite *painel* pra editar ou apagar_")
+    return "\n".join(line for line in lines if line is not None).strip()
+
+
 def _multi_expense_extract(user_phone: str, raw_body: str) -> dict | None:
     """
     Detecta e salva múltiplos gastos enviados em linhas separadas.
     Ex: "1000 relogio\\n70 padaria\\n150 farmacia\\n2000 aluguel"
     Retorna {"response": str} se detectou 2+ linhas de gasto, None caso contrário.
     """
-    lines = [l.strip() for l in raw_body.strip().split("\n") if l.strip()]
-    if len(lines) < 2:
-        return None
-
-    # Tenta parsear cada linha como "valor merchant" ou "merchant valor"
-    parsed = []
-    for line in lines:
-        m = _MULTI_LINE_PATTERN.match(line)
-        if m:
-            val = float(m.group(1).replace(",", "."))
-            merchant = m.group(2).strip()
-            if val > 0 and merchant:
-                parsed.append((val, merchant))
-                continue
-        # Tenta padrão invertido: "padaria 70"
-        m2 = _MULTI_LINE_PATTERN_REV.match(line)
-        if m2:
-            merchant = m2.group(1).strip()
-            val = float(m2.group(2).replace(",", "."))
-            # Guard: merchant não pode ser só números ou palavras de comando
-            if val > 0 and merchant and not merchant.replace(" ", "").isdigit():
-                parsed.append((val, merchant))
-                continue
-        # Linha não parseable → não é multi-expense
-        return None
-
-    if len(parsed) < 2:
+    parsed = _parse_batch_expenses(raw_body)
+    if not parsed:
         return None
 
     # Auto-categoriza e salva cada merchant
     saved = []
-    errors = []
     fn = getattr(save_transaction, 'entrypoint', None) or save_transaction
-    total = 0
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    conn.close()
+    if not user_id:
+        return None
     for val, merchant in parsed:
         category = "Outros"
         m_lower = merchant.lower()
@@ -10796,21 +10940,21 @@ def _multi_expense_extract(user_phone: str, raw_body: str) -> dict | None:
                 break
         try:
             fn(user_phone, "EXPENSE", val, category, merchant, "", "", 1, 0, "", "")
-            amt_fmt = f"R${val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            saved.append(f"• {amt_fmt} — {merchant.title()} ({category})")
-            total += val
+            tx_date = _now_br().strftime("%d/%m/%Y (hoje)")
+            saved.append(
+                {
+                    "amount_cents": round(val * 100),
+                    "merchant": merchant,
+                    "category": category,
+                    "date_label": tx_date,
+                    "card_name": "",
+                    "next_bill_warning": "",
+                }
+            )
         except Exception:
-            errors.append(f"• ❌ {merchant} R${val:.2f}")
+            return None
 
-    total_fmt = f"R${total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    summary = f"✅ *{len(saved)} gastos registrados!*\n\n"
-    summary += "\n".join(saved)
-    if errors:
-        summary += "\n" + "\n".join(errors)
-    summary += f"\n\n💰 *Total:* {total_fmt}"
-    summary += f"\n\n_Errou algo? Mande \"corrige\" ou \"apaga [nome]\"_"
-
-    return {"response": summary}
+    return {"response": _build_pri_batch_expense_response(user_phone, user_id, saved)}
 
 
 # ── EXTRATOR INTELIGENTE DE GASTOS ──────────────────────────────────
@@ -11315,14 +11459,14 @@ async def _execute_intent(result: dict, user_phone: str, body: str, full_message
         return {"response": _HELP_TEXT}
 
     if intent == "transaction":
-        msg = _extract_body(full_message)
-        parsed = _smart_expense_extract(user_phone, msg)
-        if parsed:
-            return parsed
         body_raw = _extract_body_raw(full_message)
         multi = _multi_expense_extract(user_phone, body_raw)
         if multi:
             return multi
+        msg = _extract_body(full_message)
+        parsed = _smart_expense_extract(user_phone, msg)
+        if parsed:
+            return parsed
         return None  # fallback pro LLM
 
     if intent == "query" and action in _QUERY_DISPATCH:
