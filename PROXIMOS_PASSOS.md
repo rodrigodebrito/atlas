@@ -1,140 +1,170 @@
-# Próximos Passos do ATLAS
+# Proximos Passos do ATLAS
 
-## Contexto
-ATLAS é um assistente financeiro no WhatsApp, MVP completo com: gastos, cartões, compromissos, agenda com notificações, painel visual. Tudo funciona para 1 usuário. Agora precisa evoluir para engajamento + escala (50 beta users).
+## Contexto atual
 
-## Estado Atual
-- ~10.700 linhas em `agno_api/agent.py`
-- Agenda inteligente funcionando com notificações via n8n (1min)
-- Pagamento de faturas/contas com categorias separadas no resumo
-- Painel HTML com CRUD completo
-- Pre-roteador resolve ~70% sem LLM
+O ATLAS ja saiu do estagio de "bot financeiro util" e entrou numa fase de produto:
 
----
+- Pri com estado persistente por telefone
+- memoria curta da conversa
+- resumo estruturado do caso
+- estagios formais de consultoria
+- frames de abertura por contexto (mes, dia, ontem, semana, semana passada, ultimos 7 dias, divida, cartao, reserva, investir vs quitar divida)
+- respostas curtas de continuidade preservadas dentro do fluxo da Pri
+- media mensal so com meses completos fechados
+- comando `painel` priorizado mesmo com a Pri ativa
+- suite automatizada de regressao da Pri
 
-## Bloco 1: Engajamento (reter o usuário)
-
-### 1.1 Relatório Semanal Automático
-**Esforço**: Baixo | **Impacto**: Alto
-- Cron domingo 20h via n8n (novo workflow)
-- Endpoint `GET /v1/reports/weekly` que chama `get_week_summary()` pra cada usuário ativo
-- Mensagem formatada: "Resumo da semana: gastou X, top categoria Y, comparação com semana anterior"
-- Reutiliza lógica existente de `get_week_summary`
-
-### 1.2 Recap Mensal ("Spotify Wrapped" das finanças)
-**Esforço**: Médio | **Impacto**: Alto
-- Dispara dia 1 de cada mês (cron n8n)
-- Endpoint `GET /v1/reports/monthly-recap`
-- Conteúdo: top 5 merchants, categoria campeã, dia mais gastador, streak de registro, score do mês, comparativo com mês anterior
-- Formato visual com emojis e dados curiosos ("Você gastou o equivalente a X pizzas em delivery")
-
-### 1.3 Snooze de Alertas da Agenda
-**Esforço**: Baixo | **Impacto**: Médio
-- Detectar "adia 1h", "adia 30 min", "adia pra amanhã" no pre-roteador
-- Recalcular `next_alert_at` do evento mais recente notificado
-- Pattern: busca `last_notified_at` recente + recalcula
-
-### 1.4 Editar/Pausar Eventos via WhatsApp
-**Esforço**: Médio | **Impacto**: Médio
-- "pausar lembrete água" → status = 'paused'
-- "retomar lembrete água" → status = 'active', recomputa next_alert_at
-- "editar reunião pra 15h" → atualiza event_at
-- Usa pending_actions para confirmação quando ambíguo
+Estado atual da suite da Pri:
+- `12 passed`
 
 ---
 
-## Bloco 2: Qualidade & Robustez
+## O que ja foi concluido recentemente
 
-### 2.1 Atualizar Manual HTML
-**Esforço**: Baixo | **Impacto**: Médio
-- Adicionar seções: painel (CRUD, gráficos), agenda (criar, listar, snooze), filtros (categoria, merchant), médias, pagamento de faturas
-- Exemplos interativos para cada feature
+### Pri consultora pessoal
+- estado persistente em banco para a mentoria
+- chave formal da pergunta aberta
+- tipo esperado da resposta
+- memoria curta por telefone
+- estagios formais de consultoria
+- resumo estruturado do caso
+- abertura estruturada da Pri por contexto
+- tom mais direto e mais consultora
 
-### 2.2 Tratamento de Erros no Áudio
-**Esforço**: Baixo | **Impacto**: Médio
-- Detectar quando n8n envia erro de transcrição
-- Responder: "Não consegui entender o áudio. Tenta de novo ou manda por texto?"
-- Guard no `/v1/chat` para mensagens vazias ou com markers de erro
+### Continuidade de conversa
+- respostas como `foi por plantao`, `foi pontual`, `tenho reserva sim` e `quero sim` continuam o fluxo
+- convites da Pri sem `?` tambem geram pergunta aberta valida
+- comando `painel` nao e mais sequestrado pelo modo mentor
 
-### 2.3 Análise de Mensagens Não-Roteadas
-**Esforço**: Baixo | **Impacto**: Médio
-- Endpoint `/v1/debug/unrouted-analysis` que agrupa por padrão/frequência
-- Identificar top 10 mensagens que o bot não entende
-- Usar para criar novas rotas no pre-roteador
+### Inteligencia de historico
+- media mensal so aparece quando existe pelo menos 1 mes completo fechado
+- se nao houver historico suficiente, a Pri explica isso de forma natural
 
-### 2.4 Connection Pooling / Leak Prevention
-**Esforço**: Médio | **Impacto**: Alto (escala)
-- Revisar funções sem `conn.close()` em finally
-- Considerar usar `with _db()` uniformemente
-- Ou implementar pool simples com psycopg2.pool
-
----
-
-## Bloco 3: Preparação para Escala (50 beta)
-
-### 3.1 Limites por Plano (Rate Limiting)
-**Esforço**: Médio | **Impacto**: Crítico
-- Coluna `plan` na tabela `users` (free/founder/pro)
-- Contadores: transações/mês, consultas "posso comprar?", metas
-- Free: 30 tx/mês, 5 "posso comprar?", 1 meta
-- Guard no `save_transaction` e tools limitadas
-- Mensagem amigável quando atinge limite + upsell
-
-### 3.2 Observabilidade Básica
-**Esforço**: Médio | **Impacto**: Alto
-- Logging estruturado (JSON) em vez de prints espalhados
-- Contadores: requests/min, erros/min, LLM calls/user, latência
-- Endpoint `/v1/admin/stats` protegido
-- Alerta se erro rate > threshold
-
-### 3.3 Score Histórico (mês a mês)
-**Esforço**: Médio | **Impacto**: Médio
-- Tabela `monthly_scores` (user_id, month, score, breakdown_json)
-- Snapshot automático no recap mensal
-- "Meu score dos últimos 6 meses" → gráfico de evolução
-- Gamificação: "Subiu de C para B+!"
+### Qualidade
+- testes automatizados dos fluxos da Pri
+- testes de regressao para continuidade, frames, historico insuficiente e atalho de painel
 
 ---
 
-## Bloco 4: Integrações Futuras (pós-beta)
+## Prioridades imediatas
 
-### 4.1 Google Calendar Sync
-- OAuth flow via link no WhatsApp
-- Sync unidirecional: Atlas → Google Calendar
-- Botão no painel "Conectar Google Agenda"
+### P0. Continuidade da Pri nos segundos turnos
+Impacto: muito alto
 
-### 4.2 Open Finance (Pluggy/Belvo)
-- Importação automática de transações bancárias
-- Reconciliação com gastos manuais
+A abertura da Pri esta mais forte, mas os turnos seguintes ainda podem ficar mais neutros do que o desejado.
 
-### 4.3 Cobrança via Pix (Mercado Pago / Asaas)
-- Integrar com workflow Asaas que já existe no n8n
-- Fluxo: "quero ser founder" → link de pagamento → webhook confirma → ativa plano
+Objetivo:
+- fazer a Pri manter o mesmo nivel de consultoria depois da primeira resposta
+- garantir que cada resposta traga:
+  - problema principal
+  - prioridade
+  - primeira acao
+  - proxima pergunta
+
+Implementacoes sugeridas:
+- planner de resposta por estagio
+- regras de saida por contexto
+- mais testes de follow-up
+
+### P1. Maquina de estados mais rigida
+Impacto: muito alto
+
+Hoje a Pri ja tem estagios, mas ainda ha espaco para mais determinismo.
+
+Objetivo:
+- reduzir ainda mais situacoes em que o LLM "improvisa" a fase da conversa
+
+Implementacoes sugeridas:
+- transicoes explicitas entre `diagnosis`, `diagnosis_clarification`, `income_clarification`, `debt_mapping`, `reserve_check`, `action_plan` e `follow_up`
+- impedir saltos incoerentes
+- guardar a ultima proxima-acao no estado
+
+### P2. Observabilidade da Pri
+Impacto: alto
+
+Hoje ja existe teste. O proximo ganho e entender melhor o comportamento real em producao.
+
+Implementacoes sugeridas:
+- log estruturado com:
+  - frame usado
+  - stage atual
+  - open_question_key
+  - se houve bypass por atalho explicito
+  - se a resposta caiu em fallback
+- endpoint/admin view simples para investigar rotas mais frequentes
+
+### P3. Refatoracao do monolito
+Impacto: alto
+
+`agno_api/agent.py` continua sendo o principal gargalo de manutencao.
+
+Objetivo:
+- extrair responsabilidades para modulos claros
+
+Ordem sugerida:
+- `mentor_router.py`
+- `mentor_state.py`
+- `query_shortcuts.py`
+- `panel_shortcuts.py`
+- `financial_snapshots.py`
+
+### P4. Seguranca e confianca
+Impacto: critico
+
+Antes de escalar usuarios, o produto precisa endurecer pontos operacionais.
+
+Itens:
+- revisar rotas de debug
+- endurecer auth do painel
+- revisar trilha de auditoria
+- deixar explicita a origem dos numeros em respostas sensiveis
+
+### P5. Onboarding e wow moment
+Impacto: alto
+
+A Pri precisa encantar no primeiro minuto.
+
+Objetivo:
+- primeiro insight memoravel em ate 60 segundos
+- menos cadastro seco, mais diagnostico imediato
+
+### P6. Produto desejavel
+Impacto: alto
+
+Depois da confiabilidade, o maior ganho sera emocional.
+
+Itens:
+- painel mais premium
+- loops semanais de uso
+- recap automatico com linguagem forte
+- identidade verbal mais marcante
 
 ---
 
-## Ordem de Implementação Recomendada
+## Ordem recomendada
 
-| Prioridade | Item | Esforço | Impacto |
-|---|---|---|---|
-| 1 | 1.1 Relatório semanal | Baixo | Alto |
-| 2 | 2.1 Manual atualizado | Baixo | Médio |
-| 3 | 1.3 Snooze de alertas | Baixo | Médio |
-| 4 | 2.2 Tratamento de áudio | Baixo | Médio |
-| 5 | 1.2 Recap mensal | Médio | Alto |
-| 6 | 1.4 Editar/pausar agenda | Médio | Médio |
-| 7 | 3.1 Rate limiting | Médio | Crítico (escala) |
-| 8 | 2.4 Connection pooling | Médio | Alto (escala) |
-| 9 | 3.2 Observabilidade | Médio | Alto (escala) |
-| 10 | 3.3 Score histórico | Médio | Médio |
+1. Pri nos segundos turnos com o mesmo nivel da abertura
+2. Maquina de estados mais rigida
+3. Observabilidade da Pri
+4. Refatoracao do monolito
+5. Seguranca e confianca
+6. Onboarding forte
+7. Produto mais desejavel
 
-## Arquivos a Modificar
-- `agno_api/agent.py` — tudo (monolítico)
-- `agno_api/static/manual.html` — manual atualizado
-- Workflows n8n — novos crons (semanal, mensal)
+---
 
-## Verificação
-- Relatório semanal: simular cron, verificar mensagem no WhatsApp
-- Snooze: "adia 1h" após lembrete → next_alert_at recalculado
-- Rate limit: atingir 30 tx → mensagem de limite
-- Score histórico: "meu score dos últimos meses" → lista evolução
+## Arquivos centrais dessa fase
+
+- `agno_api/agent.py`
+- `agno_api/mentor_consultant.py`
+- `tests/test_pri_mentor_state.py`
+- `PRI_CONSULTORA_ARQUITETURA.md`
+
+---
+
+## Principio dessa etapa
+
+Prompt ajuda.  
+Estado governa.  
+Teste protege.  
+Produto conquista.

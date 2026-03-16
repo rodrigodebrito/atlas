@@ -4,6 +4,49 @@ Assistente financeiro pessoal via WhatsApp para o mercado brasileiro.
 
 > "O assistente financeiro que mora no seu WhatsApp"
 
+| Pri com estado conversacional persistente por telefone | âœ… |
+| Pri com memoria curta + resumo estruturado do caso | âœ… |
+| Pri com estagios formais de consultoria | âœ… |
+| Pri com frames estruturados para mes, dia, ontem, semana, semana passada e ultimos 7 dias | âœ… |
+| Pri com frames estruturados para divida cara, cartao, reserva e investir vs quitar divida | âœ… |
+| Continuidade da Pri para respostas curtas ("foi por plantao", "quero sim", etc.) | âœ… |
+| Comando explicito `painel` priorizado mesmo com a Pri ativa | âœ… |
+| Media mensal so com meses completos fechados | âœ… |
+| Testes automatizados dos fluxos da Pri | âœ… |
+
+---
+
+## Evolucoes recentes
+
+Nas ultimas iteracoes, o ATLAS ganhou uma camada muito mais robusta de consultoria financeira no WhatsApp:
+
+- a Pri agora mantem **estado persistente por telefone**, com memoria curta, pergunta aberta, chave formal da pergunta e tipo de resposta esperado
+- a conversa da Pri passou a usar **estagios formais de consultoria** (`diagnosis`, `income_clarification`, `debt_mapping`, `reserve_check`, `action_plan`, `follow_up`)
+- foi criado um **resumo estruturado do caso** para a Pri responder como consultora, e nao como assistente generica
+- a primeira resposta da Pri passou a usar um **response framing engine** com molduras por contexto:
+  - analise do mes
+  - analise do dia
+  - analise de ontem
+  - analise da semana
+  - analise da semana passada
+  - ultimos 7 dias
+  - divida cara / cheque especial
+  - cartao
+  - reserva
+  - investir vs quitar divida
+- respostas curtas de continuidade como `foi por plantao`, `foi pontual`, `tenho reserva sim` e `quero sim` agora permanecem no fluxo da Pri em vez de virarem transacao ou quebrarem o contexto
+- o comando **`painel`** voltou a ter prioridade explicita, mesmo com a sessao mentor ativa
+- comparacoes de **media mensal** agora so acontecem quando existe pelo menos **1 mes completo fechado**
+- quando ainda nao existe historico completo suficiente, a Pri explica isso de forma natural em vez de inventar comparacoes
+- foi criada uma **suite automatizada de regressao da Pri** em `tests/test_pri_mentor_state.py`
+
+Estado atual dos testes da Pri:
+- `12 passed`
+
+Documentos complementares:
+- `PRI_CONSULTORA_ARQUITETURA.md`
+- `PROXIMOS_PASSOS.md`
+
 ---
 
 ## O que é

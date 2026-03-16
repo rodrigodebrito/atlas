@@ -1,16 +1,21 @@
 # Pri Consultora Pessoal
 
 ## Objetivo
-Transformar a Pri de um modo conversacional guiado por prompt em um sistema de consultoria com:
-- memoria confiavel
-- continuidade perfeita
-- opiniao forte de consultora
-- menos assistente, mais especialista pessoal
 
-## Arquitetura alvo
+Transformar a Pri de um modo conversacional guiado principalmente por prompt em um sistema de consultoria com:
+
+- memoria confiavel
+- continuidade forte
+- opiniao de consultora
+- menos "assistente", mais "especialista pessoal"
+
+---
+
+## O que ja foi implementado
 
 ### 1. Estado persistente da consultoria
-Cada telefone deve manter um estado estruturado com:
+Cada telefone agora pode manter um estado estruturado com:
+
 - `mode`
 - `consultant_stage`
 - `last_open_question`
@@ -21,6 +26,8 @@ Cada telefone deve manter um estado estruturado com:
 - `expires_at`
 
 ### 2. Estagios formais da Pri
+Estagios ativos hoje:
+
 - `diagnosis`
 - `diagnosis_clarification`
 - `income_clarification`
@@ -29,10 +36,9 @@ Cada telefone deve manter um estado estruturado com:
 - `action_plan`
 - `follow_up`
 
-O app governa o estagio. O LLM interpreta o texto, mas nao decide sozinho em que fase do trabalho esta.
-
 ### 3. Resumo estruturado do caso
-Primeira versao do resumo:
+Campos principais hoje:
+
 - `income_extra_type`
 - `income_extra_origin`
 - `has_emergency_reserve`
@@ -42,34 +48,111 @@ Primeira versao do resumo:
 - `last_user_signal`
 - `notes`
 
-Esse resumo acompanha a conversa e entra no prompt para a Pri responder como consultora.
+### 4. Frames estruturados de abertura
+A primeira resposta da Pri agora pode sair por molduras especificas para:
 
-### 4. Regras de resposta da Pri
-Toda resposta da Pri deve:
-1. identificar o problema principal
-2. explicar por que isso importa
-3. dizer o que faria primeiro
-4. terminar com uma pergunta util para o proximo passo
+- analise do mes
+- analise do dia
+- analise de ontem
+- analise da semana
+- analise da semana passada
+- ultimos 7 dias
+- divida cara / cheque especial
+- cartao
+- reserva
+- investir vs quitar divida
 
-## Plano de implementacao
+### 5. Continuidade protegida
+Ja cobre:
 
-### Fase 1
-- adicionar `consultant_stage` e `case_summary_json` ao estado persistente
-- introduzir modulo separado com heuristicas de consultoria
-- injetar estagio e resumo do caso no contexto do modo mentor
-- cobrir com testes automatizados
+- respostas curtas como `foi por plantao`, `foi pontual`, `tenho reserva sim`, `quero sim`
+- convites da Pri sem `?` que ainda assim abrem follow-up valido
+- comando `painel` priorizado fora da Pri mesmo com sessao mentor ativa
 
-### Fase 2
-- criar transicoes mais deterministicas por estagio
-- impedir saltos incoerentes entre diagnostico e plano
-- gerar planos de acao por prioridade
+### 6. Historico financeiro mais honesto
 
-### Fase 3
-- separar a Pri do monolito principal
-- adicionar metricas de sucesso por estagio
-- criar score de qualidade das respostas da Pri
+- media mensal so usa meses completos fechados
+- se ainda nao houver historico suficiente, a Pri pode explicar isso em linguagem natural
+
+### 7. Testes automatizados
+Existe suite de regressao dedicada em:
+
+- `tests/test_pri_mentor_state.py`
+
+Estado atual:
+- `12 passed`
+
+---
+
+## O que ainda falta
+
+### Fase 1. Pri forte nos segundos turnos
+A abertura melhorou bastante, mas os turnos seguintes ainda podem perder intensidade.
+
+Meta:
+- todo turno da Pri manter:
+  - tese principal
+  - prioridade
+  - primeira acao
+  - proxima pergunta
+
+### Fase 2. Planner por estagio
+Hoje a Pri ja conhece o estagio. O proximo salto e usar um planner explicito por fase.
+
+Exemplo:
+- `diagnosis` -> apontar o problema
+- `diagnosis_clarification` -> reduzir ambiguidade
+- `debt_mapping` -> descobrir o peso das dividas
+- `reserve_check` -> medir folego
+- `action_plan` -> gerar passos
+- `follow_up` -> cobrar execucao
+
+### Fase 3. Mais determinismo
+O LLM ainda interpreta demais em alguns turnos.
+
+Meta:
+- app governa ainda mais a fase da conversa
+- reduzir improviso em transicoes
+
+### Fase 4. Observabilidade
+Precisamos enxergar melhor o comportamento da Pri em producao.
+
+Itens:
+- log do frame usado
+- log do stage
+- log da pergunta aberta
+- log de fallback
+
+### Fase 5. Extracao do monolito
+Parte da logica da Pri ainda esta acoplada ao monolito principal.
+
+Meta:
+- modularizar sem perder comportamento
+
+---
+
+## Arquitetura alvo
+
+### Camada 1. Estado
+O app guarda o estado vivo da consultoria.
+
+### Camada 2. Frames
+A aplicacao escolhe a moldura de resposta inicial por contexto.
+
+### Camada 3. Planner
+A Pri decide como conduzir o proximo passo com base no stage atual.
+
+### Camada 4. LLM
+O modelo interpreta texto, escreve bem e mantem o tom.
+
+### Camada 5. Testes
+Os testes protegem os fluxos criticos e evitam regressao.
+
+---
 
 ## Principio tecnico
-Prompt ajuda.
-Estado governa.
+
+Prompt ajuda.  
+Estado governa.  
+Planner direciona.  
 Teste protege.
