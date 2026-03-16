@@ -79,7 +79,18 @@ def merge_case_summary(
         debt_status = _extract_binary_status(text)
         if debt_status:
             merged["debt_outside_cards"] = debt_status
-        if any(token in text for token in ("financiamento", "emprestimo", "empréstimo", "consignado")):
+        if any(
+            token in text
+            for token in (
+                "financiamento",
+                "emprestimo",
+                "empréstimo",
+                "consignado",
+                "cheque especial",
+                "especial",
+                "rotativo",
+            )
+        ):
             merged["debt_outside_cards"] = "yes"
 
     card_behavior = _extract_card_payment_behavior(text)
@@ -605,6 +616,15 @@ def build_structured_pri_followup(
     def _is_negative() -> bool:
         return any(token in lowered for token in ("nao", "não", "deixa", "agora nao", "agora não", "depois"))
 
+    debt_followup_requested = (
+        normalized_key == "debt_outside_cards"
+        or normalized_expected == "debt_status"
+        or (
+            normalize_consultant_stage(stage) == "debt_mapping"
+            and any(token in lowered for token in ("cheque especial", "especial", "rotativo", "emprestimo", "empréstimo", "financiamento"))
+        )
+    )
+
     if normalized_key in {"income_extra_recurrence", "income_extra_origin"}:
         income_origin = merged_summary.get("income_extra_origin", "")
         income_type = merged_summary.get("income_extra_type", "")
@@ -641,7 +661,7 @@ def build_structured_pri_followup(
                 "case_summary": merged_summary,
             }
 
-    if normalized_key == "debt_outside_cards":
+    if debt_followup_requested:
         if any(token in lowered for token in ("cheque especial", "especial", "rotativo")):
             amount_label = _fmt_cents_brl(amount_cents) if amount_cents else "isso"
             question = f"Voce consegue tirar {amount_label} disso ainda este mes ou vai precisar montar uma saida parcelada?"

@@ -321,6 +321,47 @@ async def test_explicit_panel_request_bypasses_active_mentor_session(atlas, monk
 
 
 @pytest.mark.asyncio
+async def test_debt_followup_stays_structured_even_with_generic_open_text_key(atlas, monkeypatch):
+    phone = "+5511944443333"
+    atlas._save_mentor_state(
+        phone,
+        mode="mentor",
+        last_open_question="Agora, me diz: alem dos cartoes, tem alguma divida ou emprestimo que nao aparece aqui?",
+        open_question_key="open_text_followup",
+        expected_answer_type="debt_status",
+        consultant_stage="debt_mapping",
+        case_summary={"main_issue_hypothesis": "cashflow_pressure"},
+        memory_turns=[],
+        expires_at=atlas._mentor_expiry_iso(),
+    )
+    stub_agent = _StubAtlasAgent([])
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return {"intent": "save_transaction", "action": "save_transaction", "params": {}}
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="entao estou usando 1.500 do cheque especial")
+
+    content = result["content"].lower()
+    assert "alerta vermelho" in content
+    assert "cheque especial" in content
+    assert "morde teu mes" in content
+    assert "media mensal" not in content
+    assert stub_agent.calls == []
+
+    state = atlas._load_mentor_state(phone)
+    assert state is not None
+    assert state["consultant_stage"] == "action_plan"
+    assert state["open_question_key"] == "amount_followup"
+    assert state["case_summary"]["main_issue_hypothesis"] == "high_interest_debt"
+    assert state["case_summary"]["debt_outside_cards"] == "yes"
+
+
+@pytest.mark.asyncio
 async def test_first_pri_month_analysis_uses_structured_opening_without_llm(atlas, monkeypatch):
     phone = "+5511977776666"
     stub_agent = _StubAtlasAgent([])

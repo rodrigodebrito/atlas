@@ -11859,6 +11859,70 @@ def _looks_like_answer_to_open_mentor_question(body: str, state: dict | None) ->
     return len(words) <= 10
 
 
+def _looks_like_answer_to_open_mentor_question_v2(body: str, state: dict | None) -> bool:
+    if not state:
+        return False
+    text = (body or "").strip().lower()
+    if not text:
+        return False
+    words = text.split()
+    expected = (state.get("expected_answer_type") or "").strip().lower()
+    question_key = (state.get("open_question_key") or "").strip().lower()
+
+    if question_key == "income_extra_recurrence":
+        return any(
+            token in text
+            for token in (
+                "pontual", "fixa", "fixo", "recorrente", "plantao",
+                "freela", "freelance", "extra", "temporario", "so esse mes", "todo mes",
+            )
+        )
+    if question_key == "income_extra_origin":
+        return len(words) <= 12 and any(
+            token in text
+            for token in ("plantao", "freela", "freelance", "bonus", "comissao", "hora extra", "venda", "pix", "trampo")
+        )
+    if question_key == "has_emergency_reserve":
+        return any(token in text for token in ("sim", "nao", "tenho", "guardo", "reserva"))
+    if question_key == "debt_outside_cards":
+        return any(
+            token in text
+            for token in (
+                "sim", "nao", "financiamento", "emprestimo", "parcelado",
+                "cheque especial", "especial", "rotativo",
+            )
+        )
+    if question_key == "card_repayment_behavior":
+        return any(token in text for token in ("minimo", "rotativo", "total", "parcial", "parcelo", "atraso"))
+    if question_key == "category_other_breakdown":
+        return len(words) <= 16 and not _has_explicit_amount(text)
+    if question_key == "plan_help_offer":
+        return any(token in text for token in ("sim", "nao", "quero", "bora", "vamos", "pode", "ajuda", "claro"))
+    if expected == "number_amount":
+        return len(words) <= 8 and bool(_re_router.search(r'(?<!\w)\d+(?:[.,]\d{1,2})?(?!\w)', text))
+    if expected == "yes_no":
+        return any(token in text for token in ("sim", "nao", "so", "total", "minimo"))
+    if expected == "income_recurrence":
+        return any(token in text for token in ("pontual", "fixa", "fixo", "plantao", "freela", "extra", "todo mes", "recorrente"))
+    if expected == "has_reserve":
+        return any(token in text for token in ("sim", "nao", "tenho", "guardo", "reserva"))
+    if expected == "debt_status":
+        return any(
+            token in text
+            for token in (
+                "rotativo", "minimo", "parcela", "parcelo", "atrasado", "financiamento",
+                "pago", "cheque especial", "especial", "emprestimo",
+            )
+        )
+    strong_tx_verbs = (
+        "gastei", "comprei", "recebi", "ganhei", "paguei", "almocei", "jantei",
+        "abasteci", "transferi", "pix", "uber", "ifood",
+    )
+    if any(verb in text for verb in strong_tx_verbs):
+        return False
+    return len(words) <= 10
+
+
 def _get_mentor_memory_context(user_phone: str) -> str:
     state = _load_mentor_state(user_phone)
     turns = (state or {}).get("memory_turns") or []
@@ -11972,7 +12036,7 @@ async def chat_endpoint(
     # Sessão mentor ativa + resposta curta ao que a Pri perguntou = mentor, não lançamento.
     if _in_mentor_session and (
         not _has_explicit_amount(body)
-        or _looks_like_answer_to_open_mentor_question(body, _mentor_state)
+        or _looks_like_answer_to_open_mentor_question_v2(body, _mentor_state)
     ):
         _route = {"intent": "mentor", "action": "", "params": {}}
 
