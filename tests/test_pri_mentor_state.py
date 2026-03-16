@@ -362,6 +362,45 @@ async def test_debt_followup_stays_structured_even_with_generic_open_text_key(at
 
 
 @pytest.mark.asyncio
+async def test_reserve_amount_followup_handles_no_capacity_reply(atlas, monkeypatch):
+    phone = "+5511932100000"
+    atlas._save_mentor_state(
+        phone,
+        mode="mentor",
+        last_open_question="Hoje, sem se enrolar, voce consegue separar quanto por mes: R$100, R$300 ou mais?",
+        open_question_key="amount_followup",
+        expected_answer_type="number_amount",
+        consultant_stage="action_plan",
+        case_summary={"main_issue_hypothesis": "no_emergency_buffer", "has_emergency_reserve": "no"},
+        memory_turns=[],
+        expires_at=atlas._mentor_expiry_iso(),
+    )
+    stub_agent = _StubAtlasAgent([])
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return {"intent": "save_transaction", "action": "save_transaction", "params": {}}
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="nao separo valor")
+
+    content = result["content"].lower()
+    assert "falta de folga" in content
+    assert "abrindo espaco" in content
+    assert "delivery" in content
+    assert stub_agent.calls == []
+
+    state = atlas._load_mentor_state(phone)
+    assert state is not None
+    assert state["open_question_key"] == "open_text_followup"
+    assert state["consultant_stage"] == "action_plan"
+    assert state["case_summary"]["main_issue_hypothesis"] == "no_emergency_buffer"
+
+
+@pytest.mark.asyncio
 async def test_first_pri_month_analysis_uses_structured_opening_without_llm(atlas, monkeypatch):
     phone = "+5511977776666"
     stub_agent = _StubAtlasAgent([])

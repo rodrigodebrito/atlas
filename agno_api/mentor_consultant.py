@@ -764,6 +764,41 @@ def build_structured_pri_followup(
                 "case_summary": merged_summary,
             }
 
+    if normalized_key == "amount_followup":
+        if _is_negative() or any(token in lowered for token in ("nao separo", "não separo", "nao consigo", "não consigo", "sem folga", "apertado")):
+            question = "Entao me diz sem rodeio: hoje o que daria pra cortar primeiro sem te machucar tanto - delivery, impulso ou alguma coisa em Outros?"
+            merged_summary["main_issue_hypothesis"] = "no_emergency_buffer"
+            content = (
+                "Fechado. Entao o problema agora nao e falta de vontade. E falta de folga.\n\n"
+                "Se voce nao consegue separar nada hoje, eu nao comecaria falando de reserva bonita. Eu comecaria abrindo espaco no teu mes.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "open_text_followup",
+                "expected_answer_type": "open_text",
+                "consultant_stage": "action_plan",
+                "case_summary": merged_summary,
+            }
+        if amount_cents > 0:
+            amount_label = _fmt_cents_brl(amount_cents)
+            question = f"Boa. Esse {amount_label} sairia de onde na pratica: corte de gasto, renda extra ou sobra natural do mes?"
+            merged_summary["main_issue_hypothesis"] = merged_summary.get("main_issue_hypothesis") or "no_emergency_buffer"
+            content = (
+                f"Boa. Entao da pra comecar com *{amount_label}* por mes.\n\n"
+                "Nao e sobre velocidade agora. E sobre parar de ficar exposto todo mes e criar o primeiro colchao.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "open_text_followup",
+                "expected_answer_type": "open_text",
+                "consultant_stage": "action_plan",
+                "case_summary": merged_summary,
+            }
+
     if normalized_key == "plan_help_offer":
         if _is_negative():
             content = (
