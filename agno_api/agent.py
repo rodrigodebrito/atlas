@@ -43,10 +43,8 @@ from agno_api.mentor_consultant import (
     transition_consultant_stage,
 )
 from agno_api.pri_controller import (
-    is_explicit_write_command,
-    message_addresses_pri,
-    should_force_pri_readonly,
-    should_skip_pending_action_check,
+    build_pri_message_context,
+    resolve_pri_route,
 )
 
 load_dotenv()
@@ -12020,21 +12018,24 @@ async def chat_endpoint(
         full_message = f"[user_phone: {user_phone}]\n{message}"
 
     body = _extract_body(full_message).strip()
-    _body_lower = body.lower() if body else ""
-    _explicit_pri_message = message_addresses_pri(body)
 
     # ═══ ROTEAMENTO UNIVERSAL VIA LLM-MINI ═══
     import logging as _log_rt
     _rt_logger = _log_rt.getLogger("atlas.router")
 
-    # 1. Onboarding: se usuário é novo, retorna boas-vindas fixas
-    onboard = None if _explicit_pri_message else _onboard_if_new(user_phone, full_message)
-    if onboard:
-        return {"content": _strip_whatsapp_bold(onboard["response"]), "routed": True}
-
-    # 2. Estado persistente da sessão mentor
+    # 1. Estado persistente da sessão Pri
     _mentor_state = _load_mentor_state(user_phone)
     _in_mentor_session = bool(_mentor_state)
+    _pri_ctx = build_pri_message_context(body, in_mentor_session=_in_mentor_session)
+    body = _pri_ctx.effective_body
+    _body_lower = body.lower() if body else ""
+    if "[user_phone:" not in message:
+        full_message = f"[user_phone: {user_phone}]\n{body}"
+
+    # 2. Onboarding: só fora do contexto explícito da Pri
+    onboard = None if _pri_ctx.skip_onboarding else _onboard_if_new(user_phone, full_message)
+    if onboard:
+        return {"content": _strip_whatsapp_bold(onboard["response"]), "routed": True}
 
     # 3. Saída rápida do mentor (regex, sem LLM)
     if _in_mentor_session and _is_mentor_exit(body):
@@ -12043,10 +12044,7 @@ async def chat_endpoint(
 
     # 4. Confirmação/cancelamento de ações pendentes (regex + DB, sem LLM)
     _confirm_result = None
-    if not should_skip_pending_action_check(
-        explicit_pri_message=_explicit_pri_message,
-        in_mentor_session=_in_mentor_session,
-    ):
+    if not _pri_ctx.skip_pending_action_check:
         _confirm_result = _check_pending_action(user_phone, _body_lower)
     if _confirm_result:
         return {"content": _strip_whatsapp_bold(_confirm_result["response"]), "routed": True}
@@ -12057,8 +12055,6 @@ async def chat_endpoint(
             _touch_mentor_state(user_phone)
         return {"content": _strip_whatsapp_bold(_panel_url_response(user_phone)), "routed": True}
 
-    _explicit_write_command = is_explicit_write_command(body)
-
     # 5. Mini-router (gpt-5-mini, ~200ms)
     _route = await _mini_route(body, user_phone, _in_mentor_session)
     _rt_logger.warning(f"[MINI_ROUTE] phone={user_phone} result={_route} body={body[:80]}")
@@ -12066,24 +12062,11 @@ async def chat_endpoint(
     _looks_like_followup_answer = bool(
         _in_mentor_session and _looks_like_answer_to_open_mentor_question_v2(body, _mentor_state)
     )
-    if should_force_pri_readonly(
-        explicit_pri_message=_explicit_pri_message,
-        in_mentor_session=_in_mentor_session,
+    _route = resolve_pri_route(
         route=_route,
-        explicit_write_command=_explicit_write_command,
+        context=_pri_ctx,
         looks_like_followup_answer=_looks_like_followup_answer,
-    ):
-        _route = {"intent": "mentor", "action": "", "params": {}}
-
-    if False and _explicit_pri_message:
-        _route = {"intent": "mentor", "action": "", "params": {}}
-
-    # Sessão mentor ativa + resposta curta ao que a Pri perguntou = mentor, não lançamento.
-    if False and _in_mentor_session and (
-        not _has_explicit_amount(body)
-        or _looks_like_answer_to_open_mentor_question_v2(body, _mentor_state)
-    ):
-        _route = {"intent": "mentor", "action": "", "params": {}}
+    )
 
     _is_mentor_mode = (_route.get("intent") == "mentor")
 
@@ -12154,7 +12137,7 @@ async def chat_endpoint(
         )
     _mentor_case_ctx = build_case_summary_context(_mentor_case_summary)
     _mentor_plan_ctx = build_consultant_plan_context(_mentor_case_summary, _mentor_stage)
-    _explicit_pri_restart = _explicit_pri_message
+    _explicit_pri_restart = _pri_ctx.explicit_pri_message
     _should_attempt_structured_opening = _is_mentor_mode and (not _in_mentor_session or _explicit_pri_restart)
     _opening_scope = _resolve_pri_snapshot_scope(body) if _should_attempt_structured_opening else "month"
     _opening_snapshot = _get_pri_opening_snapshot(user_phone, _opening_scope) if _should_attempt_structured_opening else {}

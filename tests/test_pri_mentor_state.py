@@ -870,6 +870,42 @@ async def test_open_text_followup_card_type_answer_stays_in_pri_without_llm(atla
 
 
 @pytest.mark.asyncio
+async def test_explicit_pri_write_command_can_execute_even_during_mentor_session(atlas, monkeypatch):
+    phone = "+5511944444444"
+    atlas._save_mentor_state(
+        phone,
+        mode="mentor",
+        last_open_question="Me diz uma coisa: esses R$5.357 em Outros voce ja sabe o que sao ou ta tudo misturado?",
+        open_question_key="category_other_breakdown",
+        expected_answer_type="free_text",
+        consultant_stage="diagnosis_clarification",
+        case_summary={"main_issue_hypothesis": "cashflow_pressure"},
+        memory_turns=[],
+        expires_at=atlas._mentor_expiry_iso(),
+    )
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        assert body == "lanca 45 no ifood"
+        return {"intent": "transaction", "action": "save_transaction", "params": {"amount": 45}}
+
+    async def _fake_execute(route, user_phone: str, body: str, full_message: str):
+        assert route["intent"] == "transaction"
+        assert body == "lanca 45 no ifood"
+        assert "pri lanca 45 no ifood" not in full_message.lower()
+        return {"response": "Anotado! R$45,00 em iFood"}
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "_execute_intent", _fake_execute)
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="pri lanca 45 no ifood")
+
+    assert "anotado" in result["content"].lower()
+    assert result["routed"] is True
+
+
+@pytest.mark.asyncio
 async def test_first_pri_month_analysis_explains_when_no_full_month_history(atlas, monkeypatch):
     phone = "+5511977000001"
     stub_agent = _StubAtlasAgent([])
