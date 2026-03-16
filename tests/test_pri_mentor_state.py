@@ -1466,3 +1466,30 @@ async def test_first_pri_last_week_analysis_uses_temporal_frame_without_llm(atla
     assert state["open_question_key"] == "category_other_breakdown"
 
 
+def test_agent_runs_shortcut_groups_multi_expense_before_agent(atlas):
+    phone = "+5511988887777"
+    user_id = f"user_{uuid.uuid4().hex}"
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    payload = atlas._build_agent_runs_shortcut_payload(
+        user_phone=phone,
+        session_id=phone,
+        body_raw="gastei 35 na padaria e 22 no almoço",
+    )
+
+    assert payload is not None
+    assert "R$35,00" in payload["content"]
+    assert "R$22,00" in payload["content"]
+    assert "Total lançado agora" in payload["content"]
+
+

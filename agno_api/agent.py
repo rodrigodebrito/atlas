@@ -8807,12 +8807,72 @@ app.add_middleware(
 # ============================================================
 import re as _re_mid
 from starlette.middleware.base import BaseHTTPMiddleware as _BaseMiddleware
+from starlette.requests import Request as _StarletteRequest
 from starlette.responses import Response as _StarletteResponse
 
 _LONE_SURROGATE_RE = _re_mid.compile(r'[\ud800-\udfff]')
 
+
+def _build_agent_runs_shortcut_payload(user_phone: str, session_id: str, body_raw: str) -> dict | None:
+    """Curto-circuita /agents/atlas/runs para casos determinísticos.
+
+    Hoje usamos isso para lote claro de gastos na mesma frase, evitando que o
+    agente concatene duas confirmações separadas no retorno ao n8n.
+    """
+    body_text = (body_raw or "").strip()
+    if not user_phone or not body_text:
+        return None
+
+    multi = _multi_expense_extract(user_phone, body_text)
+    if not multi or not multi.get("response"):
+        return None
+
+    return {
+        "run_id": f"shortcut_{uuid.uuid4().hex}",
+        "agent_id": "atlas",
+        "agent_name": "atlas",
+        "session_id": session_id or user_phone,
+        "content": multi["response"],
+        "content_type": "str",
+        "model": "shortcut",
+        "model_provider": "internal",
+        "status": "COMPLETED",
+        "messages": [],
+        "metrics": {"shortcut": True},
+        "created_at": int(time.time()),
+    }
+
 class _SanitizeSurrogateMiddleware(_BaseMiddleware):
     async def dispatch(self, request, call_next):
+        if request.method.upper() == "POST" and request.url.path.endswith("/agents/atlas/runs"):
+            body_bytes = await request.body()
+
+            async def _receive_with_body():
+                return {"type": "http.request", "body": body_bytes, "more_body": False}
+
+            try:
+                req_for_form = _StarletteRequest(request.scope, _receive_with_body)
+                form = await req_for_form.form()
+                raw_message = str(form.get("message", "") or "")
+                session_id = str(form.get("session_id", "") or "").strip()
+                user_phone = _extract_user_phone(raw_message) or session_id
+                shortcut_payload = _build_agent_runs_shortcut_payload(
+                    user_phone=user_phone,
+                    session_id=session_id,
+                    body_raw=_extract_body_raw(raw_message),
+                )
+                if shortcut_payload:
+                    text = _json.dumps(_normalize_json_strings(shortcut_payload), ensure_ascii=False)
+                    return _StarletteResponse(
+                        content=text,
+                        status_code=200,
+                        media_type="application/json",
+                    )
+            except Exception:
+                pass
+
+            request = _StarletteRequest(request.scope, _receive_with_body)
+
         response = await call_next(request)
         content_type = response.headers.get("content-type", "")
         if "application/json" in content_type:
