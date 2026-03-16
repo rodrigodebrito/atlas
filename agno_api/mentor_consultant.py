@@ -662,6 +662,27 @@ def build_structured_pri_followup(
             }
 
     if debt_followup_requested:
+        if any(token in lowered for token in ("cheque especial", "especial", "rotativo")) and any(
+            token in lowered for token in ("nao tenho reserva", "não tenho reserva", "sem reserva", "nao tenho nenhuma reserva", "não tenho nenhuma reserva")
+        ):
+            amount_label = _fmt_cents_brl(amount_cents) if amount_cents else "essa divida"
+            question = "Me diz uma coisa: voce consegue levantar uma parte disso ainda este mes ou primeiro precisa abrir espaco no teu orcamento?"
+            merged_summary["main_issue_hypothesis"] = "high_interest_debt"
+            merged_summary["has_emergency_reserve"] = "no"
+            content = (
+                f"Pri aqui. Aí acendeu alerta vermelho de verdade: *{amount_label}* no cheque especial e *zero reserva*.\n\n"
+                "Isso e o tipo de combinacao que machuca rapido, porque o juros corre e voce fica sem colchao pra absorver qualquer imprevisto.\n\n"
+                "Se eu estivesse organizando isso com voce, a ordem seria bem clara: primeiro parar esse sangramento, depois criar uma reserva minima pra nao voltar pro especial.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "amount_followup",
+                "expected_answer_type": "open_text",
+                "consultant_stage": "action_plan",
+                "case_summary": merged_summary,
+            }
         if any(token in lowered for token in ("cheque especial", "especial", "rotativo")):
             amount_label = _fmt_cents_brl(amount_cents) if amount_cents else "isso"
             question = f"Voce consegue tirar {amount_label} disso ainda este mes ou vai precisar montar uma saida parcelada?"
