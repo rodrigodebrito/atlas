@@ -213,6 +213,57 @@ async def test_chat_endpoint_keeps_short_reply_inside_pri_flow(atlas, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_chat_endpoint_keeps_affirmative_reply_for_plan_offer_inside_pri_flow(atlas, monkeypatch):
+    phone = "+5511971112222"
+    stub_agent = _StubAtlasAgent(
+        [
+            (
+                "Pri aqui. Hoje teu dinheiro nao explodiu num gasto so. "
+                "Ele foi pingando em alimentacao. "
+                "Me conta se quer ajuda pra montar um plano pra isso."
+            ),
+            "Fechou. Entao vamos montar isso juntas. Primeiro: voce quer cortar delivery, mercado ou refeicao fora?",
+        ]
+    )
+
+    routes = iter(
+        [
+            {"intent": "mentor", "action": "", "params": {}},
+            {"intent": "save_transaction", "action": "save_transaction", "params": {}},
+        ]
+    )
+    executed_routes: list[dict] = []
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return next(routes)
+
+    async def _fake_execute_intent(result: dict, user_phone: str, body: str, full_message: str):
+        executed_routes.append(result)
+        return {"response": "NAO_DEVERIA_EXECUTAR"}
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "_execute_intent", _fake_execute_intent)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+
+    first = await atlas.chat_endpoint(user_phone=phone, message="pri faz uma analise do meu dia")
+    assert "montar um plano" in first["content"].lower()
+
+    state_after_first = atlas._load_mentor_state(phone)
+    assert state_after_first is not None
+    assert "quer ajuda" in (state_after_first["last_open_question"] or "").lower()
+    assert state_after_first["open_question_key"] == "plan_help_offer"
+    assert state_after_first["expected_answer_type"] == "yes_no"
+
+    second = await atlas.chat_endpoint(user_phone=phone, message="quero sim")
+    assert "vamos montar" in second["content"].lower()
+    assert executed_routes == []
+    assert len(stub_agent.calls) == 2
+    assert "plan_help_offer" in stub_agent.calls[1]["input"]
+
+
+@pytest.mark.asyncio
 async def test_first_pri_month_analysis_uses_structured_opening_without_llm(atlas, monkeypatch):
     phone = "+5511977776666"
     stub_agent = _StubAtlasAgent([])

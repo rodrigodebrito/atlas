@@ -11651,6 +11651,17 @@ def _extract_last_open_question(text: str) -> str:
     if not text:
         return ""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
+    invitation_markers = (
+        "me conta se",
+        "me diz se",
+        "me fala se",
+        "me responde se",
+        "quer ajuda pra",
+        "quer ajuda para",
+        "quer que eu",
+        "se quiser eu",
+        "se quiser, eu",
+    )
     for line in reversed(lines):
         if "?" in line:
             q = line.rsplit("?", 1)[0].strip()
@@ -11659,6 +11670,13 @@ def _extract_last_open_question(text: str) -> str:
                 q = sentence_parts[-1]
             if q:
                 return f"{q}?"
+        lowered = line.lower()
+        if any(marker in lowered for marker in invitation_markers):
+            sentence_parts = [part.strip() for part in _re_router.split(r"[.!]+", line) if part.strip()]
+            for part in reversed(sentence_parts):
+                lowered_part = part.lower()
+                if any(marker in lowered_part for marker in invitation_markers):
+                    return part
     return ""
 
 
@@ -11666,6 +11684,8 @@ def _infer_expected_answer_type(question: str) -> str:
     q = (question or "").strip().lower()
     if not q:
         return ""
+    if any(term in q for term in ("quer ajuda", "quer que eu", "me conta se quer", "me diz se quer", "me fala se quer")):
+        return "yes_no"
     if "reserva" in q:
         return "has_reserve"
     if any(term in q for term in ("rotativo", "mínimo", "minimo", "dívida", "divida", "financiamento", "devendo")):
@@ -11684,6 +11704,8 @@ def _infer_open_question_key(question: str, expected_answer_type: str = "") -> s
     expected = (expected_answer_type or "").strip().lower()
     if not q:
         return ""
+    if any(term in q for term in ("quer ajuda", "quer que eu", "me conta se quer", "me diz se quer", "me fala se quer")):
+        return "plan_help_offer"
     if any(term in q for term in ("veio pra ficar", "veio para ficar", "foi pontual", "pontual ou", "recorrente ou pontual")):
         return "income_extra_recurrence"
     if any(term in q for term in ("veio de onde", "veio do que", "foi por que", "foi porque", "de onde veio", "qual foi a origem")):
@@ -11742,6 +11764,8 @@ def _looks_like_answer_to_open_mentor_question(body: str, state: dict | None) ->
         return any(token in text for token in ("mínimo", "minimo", "rotativo", "total", "parcial", "parcelo", "atraso"))
     if question_key == "category_other_breakdown":
         return len(words) <= 16 and not _has_explicit_amount(text)
+    if question_key == "plan_help_offer":
+        return any(token in text for token in ("sim", "nÃ£o", "nao", "quero", "bora", "vamos", "pode", "ajuda", "claro"))
     if expected == "number_amount":
         return len(words) <= 8 and bool(_re_router.search(r'(?<!\w)\d+(?:[.,]\d{1,2})?(?!\w)', text))
     if expected == "yes_no":
