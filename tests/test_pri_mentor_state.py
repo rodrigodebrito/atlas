@@ -909,6 +909,55 @@ async def test_card_repayment_behavior_accepts_paga_a_fatura_toda_without_llm(at
 
 
 @pytest.mark.asyncio
+async def test_llm_repeated_question_is_recovered_by_pri_loop_guard(atlas, monkeypatch):
+    phone = "+5511944446666"
+    atlas._save_mentor_state(
+        phone,
+        mode="mentor",
+        last_open_question="Fechado. E no cartao: voce paga a fatura toda ou ta ficando no minimo/parcelando?",
+        open_question_key="card_repayment_behavior",
+        expected_answer_type="debt_status",
+        consultant_stage="debt_mapping",
+        case_summary={"main_issue_hypothesis": "cashflow_pressure", "has_emergency_reserve": "unknown"},
+        memory_turns=[],
+        expires_at=atlas._mentor_expiry_iso(),
+    )
+    stub_agent = _StubAtlasAgent(
+        [
+            "Boa. Entao a pressao nao ta vindo de emprestimo por fora.\n\nAgora eu quero olhar o ponto mais perigoso seguinte: comportamento da fatura.\n\nFechado. E no cartao: voce paga a fatura toda ou ta ficando no minimo/parcelando?",
+        ]
+    )
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return {"intent": "mentor", "action": "", "params": {}}
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+    real_followup = atlas.build_structured_pri_followup
+
+    def _fake_followup(user_message, question_key="", expected_answer_type="", case_summary=None, stage="", last_open_question=""):
+        if user_message:
+            return {}
+        return real_followup(user_message, question_key, expected_answer_type, case_summary, stage, last_open_question)
+
+    monkeypatch.setattr(atlas, "build_structured_pri_followup", _fake_followup)
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="eu pago a fatura toda")
+
+    content = result["content"].lower()
+    assert "alguma reserva" in content or "colchao de seguranca" in content
+    assert "ficando no minimo/parcelando" not in content
+    assert len(stub_agent.calls) == 1
+
+    state = atlas._load_mentor_state(phone)
+    assert state is not None
+    assert state["open_question_key"] == "has_emergency_reserve"
+    assert state["consultant_stage"] == "reserve_check"
+
+
+@pytest.mark.asyncio
 async def test_explicit_pri_write_command_can_execute_even_during_mentor_session(atlas, monkeypatch):
     phone = "+5511944444444"
     atlas._save_mentor_state(

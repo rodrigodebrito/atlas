@@ -11770,6 +11770,20 @@ def _extract_last_open_question(text: str) -> str:
     return ""
 
 
+def _questions_equivalent(a: str, b: str) -> bool:
+    import re as _re_q
+
+    def _norm(value: str) -> str:
+        text = (value or "").strip().lower()
+        text = _re_q.sub(r"[^a-z0-9áàâãéêíóôõúç ]+", " ", text)
+        text = " ".join(text.split())
+        return text
+
+    na = _norm(a)
+    nb = _norm(b)
+    return bool(na and nb and (na == nb or na.endswith(nb) or nb.endswith(na)))
+
+
 def _infer_expected_answer_type(question: str) -> str:
     q = (question or "").strip().lower()
     if not q:
@@ -11913,7 +11927,20 @@ def _looks_like_answer_to_open_mentor_question_v2(body: str, state: dict | None)
             )
         )
     if question_key == "card_repayment_behavior":
-        return any(token in text for token in ("minimo", "rotativo", "total", "parcial", "parcelo", "atraso"))
+        return any(
+            token in text
+            for token in (
+                "minimo",
+                "rotativo",
+                "total",
+                "parcial",
+                "parcelo",
+                "atraso",
+                "pago a fatura toda",
+                "pago toda a fatura",
+                "fatura toda",
+            )
+        )
     if question_key == "category_other_breakdown":
         return len(words) <= 16 and not _has_explicit_amount(text)
     if question_key == "plan_help_offer":
@@ -12465,7 +12492,6 @@ async def chat_endpoint(
     content = _strip_whatsapp_bold(content)
     if _is_mentor_mode:
         _append_mentor_memory(user_phone, "Usuário", body)
-        _append_mentor_memory(user_phone, "Pri", content)
         _updated_mentor_state = _load_mentor_state(user_phone) or {}
         _updated_case_summary = merge_case_summary(
             _updated_mentor_state.get("case_summary", {}),
@@ -12483,6 +12509,40 @@ async def chat_endpoint(
             _next_open_question,
             _updated_case_summary,
         )
+        if (
+            _looks_like_followup_answer
+            and (
+                (
+                    _mentor_open_question
+                    and _questions_equivalent(_next_open_question, _mentor_open_question)
+                )
+                or (
+                    _mentor_open_question_key
+                    and _next_open_question_key
+                    and _mentor_open_question_key == _next_open_question_key
+                )
+            )
+        ):
+            _loop_recovery = build_structured_pri_followup(
+                "",
+                _mentor_open_question_key,
+                _mentor_expected_answer,
+                _updated_case_summary,
+                _mentor_stage,
+                _mentor_open_question,
+            )
+            if _loop_recovery:
+                content = _sanitize_outbound_text((_loop_recovery.get("content") or "").strip())
+                _next_open_question = (_loop_recovery.get("question") or "").strip()
+                _next_expected_answer = (_loop_recovery.get("expected_answer_type") or "").strip()
+                _next_open_question_key = (_loop_recovery.get("open_question_key") or "").strip()
+                _updated_case_summary = normalize_case_summary(
+                    _loop_recovery.get("case_summary", _updated_case_summary)
+                )
+                _next_stage = normalize_consultant_stage(
+                    _loop_recovery.get("consultant_stage") or _next_stage
+                )
+        _append_mentor_memory(user_phone, "Pri", content)
         _save_mentor_state(
             user_phone,
             mode="mentor",
