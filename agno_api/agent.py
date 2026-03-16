@@ -12118,6 +12118,11 @@ async def chat_endpoint(
             "2. o que você atacaria primeiro\n"
             "3. uma pergunta operacional no final\n\n"
 
+            "REGRA DE HISTORICO MENSAL:\n"
+            "So fale em *media mensal* se houver pelo menos 1 mes completo fechado de uso.\n"
+            "Se o usuario ainda estiver no comeco, nao invente comparacao com media.\n"
+            "Explique naturalmente algo como: 'ainda nao tenho um mes fechado seu pra comparar media com seguranca'.\n\n"
+
             "EXEMPLO DE ABERTURA CERTA:\n"
             "'Vou te falar sem rodeio: teu problema aqui não é só alimentação. É que teu dinheiro está saindo sem centro de controle.'\n"
             "'O maior alerta pra mim é Outros. Quando essa categoria cresce demais, quase sempre tem vazamento escondido.'\n"
