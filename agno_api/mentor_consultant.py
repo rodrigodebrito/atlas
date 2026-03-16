@@ -585,6 +585,199 @@ def build_structured_pri_opening(
     }
 
 
+def build_structured_pri_followup(
+    user_message: str,
+    question_key: str = "",
+    expected_answer_type: str = "",
+    case_summary: dict[str, Any] | None = None,
+    stage: str = "",
+) -> dict[str, Any]:
+    text = (user_message or "").strip()
+    lowered = text.lower()
+    normalized_key = (question_key or "").strip().lower()
+    normalized_expected = (expected_answer_type or "").strip().lower()
+    merged_summary = merge_case_summary(case_summary, text, normalized_key, normalized_expected)
+    amount_cents = _extract_brl_amount_cents(text)
+
+    def _is_affirmative() -> bool:
+        return any(token in lowered for token in ("sim", "quero", "bora", "vamos", "pode", "claro", "quero sim"))
+
+    def _is_negative() -> bool:
+        return any(token in lowered for token in ("nao", "não", "deixa", "agora nao", "agora não", "depois"))
+
+    if normalized_key in {"income_extra_recurrence", "income_extra_origin"}:
+        income_origin = merged_summary.get("income_extra_origin", "")
+        income_type = merged_summary.get("income_extra_type", "")
+        if income_origin and not income_type:
+            question = "Isso foi pontual ou entra com alguma frequencia?"
+            content = (
+                f"Boa. Entao essa entrada extra veio de *{income_origin}*.\n\n"
+                "Agora eu preciso separar uma coisa: isso foi alivio pontual ou da pra contar com esse dinheiro de novo? "
+                "Porque isso muda totalmente o plano.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "income_extra_recurrence",
+                "expected_answer_type": "income_recurrence",
+                "consultant_stage": "income_clarification",
+                "case_summary": merged_summary,
+            }
+        if income_type and merged_summary.get("has_emergency_reserve") == "unknown":
+            question = "Hoje voce tem alguma reserva ou ainda ta no zero de protecao?"
+            tone = "isso nao pode virar base do teu padrao de vida" if income_type == "pontual" else "isso ajuda, mas eu nao quero te ver relaxando no controle"
+            content = (
+                f"Perfeito. Entao essa renda extra foi *{income_type}*.\n\n"
+                f"O ponto aqui e simples: {tone}.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "has_emergency_reserve",
+                "expected_answer_type": "has_reserve",
+                "consultant_stage": "reserve_check",
+                "case_summary": merged_summary,
+            }
+
+    if normalized_key == "debt_outside_cards":
+        if any(token in lowered for token in ("cheque especial", "especial", "rotativo")):
+            amount_label = _fmt_cents_brl(amount_cents) if amount_cents else "isso"
+            question = f"Voce consegue tirar {amount_label} disso ainda este mes ou vai precisar montar uma saida parcelada?"
+            merged_summary["main_issue_hypothesis"] = "high_interest_debt"
+            content = (
+                "Aí acendeu alerta vermelho.\n\n"
+                f"Cheque especial e uma das piores dividas que tem. Esses *{amount_label}* parecem pequenos, mas esse dinheiro caro morde teu mes sem fazer barulho.\n\n"
+                "Se eu estivesse arrumando isso com voce, minha prioridade 1 seria te tirar disso antes de qualquer ajuste mais bonito.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "amount_followup",
+                "expected_answer_type": "open_text",
+                "consultant_stage": "action_plan",
+                "case_summary": merged_summary,
+            }
+        if merged_summary.get("debt_outside_cards") == "no":
+            question = "Fechado. E no cartao: voce paga a fatura toda ou ta ficando no minimo/parcelando?"
+            content = (
+                "Boa. Entao a pressao nao ta vindo de emprestimo por fora.\n\n"
+                "Agora eu quero olhar o ponto mais perigoso seguinte: comportamento da fatura. Porque e ali que muita gente escorrega sem perceber.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "card_repayment_behavior",
+                "expected_answer_type": "debt_status",
+                "consultant_stage": "debt_mapping",
+                "case_summary": merged_summary,
+            }
+
+    if normalized_key == "card_repayment_behavior":
+        behavior = merged_summary.get("card_payment_behavior", "")
+        if behavior in {"rotativo", "minimo", "parcial"}:
+            question = "Alem do cartao, voce tambem ta usando cheque especial ou tem emprestimo correndo?"
+            merged_summary["main_issue_hypothesis"] = "high_interest_debt"
+            content = (
+                f"Entendi. Entao teu cartao ja ta em modo *{behavior}*.\n\n"
+                "Isso e o tipo de coisa que destrói o mes sem fazer alarde. Antes de pensar em qualquer outra meta, eu pisaria no freio aqui.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "debt_outside_cards",
+                "expected_answer_type": "debt_status",
+                "consultant_stage": "debt_mapping",
+                "case_summary": merged_summary,
+            }
+        if behavior == "total" and merged_summary.get("has_emergency_reserve") == "unknown":
+            question = "Hoje voce tem alguma reserva ou ainda ta sem colchao de seguranca?"
+            content = (
+                "Boa. Pagar a fatura inteira ja tira um risco grande da mesa.\n\n"
+                "Agora eu quero entender teu folego. Porque organizacao sem reserva vira equilibrio em cima de corda bamba.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "has_emergency_reserve",
+                "expected_answer_type": "has_reserve",
+                "consultant_stage": "reserve_check",
+                "case_summary": merged_summary,
+            }
+
+    if normalized_key == "has_emergency_reserve":
+        reserve_status = merged_summary.get("has_emergency_reserve", "unknown")
+        if reserve_status == "no":
+            question = "Hoje, sem se enrolar, voce consegue separar quanto por mes: R$100, R$300 ou mais?"
+            merged_summary["main_issue_hypothesis"] = "no_emergency_buffer"
+            content = (
+                "Aí está um ponto central.\n\n"
+                "Sem reserva, qualquer tropeço te empurra pra cheque especial, cartao ou improviso. A vida financeira fica sempre jogando na defesa.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "amount_followup",
+                "expected_answer_type": "number_amount",
+                "consultant_stage": "action_plan",
+                "case_summary": merged_summary,
+            }
+        if reserve_status == "yes":
+            question = "Boa. Essa reserva hoje cobre mais ou menos quantos meses teus?"
+            content = (
+                "Boa. Ter reserva ja muda o jogo.\n\n"
+                "Agora eu quero medir o tamanho desse folego. Porque ter alguma reserva e diferente de ter uma reserva que realmente te protege.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "open_text_followup",
+                "expected_answer_type": "open_text",
+                "consultant_stage": "reserve_check",
+                "case_summary": merged_summary,
+            }
+
+    if normalized_key == "plan_help_offer":
+        if _is_negative():
+            content = (
+                "Fechado. Sem pressa.\n\n"
+                "Quando quiser, eu monto isso com voce sem enrolacao. So me chama de novo."
+            )
+            return {
+                "content": content,
+                "question": "",
+                "open_question_key": "",
+                "expected_answer_type": "",
+                "consultant_stage": "follow_up",
+                "case_summary": merged_summary,
+            }
+        if _is_affirmative():
+            plan = build_consultant_plan(merged_summary, stage or "action_plan")
+            question = "Pra montar isso direito, me diz: hoje o que mais te derruba e delivery, impulso ou conta fixa?"
+            content = (
+                "Fechou. Entao vamos montar isso sem inventar moda.\n\n"
+                f"O foco agora e: *{plan['first_move']}*.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "open_text_followup",
+                "expected_answer_type": "open_text",
+                "consultant_stage": "action_plan",
+                "case_summary": merged_summary,
+            }
+
+    return {}
+
+
 def _normalize_binary(value: Any) -> str:
     text = str(value or "").strip().lower()
     if text in {"yes", "no", "unknown"}:

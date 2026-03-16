@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 from agno_api.mentor_consultant import (
     build_case_summary_context,
     build_consultant_plan_context,
+    build_structured_pri_followup,
     build_structured_pri_opening,
     infer_consultant_stage,
     infer_pri_opening_frame,
@@ -11829,6 +11830,10 @@ def _looks_like_answer_to_open_mentor_question(body: str, state: dict | None) ->
         return any(token in text for token in ("sim", "não", "nao", "tenho", "guardo", "reserva"))
     if question_key == "debt_outside_cards":
         return any(token in text for token in ("sim", "não", "nao", "financiamento", "empréstimo", "emprestimo", "parcelado"))
+    if question_key == "debt_outside_cards" and any(token in text for token in ("cheque especial", "especial", "rotativo")):
+        return True
+    if question_key == "debt_outside_cards" and any(token in text for token in ("cheque especial", "especial", "rotativo")):
+        return True
     if question_key == "card_repayment_behavior":
         return any(token in text for token in ("mínimo", "minimo", "rotativo", "total", "parcial", "parcelo", "atraso"))
     if question_key == "category_other_breakdown":
@@ -12294,6 +12299,37 @@ async def chat_endpoint(
             )
         if _mentor_memory_ctx:
             _mentor_ctx += f"\n\n{_mentor_memory_ctx}\n"
+
+    if _is_mentor_mode and _in_mentor_session:
+        _structured_followup = build_structured_pri_followup(
+            body,
+            _mentor_open_question_key,
+            _mentor_expected_answer,
+            _mentor_case_summary,
+            _mentor_stage,
+        )
+        if _structured_followup:
+            content = (_structured_followup.get("content") or "").strip()
+            _next_open_question = (_structured_followup.get("question") or "").strip()
+            _next_open_question_key = (_structured_followup.get("open_question_key") or "").strip()
+            _next_expected_answer = (_structured_followup.get("expected_answer_type") or "").strip()
+            _updated_case_summary = normalize_case_summary(_structured_followup.get("case_summary", _mentor_case_summary))
+            _next_stage = normalize_consultant_stage(_structured_followup.get("consultant_stage") or _mentor_stage)
+            _append_mentor_memory(user_phone, "UsuÃ¡rio", body)
+            _append_mentor_memory(user_phone, "Pri", content)
+            _updated_mentor_state = _load_mentor_state(user_phone) or {}
+            _save_mentor_state(
+                user_phone,
+                mode="mentor",
+                last_open_question=_next_open_question,
+                open_question_key=_next_open_question_key,
+                expected_answer_type=_next_expected_answer,
+                consultant_stage=_next_stage,
+                case_summary=_updated_case_summary,
+                memory_turns=_updated_mentor_state.get("memory_turns", []),
+                expires_at=_mentor_expiry_iso(),
+            )
+            return {"content": _strip_whatsapp_bold(content), "routed": False, "session_id": session_id}
 
     _agent_input = _trim_agent_input(f"{_time_ctx}{_mentor_ctx}\n\n{full_message}")
     _agent_started_at = time.time()

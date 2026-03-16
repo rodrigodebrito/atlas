@@ -227,23 +227,17 @@ async def test_chat_endpoint_keeps_short_reply_inside_pri_flow(atlas, monkeypatc
     assert state_after_first["open_question_key"] == "income_extra_recurrence"
 
     second = await atlas.chat_endpoint(user_phone=phone, message="foi por plantao")
-    assert "reserva" in second["content"].lower()
+    second_content = second["content"].lower()
+    assert "plantao" in second_content
+    assert "pontual" in second_content or "frequencia" in second_content
 
     assert executed_routes == []
-    assert len(stub_agent.calls) == 2
-    assert "[CHAVE FORMAL DA PERGUNTA ABERTA]" in stub_agent.calls[1]["input"]
-    assert "income_extra_recurrence" in stub_agent.calls[1]["input"]
-    assert "[ESTAGIO ATUAL DA CONSULTORIA]" in stub_agent.calls[1]["input"]
-    assert "income_clarification" in stub_agent.calls[1]["input"]
-    assert "[RESUMO ESTRUTURADO DO CASO]" in stub_agent.calls[1]["input"]
-    assert "Origem da receita extra: plantao" in stub_agent.calls[1]["input"]
-    assert "[PLANO DE CONSULTORIA DA PRI]" in stub_agent.calls[1]["input"]
-    assert "Primeira acao recomendada" in stub_agent.calls[1]["input"]
+    assert len(stub_agent.calls) == 1
 
     state_after_second = atlas._load_mentor_state(phone)
     assert state_after_second is not None
-    assert "reserva" in state_after_second["last_open_question"].lower()
-    assert state_after_second["consultant_stage"] == "reserve_check"
+    assert "pontual" in state_after_second["last_open_question"].lower() or "frequencia" in state_after_second["last_open_question"].lower()
+    assert state_after_second["consultant_stage"] == "income_clarification"
     assert state_after_second["case_summary"]["income_extra_origin"] == "plantao"
 
 
@@ -294,8 +288,7 @@ async def test_chat_endpoint_keeps_affirmative_reply_for_plan_offer_inside_pri_f
     second = await atlas.chat_endpoint(user_phone=phone, message="quero sim")
     assert "vamos montar" in second["content"].lower()
     assert executed_routes == []
-    assert len(stub_agent.calls) == 2
-    assert "plan_help_offer" in stub_agent.calls[1]["input"]
+    assert len(stub_agent.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -428,6 +421,46 @@ async def test_explicit_pri_month_analysis_restarts_with_structured_opening_duri
     assert state is not None
     assert state["open_question_key"] == "category_other_breakdown"
     assert state["consultant_stage"] == "diagnosis_clarification"
+
+
+@pytest.mark.asyncio
+async def test_structured_followup_handles_cheque_especial_answer_without_llm(atlas, monkeypatch):
+    phone = "+5511944441111"
+    atlas._save_mentor_state(
+        phone,
+        mode="mentor",
+        last_open_question="Alem dos cartoes, tem alguma divida ou emprestimo que nao aparece aqui?",
+        open_question_key="debt_outside_cards",
+        expected_answer_type="debt_status",
+        consultant_stage="debt_mapping",
+        case_summary={"main_issue_hypothesis": "cashflow_pressure"},
+        memory_turns=[],
+        expires_at=atlas._mentor_expiry_iso(),
+    )
+    stub_agent = _StubAtlasAgent([])
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return {"intent": "mentor", "action": "", "params": {}}
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="entao estou usando 1.500 do cheque especial")
+
+    content = result["content"].lower()
+    assert "alerta vermelho" in content
+    assert "cheque especial" in content
+    assert "1.500" in result["content"] or "R$1.500" in result["content"]
+    assert "?" in result["content"]
+    assert stub_agent.calls == []
+
+    state = atlas._load_mentor_state(phone)
+    assert state is not None
+    assert state["open_question_key"] == "amount_followup"
+    assert state["consultant_stage"] == "action_plan"
+    assert state["case_summary"]["main_issue_hypothesis"] == "high_interest_debt"
 
 
 @pytest.mark.asyncio
