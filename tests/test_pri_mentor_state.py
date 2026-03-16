@@ -1,4 +1,5 @@
 import importlib
+import gc
 import sqlite3
 import sys
 import uuid
@@ -79,7 +80,12 @@ def atlas(monkeypatch):
     try:
         yield agent
     finally:
-        db_path.unlink(missing_ok=True)
+        gc.collect()
+        try:
+            db_path.unlink(missing_ok=True)
+        except PermissionError:
+            gc.collect()
+            db_path.unlink(missing_ok=True)
 
 
 def test_save_and_load_mentor_state_persists_structured_fields(atlas):
@@ -335,6 +341,52 @@ def test_month_summary_shows_card_purchase_but_separates_next_bill_cashflow(atla
     assert "R$300.00" in summary
     assert "💡 Pri" in summary
     assert "__insight:" not in summary
+
+
+def test_save_transaction_expense_response_has_pri_tone_and_month_snapshot(atlas):
+    phone = "+5511944400001"
+    user_id = f"user_{uuid.uuid4().hex}"
+    now = atlas._now_br()
+    current_month = now.strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 300000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'INCOME', ?, ?, ?, ?)""",
+            (f"tx_{uuid.uuid4().hex}", user_id, 300000, "Salario", "Empresa", f"{current_month}-01"),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'EXPENSE', ?, ?, ?, ?)""",
+            (f"tx_{uuid.uuid4().hex}", user_id, 1500, "Alimentacao", "Cafe", f"{current_month}-05"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = atlas.save_transaction.entrypoint(
+        user_phone=phone,
+        transaction_type="EXPENSE",
+        amount=5,
+        category="Alimentacao",
+        merchant="almoco",
+    )
+
+    assert "✨ Pri anotou" in response
+    assert "Fechamento rápido do mês" in response
+    assert "Entradas:" in response
+    assert "Comprado no mês:" in response
+    assert "Peso no caixa:" in response
+    assert "Saldo do mês:" in response
+    assert "painel" in response.lower()
 
 
 def test_strip_whatsapp_bold_removes_null_bytes_and_controls(atlas):

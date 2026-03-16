@@ -106,6 +106,51 @@ def _fmt_brl(cents):
     return "R$" + s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _get_purchase_expense_total_for_month(cur, user_id: str, month: str) -> int:
+    """Total comprado no mês pelo mês de compra, sem duplicar pagamentos de fatura/conta."""
+    cur.execute(
+        """SELECT COALESCE(SUM(amount_cents), 0)
+           FROM transactions
+           WHERE user_id = ?
+             AND UPPER(type) = 'EXPENSE'
+             AND occurred_at LIKE ?
+             AND (category IS NULL OR category NOT IN ('Pagamento Fatura', 'Pagamento Conta'))""",
+        (user_id, f"{month}%"),
+    )
+    row = cur.fetchone()
+    return row[0] or 0
+
+
+def _build_pri_transaction_intro(
+    transaction_type: str,
+    category: str,
+    merchant: str = "",
+    installments: int = 1,
+    card_name: str = "",
+) -> str:
+    """Abre confirmações de lançamento com voz mais humana da Pri."""
+    merchant_l = (merchant or "").lower()
+
+    if transaction_type == "INCOME":
+        if category == "Salário":
+            return "✨ Pri registrou essa entrada por aqui. Mês respirando um pouco melhor."
+        if category == "Freelance":
+            return "✨ Pri anotou esse freela. Grana extra no radar."
+        return "✨ Pri registrou essa entrada por aqui."
+
+    if installments > 1:
+        return "✨ Pri anotou esse parcelado sem deixar ele se esconder nas próximas faturas."
+    if card_name:
+        return "✨ Pri anotou essa compra no cartão e já deixou claro em que fatura ela cai."
+    if category == "Alimentação" or any(k in merchant_l for k in ("padaria", "restaurante", "ifood", "mercado", "almoço", "almoco")):
+        return "✨ Pri anotou isso aqui antes de virar mais um gasto que some sem fazer barulho."
+    if category == "Transporte":
+        return "✨ Pri registrou esse deslocamento por aqui."
+    if category == "Vestuário":
+        return "✨ Pri anotou essa compra pra ela não se perder no meio do mês."
+    return "✨ Pri anotou isso por aqui."
+
+
 # ============================================================
 # TABELAS FINANCEIRAS — criadas automaticamente no SQLite
 # (No PostgreSQL do Render, rodar o script SQL uma vez)
@@ -1007,7 +1052,14 @@ def save_transaction(
         lines = [f"✅ *{amt_fmt}{local}*"]
         lines.append(f"{cat_icon} {category}  •  {date_label}")
 
-    result = "\n".join(lines)
+    intro_line = _build_pri_transaction_intro(
+        transaction_type=transaction_type,
+        category=category,
+        merchant=merchant,
+        installments=installments,
+        card_name=card_name,
+    )
+    result = f"{intro_line}\n\n" + "\n".join(lines)
 
     if next_bill_warning:
         result += next_bill_warning
@@ -1056,14 +1108,25 @@ def save_transaction(
                     (user_id, today_str, today_str + " 23:59:59"),
                 )
                 day_count, day_total = _ctx_cur.fetchone()
-                if day_count and day_count > 1:
-                    result += f"\n📆 Hoje: {_fmt_brl(day_total)} em {day_count} gastos"
-
                 # Total do mês + saldo restante
                 _month_str = today_str[:7]
                 _month_rollup = _get_cashflow_expense_rollup_for_month(_ctx_cur, user_id, _month_str)
                 _month_total = _month_rollup["total_cents"]
-                result += f"\n📊 Mês (caixa): {_fmt_brl(_month_total)}"
+                _month_purchased = _get_purchase_expense_total_for_month(_ctx_cur, user_id, _month_str)
+                _ctx_cur.execute(
+                    "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND type = 'INCOME' AND occurred_at LIKE ?",
+                    (user_id, _month_str + "%"),
+                )
+                _month_income = _ctx_cur.fetchone()[0] or 0
+                _month_balance = _month_income - _month_total
+
+                result += "\n\n📌 *Fechamento rápido do mês*"
+                if day_count and day_count > 1:
+                    result += f"\n📆 Hoje: {_fmt_brl(day_total)} em {day_count} gastos"
+                result += f"\n💰 Entradas: {_fmt_brl(_month_income)}"
+                result += f"\n🛍️ Comprado no mês: {_fmt_brl(_month_purchased)}"
+                result += f"\n🗓️ Peso no caixa: {_fmt_brl(_month_total)}"
+                result += f"\n{'✅' if _month_balance >= 0 else '⚠️'} Saldo do mês: {_fmt_brl(_month_balance)}"
 
                 # Streak: dias consecutivos lançando gastos
                 _ctx_cur.execute(
