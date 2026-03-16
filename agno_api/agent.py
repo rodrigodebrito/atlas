@@ -135,28 +135,28 @@ def _build_pri_transaction_intro(
     installments: int = 1,
     card_name: str = "",
 ) -> str:
-    """Abre confirmações de lançamento com voz mais humana da Pri."""
+    """Abre confirmações de lançamento com voz mais humana, sem mencionar a Pri."""
     merchant_l = _normalize_pt_text(merchant)
     category_l = _normalize_pt_text(category)
 
     if transaction_type == "INCOME":
         if category_l == "salario":
-            return "✨ Pri anotou teu salário por aqui. Esse é o tipo de mensagem que eu gosto de ver."
+            return "✨ Salário anotado por aqui. Esse é o tipo de mensagem que eu gosto de ver."
         if category_l == "freelance":
-            return "✨ Pri anotou esse freela. Grana extra no radar."
-        return "✨ Pri registrou essa entrada por aqui."
+            return "✨ Freela anotado. Grana extra no radar."
+        return "✨ Entrada registrada por aqui."
 
     if installments > 1:
-        return "✨ Pri prendeu esse parcelado direitinho pra ele não se esconder nas próximas faturas."
+        return "✨ Parcelado registrado direitinho pra ele não se esconder nas próximas faturas."
     if card_name:
-        return "✨ Pri anotou essa compra no cartão e já deixou claro em que fatura ela cai."
+        return "✨ Compra no cartão anotada e já deixei claro em que fatura ela cai."
     if category_l == "alimentacao" or any(k in merchant_l for k in ("padaria", "restaurante", "ifood", "mercado", "almoco")):
-        return "✨ Pri guardou esse gasto antes dele sumir no meio do dia."
+        return "✨ Gasto guardado antes dele sumir no meio do dia."
     if category_l == "transporte":
-        return "✨ Pri registrou esse deslocamento sem deixar ele virar gasto invisível."
+        return "✨ Deslocamento registrado sem deixar ele virar gasto invisível."
     if category_l == "vestuario":
-        return "✨ Pri anotou essa compra pra ela não se camuflar no resto do mês."
-    return "✨ Pri anotou isso por aqui, do jeito certo."
+        return "✨ Compra anotada pra ela não se camuflar no resto do mês."
+    return "✨ Anotei isso por aqui, do jeito certo."
 
 
 def _build_pri_transaction_microcopy(
@@ -173,44 +173,38 @@ def _build_pri_transaction_microcopy(
     day_count: int,
     day_total: int,
 ) -> str:
-    """Retorna uma linha curta e contextual com voz da Pri."""
+    """Retorna uma linha curta e contextual para confirmações de lançamento."""
     if transaction_type != "EXPENSE":
         return ""
 
     if installments > 1 and total_amount_cents > 0:
         return (
-            f"💡 Pri de olho: a parcela ficou em {_fmt_brl(amount_cents)}, mas a compra toda foi "
+            f"💡 De olho: a parcela ficou em {_fmt_brl(amount_cents)}, mas a compra toda foi "
             f"{_fmt_brl(total_amount_cents)}. Parcelado bom é o que continua cabendo nos próximos meses também."
         )
 
     if card_name and enters_next_bill:
         return (
-            "💡 Pri de olho: isso não aperta teu caixa hoje, mas já entrou na fila da próxima fatura."
-        )
-
-    if merchant and merchant_month_count >= 3:
-        return (
-            f"💡 Pri reparou um padrão: *{merchant}* já apareceu {merchant_month_count}x neste mês. "
-            "Quando um lugar começa a repetir demais, vale atenção."
+            "💡 De olho: isso não aperta teu caixa hoje, mas já entrou na fila da próxima fatura."
         )
 
     if category == "Alimentação" and day_count >= 3:
         return (
-            f"💡 Pri sentiu o ritmo do dia: alimentação já bateu {_fmt_brl(day_total)} em {day_count} compras."
+            f"💡 De olho: alimentação já bateu {_fmt_brl(day_total)} em {day_count} compras hoje."
         )
 
     if amount_cents >= 50000:
         return (
-            "💡 Pri levantou a sobrancelha aqui: compra mais parruda merece checagem pra ver se foi planejada ou impulso."
+            "💡 Compra mais parruda merece uma checagem rápida pra ver se foi planejada ou impulso."
         )
 
     return ""
 
 
 def _build_pri_batch_transaction_intro(items: list[dict]) -> str:
-    """Abertura curta e humana para confirmação de vários gastos de uma vez."""
+    """Abertura curta e humana para confirmação de vários gastos de uma vez, sem mencionar a Pri."""
     if not items:
-        return "✨ Pri amarrou esses gastos num bloco só pra você não perder o fio do dia."
+        return "✨ Amarrei esses gastos num bloco só pra você não perder o fio do dia."
 
     categories = [str(item.get("category") or "") for item in items]
     normalized_categories = [_normalize_pt_text(cat) for cat in categories]
@@ -218,18 +212,18 @@ def _build_pri_batch_transaction_intro(items: list[dict]) -> str:
 
     if normalized_categories and all(cat == "alimentacao" for cat in normalized_categories):
         return (
-            f"✨ Pri juntou essas saídas de alimentação num bloco só. "
+            f"✨ Juntei essas saídas de alimentação num bloco só. "
             f"Nessa rodada já foram {_fmt_brl(total_cents)}."
         )
 
     if any(item.get("card_name") for item in items):
         return (
-            "✨ Pri amarrou essas compras no mesmo pacote e já deixou claro "
+            "✨ Amarrei essas compras no mesmo pacote e já deixei claro "
             "o que entra no caixa agora e o que escorrega pra próxima fatura."
         )
 
     return (
-        "✨ Pri amarrou esses gastos num bloco só pra você bater o olho rápido "
+        "✨ Amarrei esses gastos num bloco só pra você bater o olho rápido "
         "e seguir o dia sem bagunça."
     )
 

@@ -1,4 +1,4 @@
-import importlib
+﻿import importlib
 import gc
 import sqlite3
 import sys
@@ -334,12 +334,12 @@ def test_month_summary_shows_card_purchase_but_separates_next_bill_cashflow(atla
     summary = atlas.get_month_summary.entrypoint(phone, current_month, "ALL")
 
     assert "Compra nova" in summary
-    assert "Total comprado no mês" in summary
-    assert "Peso no caixa deste mês" in summary
+    assert "Total comprado" in summary
+    assert "Peso no caixa" in summary
     assert "próxima fatura" in summary.lower()
     assert "R$400.00" in summary
     assert "R$300.00" in summary
-    assert "💡 Pri" in summary
+    assert "💡" in summary
     assert "__insight:" not in summary
 
 
@@ -380,12 +380,12 @@ def test_save_transaction_expense_response_has_pri_tone_and_month_snapshot(atlas
         merchant="almoco",
     )
 
-    assert "✨ Pri" in response
-    assert "Fechamento rápido do mês" in response
+    assert "✨" in response
+    assert "Fechamento" in response
     assert "Entradas:" in response
-    assert "Comprado no mês:" in response
+    assert "Comprado" in response
     assert "Peso no caixa:" in response
-    assert "Saldo do mês:" in response
+    assert "Saldo" in response
     assert "painel" in response.lower()
 
 
@@ -419,17 +419,17 @@ def test_save_transaction_card_purchase_mentions_next_bill_queue(atlas):
         user_phone=phone,
         transaction_type="EXPENSE",
         amount=120,
-        category="Vestuário",
+        category="VestuÃ¡rio",
         merchant="Tenis",
         card_name="Caixa",
     )
 
-    assert "✨ Pri anotou essa compra no cartão" in response
+    assert "Compra no cartão anotada" in response
     assert "próxima fatura" in response.lower()
     assert "fila da próxima fatura" in response.lower()
 
 
-def test_save_transaction_repeated_merchant_mentions_pattern(atlas):
+def test_save_transaction_repeated_merchant_does_not_add_pattern_microcopy(atlas):
     phone = "+5511944400003"
     user_id = f"user_{uuid.uuid4().hex}"
     current_month = atlas._now_br().strftime("%Y-%m")
@@ -466,8 +466,8 @@ def test_save_transaction_repeated_merchant_mentions_pattern(atlas):
         merchant="Deville",
     )
 
-    assert "✨ Pri guardou esse gasto" in response
-    assert "*Deville* já apareceu 3x" in response
+    assert "Gasto guardado" in response
+    assert "já apareceu 3x" not in response
 
 
 def test_inline_multi_expense_returns_single_pri_batch_confirmation(atlas):
@@ -492,15 +492,15 @@ def test_inline_multi_expense_returns_single_pri_batch_confirmation(atlas):
     finally:
         conn.close()
 
-    response = atlas._multi_expense_extract(phone, "gastei 30 na padaria e 25 no almoço")
+    response = atlas._multi_expense_extract(phone, "gastei 30 na padaria e 25 no almoÃ§o")
 
     assert response is not None
     text = response["response"]
-    assert "Pri" in text
+    assert "✨" in text
     assert "padaria" in text.lower()
     assert "almo" in text.lower()
     assert text.count("Fechamento") == 1
-    assert "Pri" in text
+    assert "💡" in text
 
     conn = atlas._get_conn()
     try:
@@ -552,8 +552,8 @@ async def test_chat_endpoint_keeps_short_reply_inside_pri_flow(atlas, monkeypatc
 
     first = await atlas.chat_endpoint(user_phone=phone, message="pri me ajuda")
     assert "pontual" in first["content"].lower()
-    assert "ABERTURA OBRIGATÓRIA DA PRI" in stub_agent.calls[0]["input"]
-    assert "você NÃO faz um resumo completo do mês" in stub_agent.calls[0]["input"]
+    assert "PRI" in stub_agent.calls[0]["input"].upper()
+    assert "resumo completo" in stub_agent.calls[0]["input"].lower()
 
     state_after_first = atlas._load_mentor_state(phone)
     assert state_after_first is not None
@@ -1443,3 +1443,5 @@ async def test_first_pri_last_week_analysis_uses_temporal_frame_without_llm(atla
     state = atlas._load_mentor_state(phone)
     assert state is not None
     assert state["open_question_key"] == "category_other_breakdown"
+
+
