@@ -1191,6 +1191,53 @@ def save_transaction(
 
     return result
 
+def _build_pri_month_summary_insight(
+    *,
+    top_cat_name: str,
+    merchant_freq,
+    pending_commitments: int,
+    remaining_after: int,
+    balance: int,
+    deferred_credit_expenses: int,
+) -> str:
+    """Gera uma linha final de insight com voz da Pri para o resumo mensal."""
+    if pending_commitments > 0 and remaining_after < 0:
+        return (
+            f"💡 Pri acendeu a luz vermelha aqui: depois dos compromissos que ainda faltam, teu caixa "
+            f"fica em {_fmt_brl(remaining_after)}. Antes de pensar em qualquer gasto novo, o foco é tapar esse buraco."
+        )
+
+    if top_cat_name == "Outros":
+        return (
+            "💡 Pri viu o vazamento mais suspeito em *Outros*: essa categoria vira caixa-preta muito fácil. "
+            "Se você abrir isso primeiro, acha mais rápido o que está drenando teu mês."
+        )
+
+    if deferred_credit_expenses > 0:
+        return (
+            f"💡 Pri te deixa uma luz amarela: {_fmt_brl(deferred_credit_expenses)} do que você comprou no cartão "
+            "ainda não pesou agora, mas já vai entrar na próxima fatura. Melhor tratar isso cedo pra não virar susto no mês que vem."
+        )
+
+    if merchant_freq:
+        top_merchant, top_count = merchant_freq.most_common(1)[0]
+        if top_count >= 3:
+            return (
+                f"💡 Pri pegou um padrão aqui: *{top_merchant}* já apareceu {top_count}x no mês. "
+                "Quando um mesmo lugar começa a se repetir demais, geralmente é ali que o dinheiro escapa sem fazer barulho."
+            )
+
+    if balance < 0:
+        return (
+            "💡 Pri vai direto no ponto: este mês tá saindo mais do que entrando. "
+            f"Se eu estivesse arrumando isso com você, atacaria *{top_cat_name or 'o maior gasto'}* antes de qualquer outra coisa."
+        )
+
+    return (
+        "💡 Pri viu um mês puxado, mas com um ponto claro pra agir. "
+        f"Se você começar por *{top_cat_name or 'onde mais pesou'}*, já deve sentir diferença mais rápido no caixa."
+    )
+
 
 @tool
 def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL") -> str:
@@ -1523,7 +1570,7 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
             _mo_lbl = month
         lines.append(f"Você ainda não lançou receitas em {_mo_lbl}.")
 
-    # Largest category for model insight
+    # Largest category for summary insight
     top_cat_name, top_pct_val = "", 0.0
     if filter_type in ("ALL", "EXPENSE") and cat_totals_display:
         top_cat, top_total = sorted(cat_totals_display.items(), key=lambda x: -x[1])[0]
@@ -1536,25 +1583,19 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         top_cat_name, top_pct_val = top_cat, top_pct
         lines.append(f"__top_category:{top_cat}:{top_pct:.0f}%")
 
-    # __insight: dia mais gastador + merchant mais frequente + compromissos (pending_commitments já calculado acima)
-    insight_parts = []
-    if day_totals:
-        top_day = max(day_totals, key=day_totals.get)
-        top_day_lbl = f"{top_day[8:10]}/{top_day[5:7]}"
-        top_day_val = day_totals[top_day] / 100
-        insight_parts.append(f"dia_top={top_day_lbl} R${top_day_val:,.2f}".replace(",", "."))
-    if merchant_freq:
-        top_merchant, top_count = merchant_freq.most_common(1)[0]
-        if top_count >= 2:
-            insight_parts.append(f"frequente={top_merchant} ({top_count}x)")
-    if top_cat_name:
-        insight_parts.append(f"cat_top={top_cat_name} ({top_pct_val:.0f}%)")
-    if pending_commitments > 0:
-        insight_parts.append(f"compromissos_pendentes=R${pending_commitments/100:,.2f}".replace(",", "."))
+    if filter_type in ("ALL", "EXPENSE"):
         remaining_after = balance - pending_commitments
-        insight_parts.append(f"saldo_apos_compromissos=R${remaining_after/100:,.2f}".replace(",", "."))
-    if insight_parts:
-        lines.append(f"__insight:{' | '.join(insight_parts)}")
+        pri_insight = _build_pri_month_summary_insight(
+            top_cat_name=top_cat_name,
+            merchant_freq=merchant_freq,
+            pending_commitments=pending_commitments,
+            remaining_after=remaining_after,
+            balance=balance,
+            deferred_credit_expenses=deferred_credit_expenses,
+        )
+        if pri_insight:
+            lines.append("")
+            lines.append(pri_insight)
 
     # Link do painel (sempre incluído no resumo mensal)
     try:
@@ -6870,6 +6911,7 @@ A tool já retorna o dado formatado com nome, período, datas DD/MM por transaç
 ⚠️ COPIE O RETORNO DA TOOL CARACTERE POR CARACTERE — preserve todas as quebras de linha (\n).
 NÃO comprima, NÃO reformule, NÃO coloque itens na mesma linha.
 Cada item deve ficar em sua própria linha, exatamente como a tool retornou.
+Se a tool já trouxer uma linha começando com `💡 Pri`, APENAS copie essa linha. NÃO gere insight extra.
 Remova TODAS as linhas que começam com `__` (metadata interna: __top_category, __insight).
 Use `__insight:` para gerar UMA frase curta de insight personalizado ao final:
 - Tom leve, informal, humorado (ex: "D Ville Supermercados tá levando boa parte do orçamento hein 😄")

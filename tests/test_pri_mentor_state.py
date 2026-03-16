@@ -333,6 +333,8 @@ def test_month_summary_shows_card_purchase_but_separates_next_bill_cashflow(atla
     assert "próxima fatura" in summary.lower()
     assert "R$400.00" in summary
     assert "R$300.00" in summary
+    assert "💡 Pri" in summary
+    assert "__insight:" not in summary
 
 
 def test_strip_whatsapp_bold_removes_null_bytes_and_controls(atlas):
