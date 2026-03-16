@@ -511,6 +511,27 @@ def test_inline_multi_expense_returns_single_pri_batch_confirmation(atlas):
         conn.close()
 
 
+def test_compact_repeated_save_response_groups_concatenated_saves(atlas):
+    raw = (
+        "✨ Gasto guardado antes dele sumir no meio do dia.\n\n"
+        "✅ *R$35.00 — padaria*\n"
+        "🍽️ Alimentação • 16/03/2026 (hoje)\n"
+        "_Errou? Digite *painel* pra editar ou apagar_\n\n"
+        "✨ Gasto guardado antes dele sumir no meio do dia.\n\n"
+        "✅ *R$22.00 — almoço*\n"
+        "🍽️ Alimentação • 16/03/2026 (hoje)\n"
+        "_Errou? Digite *painel* pra editar ou apagar_"
+    )
+
+    compacted = atlas._compact_repeated_save_response(raw)
+
+    assert compacted.count("✨") == 1
+    assert "padaria" in compacted.lower()
+    assert "almoço" in compacted.lower()
+    assert "Total lançado agora" in compacted
+    assert compacted.count("Errou?") == 1
+
+
 def test_strip_whatsapp_bold_removes_null_bytes_and_controls(atlas):
     cleaned = atlas._strip_whatsapp_bold("Oi\x00 mundo\x07 *forte*")
 

@@ -8824,6 +8824,12 @@ class _SanitizeSurrogateMiddleware(_BaseMiddleware):
                     body_bytes += chunk
             text = body_bytes.decode("utf-8", errors="replace")
             text = _LONE_SURROGATE_RE.sub("", text)
+            try:
+                payload = _json.loads(text)
+                payload = _normalize_json_strings(payload)
+                text = _json.dumps(payload, ensure_ascii=False)
+            except Exception:
+                text = _compact_repeated_save_response(_sanitize_outbound_text(text))
             return _StarletteResponse(
                 content=text,
                 status_code=response.status_code,
@@ -11729,6 +11735,90 @@ def _sanitize_outbound_text(text: str) -> str:
     text = _LONE_SURROGATE_RE.sub("", text)
     text = _re_out.sub(r"[\x01-\x08\x0B\x0C\x0E-\x1F]", "", text)
     return text
+
+
+def _extract_repeated_save_blocks(text: str) -> list[dict]:
+    """Detecta múltiplas confirmações de save_transaction concatenadas na mesma resposta."""
+    if not text:
+        return []
+
+    normalized = text.replace("\r\n", "\n").strip()
+    normalized = normalized.replace("**", "*")
+    error_re = _re_router.compile(
+        r"_?Errou\?\s+Digite\s+\*?painel\*?\s+pra editar ou apagar_?",
+        _re_router.IGNORECASE,
+    )
+    segments = [seg.strip() for seg in error_re.split(normalized) if seg.strip()]
+    blocks: list[dict] = []
+
+    for segment in segments:
+        lines = [line.strip() for line in segment.split("\n") if line.strip()]
+        item_line = next((line for line in lines if line.startswith("✅")), "")
+        if not item_line:
+            continue
+
+        amount_match = _re_router.search(r"R\$\s*([0-9]+(?:[.,][0-9]{2})?)", item_line)
+        if not amount_match:
+            continue
+
+        raw_amount = amount_match.group(1)
+        amount = float(raw_amount.replace(".", "").replace(",", ".")) if "," in raw_amount and "." in raw_amount else float(raw_amount.replace(",", "."))
+
+        item_idx = lines.index(item_line)
+        detail_line = ""
+        extras: list[str] = []
+        for line in lines[item_idx + 1:]:
+            if line.startswith("✨"):
+                continue
+            if not detail_line:
+                detail_line = line
+            else:
+                extras.append(line)
+
+        if not detail_line:
+            continue
+
+        blocks.append(
+            {
+                "amount": amount,
+                "item_line": item_line,
+                "detail_line": detail_line,
+                "extras": extras,
+            }
+        )
+
+    return blocks if len(blocks) >= 2 else []
+
+
+def _compact_repeated_save_response(text: str) -> str:
+    """Agrupa saves concatenados em um único bloco visual."""
+    blocks = _extract_repeated_save_blocks(text)
+    if not blocks:
+        return text
+
+    total_cents = round(sum(block["amount"] for block in blocks) * 100)
+    lines = ["✨ Gastos anotados.", ""]
+    for block in blocks:
+        lines.append(block["item_line"])
+        lines.append(block["detail_line"])
+        for extra in block["extras"]:
+            lines.append(extra)
+        lines.append("")
+
+    lines.append(f"💰 *Total lançado agora:* {_fmt_brl(total_cents)}")
+    lines.append("_Errou? Digite *painel* pra editar ou apagar_")
+    return "\n".join(lines).strip()
+
+
+def _normalize_json_strings(obj):
+    """Aplica sanitização e compactação nos campos de texto das respostas JSON."""
+    if isinstance(obj, str):
+        return _compact_repeated_save_response(_sanitize_outbound_text(obj))
+    if isinstance(obj, list):
+        return [_normalize_json_strings(item) for item in obj]
+    if isinstance(obj, dict):
+        return {key: _normalize_json_strings(value) for key, value in obj.items()}
+    return obj
 
 
 def _strip_trailing_questions(text: str) -> str:
