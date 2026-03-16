@@ -12045,9 +12045,14 @@ async def chat_endpoint(
             _touch_mentor_state(user_phone)
         return {"content": _strip_whatsapp_bold(_panel_url_response(user_phone)), "routed": True}
 
+    _explicit_pri_message = bool(_body_lower.strip().startswith(("pri", "priscila")))
+
     # 5. Mini-router (gpt-5-mini, ~200ms)
     _route = await _mini_route(body, user_phone, _in_mentor_session)
     _rt_logger.warning(f"[MINI_ROUTE] phone={user_phone} result={_route} body={body[:80]}")
+
+    if _explicit_pri_message:
+        _route = {"intent": "mentor", "action": "", "params": {}}
 
     # Sessão mentor ativa + resposta curta ao que a Pri perguntou = mentor, não lançamento.
     if _in_mentor_session and (
@@ -12125,7 +12130,7 @@ async def chat_endpoint(
         )
     _mentor_case_ctx = build_case_summary_context(_mentor_case_summary)
     _mentor_plan_ctx = build_consultant_plan_context(_mentor_case_summary, _mentor_stage)
-    _explicit_pri_restart = bool(_body_lower.strip().startswith(("pri", "priscila")))
+    _explicit_pri_restart = _explicit_pri_message
     _should_attempt_structured_opening = _is_mentor_mode and (not _in_mentor_session or _explicit_pri_restart)
     _opening_scope = _resolve_pri_snapshot_scope(body) if _should_attempt_structured_opening else "month"
     _opening_snapshot = _get_pri_opening_snapshot(user_phone, _opening_scope) if _should_attempt_structured_opening else {}

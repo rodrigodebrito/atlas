@@ -594,6 +594,49 @@ async def test_explicit_pri_month_analysis_restarts_with_structured_opening_duri
 
 
 @pytest.mark.asyncio
+async def test_explicit_pri_followup_stays_in_mentor_even_if_router_prefers_transaction(atlas, monkeypatch):
+    phone = "+5511911112222"
+    atlas._save_mentor_state(
+        phone,
+        mode="mentor",
+        last_open_question="Me diz: esse Outros ta tudo misturado ou voce sabe o que entrou ali?",
+        open_question_key="category_other_breakdown",
+        expected_answer_type="free_text",
+        consultant_stage="diagnosis_clarification",
+        case_summary={"main_issue_hypothesis": "cashflow_pressure"},
+        memory_turns=[],
+        expires_at=atlas._mentor_expiry_iso(),
+    )
+    stub_agent = _StubAtlasAgent(
+        [
+            "Pri aqui. Entendi. Se esse Outros era fatura da Caixa que voce ja pagou, o problema nao e vazamento novo, e classificacao errada. Me confirma uma coisa: isso era pagamento de fatura ou compra no cartao?",
+        ]
+    )
+
+    async def _fake_mini_route(body: str, user_phone: str, in_mentor: bool):
+        return {"intent": "update_transaction", "action": "update_transaction", "params": {"category": "Outros"}}
+
+    async def _forbidden_execute(*_args, **_kwargs):
+        raise AssertionError("Nao deveria executar rota transacional quando a mensagem comeca com 'pri'")
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "_execute_intent", _forbidden_execute)
+    monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
+
+    result = await atlas.chat_endpoint(
+        user_phone=phone,
+        message="pri essa categoria outros e uma fatura da caixa de cartao que eu paguei",
+    )
+
+    content = result["content"].lower()
+    assert "classificacao errada" in content
+    assert "?" in result["content"]
+    assert len(stub_agent.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_structured_followup_handles_cheque_especial_answer_without_llm(atlas, monkeypatch):
     phone = "+5511944441111"
     atlas._save_mentor_state(
