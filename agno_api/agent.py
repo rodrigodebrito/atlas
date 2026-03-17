@@ -3118,16 +3118,14 @@ def get_transactions_by_merchant(
     expense_fmt = f"R${total_expense/100:,.2f}".replace(",", ".") if total_expense else ""
     income_fmt = f"R${total_income/100:,.2f}".replace(",", ".") if total_income else ""
 
-    lines = [
-        f"🔍 *{merchant_display}*{period}",
-        f"",
-    ]
+    lines = [f"🔍 *{merchant_display}*{period}", ""]
     if total_expense:
         lines.append(f"💸 *Gasto total:* {expense_fmt}  ({n} lançamento{'s' if n > 1 else ''})")
     if total_income:
         lines.append(f"💰 *Recebido:* {income_fmt}")
     lines.append(f"─────────────────────")
 
+    day_totals = {}
     for tx_type, cat, amt, merch, occurred in rows:
         try:
             d = occurred[:10]
@@ -3135,9 +3133,21 @@ def get_transactions_by_merchant(
             date_str = f"{day:02d}/{months_pt[m_num2]}"
         except Exception:
             date_str = occurred[:10]
+        if tx_type == "EXPENSE" and occurred:
+            day_key = occurred[:10]
+            day_totals[day_key] = day_totals.get(day_key, 0) + (amt or 0)
         icon = "💰" if tx_type == "INCOME" else "💸"
         amt_fmt = f"R${amt/100:,.2f}".replace(",", ".")
         lines.append(f"  {icon}  {amt_fmt}  —  {cat}  •  {date_str}")
+
+    if day_totals:
+        top_day, top_amount = max(day_totals.items(), key=lambda kv: kv[1])
+        try:
+            top_lbl = datetime.fromisoformat(top_day + "T12:00:00").strftime("%d/%m")
+        except Exception:
+            top_lbl = top_day
+        lines.append("")
+        lines.append(f"💡 *Insight:* o pico nesse estabelecimento foi em {top_lbl} ({_fmt_brl(top_amount)}).")
 
     return "\n".join(lines)
 
@@ -5017,10 +5027,11 @@ def get_spend_by_merchant_type(
 
     top_merchant = sorted(by_merchant.items(), key=lambda x: -x[1])[:3]
 
+    type_label, type_icon = _merchant_type_label(m_type)
     lines = [
-        f"🏪 *{user_name}, gasto com {m_type}* — {period_label}",
+        f"{type_icon} *{user_name}, gasto com {type_label.lower()}* — {period_label}",
         "",
-        f"💸 *Total:* {_fmt_brl(total)}",
+        f"💸 *Gasto total:* {_fmt_brl(total)}",
         f"🧾 *Compras:* {count}",
         f"📊 *Ticket médio:* {_fmt_brl(int(avg))}",
     ]
@@ -5093,6 +5104,10 @@ def get_spend_by_merchant_type(
         lines.append("🔎 *Onde mais pesou:*")
         for name, amt in top_merchant:
             lines.append(f"• {name}: {_fmt_brl(amt)}")
+    insight = _build_type_query_insight(total, count, top_merchant, m_type)
+    if insight:
+        lines.append("")
+        lines.append(insight)
     conn.close()
     return "\n".join(lines)
     today = _now_br()
@@ -11631,6 +11646,33 @@ def _normalize_merchant_type(value: str) -> str:
         "drogaria": "farmacia",
     }
     return aliases.get(v, v)
+
+
+def _merchant_type_label(m_type: str) -> tuple[str, str]:
+    normalized = _normalize_merchant_type(m_type)
+    mapping = {
+        "mercado": ("Mercado", "🛒"),
+        "restaurante": ("Restaurante", "🍽️"),
+        "farmacia": ("Farmácia", "💊"),
+        "transporte": ("Transporte", "🚗"),
+        "vestuario": ("Vestuário", "👟"),
+    }
+    return mapping.get(normalized, (normalized.title() or "Estabelecimento", "🏪"))
+
+
+def _build_type_query_insight(total: int, count: int, top_merchant: list[tuple[str, int]], m_type: str) -> str:
+    if count <= 0 or total <= 0:
+        return ""
+    avg = total / count
+    label, _ = _merchant_type_label(m_type)
+    top_name = top_merchant[0][0] if top_merchant else ""
+    top_val = top_merchant[0][1] if top_merchant else 0
+    concentration = (top_val / total * 100) if total else 0
+    if top_name and concentration >= 45:
+        return f"💡 *Insight:* {label} está bem concentrado em *{top_name}* ({concentration:.0f}% do total)."
+    if avg >= 10000:
+        return f"💡 *Insight:* ticket médio alto em {label.lower()} ({_fmt_brl(int(avg))}) — vale revisar frequência."
+    return f"💡 *Insight:* gasto distribuído em {label.lower()}, sem concentração extrema."
 
 
 def _extract_period_for_type_query(text: str) -> tuple[str, str]:
