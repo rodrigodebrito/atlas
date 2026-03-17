@@ -128,6 +128,25 @@ def _get_purchase_expense_total_for_month(cur, user_id: str, month: str) -> int:
     return row[0] or 0
 
 
+def _category_icon(category: str) -> str:
+    """Retorna emoji consistente por categoria (com/sem acento)."""
+    cat = _normalize_pt_text(category)
+    icon_map = {
+        "alimentacao": "\U0001F37D",
+        "transporte": "\U0001F697",
+        "moradia": "\U0001F3E0",
+        "saude": "\U0001F48A",
+        "lazer": "\U0001F3AE",
+        "assinaturas": "\U0001F4F1",
+        "educacao": "\U0001F4DA",
+        "vestuario": "\U0001F45F",
+        "pets": "\U0001F43E",
+        "investimento": "\U0001F4C8",
+        "outros": "\U0001F4E6",
+    }
+    return icon_map.get(cat, "\U0001F4E6")
+
+
 def _build_pri_transaction_intro(
     transaction_type: str,
     category: str,
@@ -135,28 +154,39 @@ def _build_pri_transaction_intro(
     installments: int = 1,
     card_name: str = "",
 ) -> str:
-    """Abre confirmações de lançamento com voz mais humana, sem mencionar a Pri."""
+    """Abre confirmacoes de lancamento com tom humano e objetivo."""
     merchant_l = _normalize_pt_text(merchant)
     category_l = _normalize_pt_text(category)
+    vibe = {
+        "alimentacao": "\U0001F955",
+        "transporte": "\U0001F697",
+        "moradia": "\U0001F3E0",
+        "saude": "\U0001FA7A",
+        "lazer": "\U0001F389",
+        "vestuario": "\U0001F389",
+        "outros": "\u2728",
+    }.get(category_l, "\u2728")
 
     if transaction_type == "INCOME":
         if category_l == "salario":
-            return "✨ Salário anotado por aqui. Esse é o tipo de mensagem que eu gosto de ver."
+            return "\u2728 Salario anotado por aqui."
         if category_l == "freelance":
-            return "✨ Freela anotado. Grana extra no radar."
-        return "✨ Entrada registrada por aqui."
+            return "\u2728 Freela registrado."
+        return "\u2728 Entrada registrada."
 
     if installments > 1:
-        return "✨ Parcelado registrado direitinho pra ele não se esconder nas próximas faturas."
+        if category_l == "vestuario":
+            return f"{vibe} Boa compra: parcelado organizado para nao baguncar as proximas faturas."
+        return f"{vibe} Parcelado registrado direitinho pra nao se esconder nas proximas faturas."
     if card_name:
-        return "✨ Compra no cartão anotada e já deixei claro em que fatura ela cai."
+        return f"{vibe} Compra no cartao anotada e com fatura mapeada."
     if category_l == "alimentacao" or any(k in merchant_l for k in ("padaria", "restaurante", "ifood", "mercado", "almoco")):
-        return "✨ Gasto guardado antes dele sumir no meio do dia."
+        return f"{vibe} Gasto guardado antes dele sumir no meio do dia."
     if category_l == "transporte":
-        return "✨ Deslocamento registrado sem deixar ele virar gasto invisível."
+        return f"{vibe} Deslocamento registrado sem deixar virar gasto invisivel."
     if category_l == "vestuario":
-        return "✨ Compra anotada pra ela não se camuflar no resto do mês."
-    return "✨ Anotei isso por aqui, do jeito certo."
+        return f"{vibe} Compra anotada pra nao camuflar no resto do mes."
+    return f"{vibe} Anotei isso por aqui, do jeito certo."
 
 
 def _build_pri_transaction_microcopy(
@@ -1131,13 +1161,6 @@ def save_transaction(
     }
 
     # Monta resposta WhatsApp formatada
-    category_icons = {
-        "Alimenta??o": "\U0001F37D", "Alimentacao": "\U0001F37D", "Transporte": "\U0001F697", "Moradia": "\U0001F3E0",
-        "Sa?de": "\U0001F48A", "Saude": "\U0001F48A", "Lazer": "\U0001F3AE", "Assinaturas": "\U0001F4F1",
-        "Educa??o": "\U0001F4DA", "Educacao": "\U0001F4DA", "Vestu?rio": "\U0001F45F", "Vestuario": "\U0001F45F",
-        "Pets": "\U0001F43E", "Investimento": "\U0001F4C8", "Outros": "\U0001F4E6",
-    }
-
     amt_fmt = _fmt_brl(amount_cents)
     merchant_label = merchant if merchant else "Sem descricao"
     lines = [
@@ -1170,7 +1193,7 @@ def save_transaction(
                 "",
                 f"\U0001F9FE Descricao: {merchant_label}",
                 f"\U0001F4B8 Valor: {amt_fmt}",
-                f"{category_icons.get(category, '\U0001F4E6')} Categoria: {category}",
+                f"{_category_icon(category)} Categoria: {category}",
                 f"\U0001F4C5 Data: {date_label}",
             ]
         )
@@ -1195,103 +1218,6 @@ def save_transaction(
         result += ask_closing
     if card_is_new and not ask_closing:
         result += f"\n_Cartao {card_display_name} criado automaticamente. Para rastrear a fatura, diga o fechamento e vencimento._"
-
-    # --- ALERTAS INTELIGENTES INLINE ---
-    if transaction_type == "EXPENSE":
-        try:
-            _alert_conn = _get_conn()
-            _alert_cur = _alert_conn.cursor()
-            alerts = _generate_inline_alerts(_alert_cur, user_id, user_phone, category, amount_cents)
-            _alert_conn.close()
-            if alerts:
-                result += "\n" + "\n".join(alerts)
-        except Exception:
-            pass
-
-    # --- PRIMEIRO GASTO / CONTEXTO LEVE ---
-    if transaction_type == "EXPENSE":
-        try:
-            _ctx_conn = _get_conn()
-            _ctx_cur = _ctx_conn.cursor()
-
-            # Total de gastos do usuário (pra saber se é o primeiro)
-            _ctx_cur.execute(
-                "SELECT COUNT(*) FROM transactions WHERE user_id = ? AND type = 'EXPENSE'",
-                (user_id,),
-            )
-            total_expenses = _ctx_cur.fetchone()[0]
-            _merchant_month_count = 0
-            if merchant:
-                _ctx_cur.execute(
-                    "SELECT COUNT(*) FROM transactions WHERE user_id = ? AND type = 'EXPENSE' AND UPPER(COALESCE(merchant, '')) = UPPER(?) AND occurred_at LIKE ?",
-                    (user_id, merchant, today_str[:7] + "%"),
-                )
-                _merchant_month_count = _ctx_cur.fetchone()[0] or 0
-            _ctx_cur.execute(
-                "SELECT COUNT(*), COALESCE(SUM(amount_cents), 0) FROM transactions "
-                "WHERE user_id = ? AND type = 'EXPENSE' AND occurred_at >= ? AND occurred_at <= ?",
-                (user_id, today_str, today_str + ' 23:59:59'),
-            )
-            day_count, day_total = _ctx_cur.fetchone()
-            _microcopy = _build_pri_transaction_microcopy(
-                transaction_type=transaction_type,
-                category=category,
-                merchant=merchant,
-                amount_cents=amount_cents,
-                total_amount_cents=total_amount_cents,
-                installments=installments,
-                card_name=card_name,
-                enters_next_bill=enters_next_bill,
-                merchant_month_count=_merchant_month_count,
-                day_count=day_count or 0,
-                day_total=day_total or 0,
-            )
-
-            if total_expenses == 1:
-                # Primeiro gasto de todos!
-                result += (
-                    "\n\n🎉 *Esse é seu primeiro gasto registrado!*"
-                    "\nA partir de agora, todo dia às 9h te mando um resumo do dia anterior."
-                    "\nContinua lançando — quanto mais registrar, melhor fico! 😊"
-                )
-                if _microcopy:
-                    result += f"\n{_microcopy}"
-            elif _microcopy:
-                result += f"\n{_microcopy}"
-
-            _ctx_conn.close()
-        except Exception:
-            pass
-
-    # --- ALERTA DE ORÇAMENTO POR CATEGORIA ---
-    if transaction_type == "EXPENSE" and category:
-        try:
-            _bconn = _get_conn()
-            _bcur = _bconn.cursor()
-            _bcur.execute(
-                "SELECT budget_cents FROM category_budgets WHERE user_id = ? AND category = ?",
-                (user_id, category),
-            )
-            _brow = _bcur.fetchone()
-            if _brow and _brow[0] > 0:
-                _budget = _brow[0]
-                _bmonth = today_str[:7]
-                _bcur.execute(
-                    "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions "
-                    "WHERE user_id = ? AND type = 'EXPENSE' AND category = ? AND occurred_at LIKE ?",
-                    (user_id, category, _bmonth + "%"),
-                )
-                _cat_spent = _bcur.fetchone()[0] or 0
-                _pct = round(_cat_spent / _budget * 100)
-                if _cat_spent > _budget:
-                    _over = _cat_spent - _budget
-                    result += f"\n🚨 *{category}* estourou o limite! {_fmt_brl(_cat_spent)} de {_fmt_brl(_budget)} ({_pct}%)"
-                elif _pct >= 80:
-                    _left = _budget - _cat_spent
-                    result += f"\n⚠️ *{category}* em {_pct}% do limite — restam {_fmt_brl(_left)}"
-            _bconn.close()
-        except Exception:
-            pass
 
     # --- AUTO-MATCH: marca bill como pago se transação bate ---
     if transaction_type == "EXPENSE" and merchant:
@@ -10886,14 +10812,6 @@ def _parse_batch_expenses(raw_body: str) -> list[tuple[float, str]] | None:
 def _build_pri_batch_expense_response(user_phone: str, user_id: str, saved_items: list[dict]) -> str:
     """Monta uma unica confirmacao estruturada para varios gastos."""
     lines = [_build_pri_batch_transaction_intro(saved_items), "", "\U0001F4DC *Resumo da despesa:*", ""]
-
-    category_icons = {
-        "Alimenta??o": "\U0001F37D", "Alimentacao": "\U0001F37D", "Transporte": "\U0001F697", "Moradia": "\U0001F3E0",
-        "Sa?de": "\U0001F48A", "Saude": "\U0001F48A", "Lazer": "\U0001F3AE", "Assinaturas": "\U0001F4F1",
-        "Educa??o": "\U0001F4DA", "Educacao": "\U0001F4DA", "Vestu?rio": "\U0001F45F", "Vestuario": "\U0001F45F",
-        "Pets": "\U0001F43E", "Investimento": "\U0001F4C8", "Outros": "\U0001F4E6",
-    }
-
     for index, item in enumerate(saved_items):
         amount_fmt = _fmt_brl(int(item["amount_cents"]))
         category = str(item["category"]).strip()
@@ -10905,7 +10823,7 @@ def _build_pri_batch_expense_response(user_phone: str, user_id: str, saved_items
 
         lines.append(f"\U0001F9FE Descricao: {merchant}")
         lines.append(f"\U0001F4B8 Valor: {amount_fmt}")
-        lines.append(f"{category_icons.get(category, '\U0001F4E6')} Categoria: {category}")
+        lines.append(f"{_category_icon(category)} Categoria: {category}")
         lines.append(f"\U0001F4C5 Data: {item['date_label']}")
         if card_name:
             if installments > 1:
