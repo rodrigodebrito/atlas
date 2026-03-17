@@ -1841,6 +1841,70 @@ async def test_chat_endpoint_hard_routes_month_category_before_mini_router(atlas
     assert "total" in content
 
 
+def test_pr5_category_breakdown_shows_safe_compare_without_previous_base(atlas):
+    phone = "+5511911119991"
+    user_id = f"user_{uuid.uuid4().hex}"
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, merchant_raw, merchant_canonical, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 4200, 'Alimentação', 'Restaurante Talentos', 'Restaurante Talentos', 'talentos', ?)""",
+            (str(uuid.uuid4()), user_id, f"{month}-11T12:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = atlas._call(atlas.get_category_breakdown, phone, "Alimentação", month)
+    normalized = atlas._normalize_pt_text(result)
+    assert "ticket medio" in normalized
+    assert "sem base suficiente para comparar" in normalized
+
+
+def test_pr5_category_breakdown_compares_when_previous_month_exists(atlas):
+    phone = "+5511911119992"
+    user_id = f"user_{uuid.uuid4().hex}"
+    now = atlas._now_br()
+    month = now.strftime("%Y-%m")
+    prev_y, prev_m = atlas._shift_year_month(now.year, now.month, -1)
+    prev_month = f"{prev_y}-{prev_m:02d}"
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, merchant_raw, merchant_canonical, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 6000, 'Alimentação', 'Restaurante Talentos', 'Restaurante Talentos', 'talentos', ?)""",
+            (str(uuid.uuid4()), user_id, f"{month}-11T12:00:00"),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, merchant_raw, merchant_canonical, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 3000, 'Alimentação', 'Restaurante Talentos', 'Restaurante Talentos', 'talentos', ?)""",
+            (str(uuid.uuid4()), user_id, f"{prev_month}-11T12:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = atlas._call(atlas.get_category_breakdown, phone, "Alimentação", month)
+    normalized = atlas._normalize_pt_text(result)
+    assert "vs" in normalized
+
+
 def test_pr3_get_spend_by_merchant_type_month(atlas):
     phone = "+5511911116666"
     user_id = f"user_{uuid.uuid4().hex}"

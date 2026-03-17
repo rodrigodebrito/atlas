@@ -2772,10 +2772,7 @@ def get_transactions(user_phone: str, date: str = "", month: str = "") -> str:
 @tool
 def get_category_breakdown(user_phone: str, category: str, month: str = "") -> str:
     """
-    Mostra todas as transações de uma categoria específica com detalhe de merchant.
-    Responde perguntas como "onde gastei em Alimentação?", "quais restaurantes fui esse mês?"
-    category: ex. "Alimentação", "Transporte", "Saúde"
-    month: YYYY-MM (padrão = mês atual)
+    Mostra gastos de uma categoria no mês com visão executiva.
     """
     if not month:
         month = _now_br().strftime("%Y-%m")
@@ -2783,29 +2780,29 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
     conn = _get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT id FROM users WHERE phone = ?", (user_phone,))
+    cur.execute("SELECT id, name FROM users WHERE phone = ?", (user_phone,))
     row = cur.fetchone()
     if not row:
         conn.close()
         return f"Nenhuma transação em {category}."
-    user_id = row[0]
+    user_id, user_name = row[0], row[1]
 
-    # individual transactions
     cur.execute(
-        """SELECT merchant, amount_cents, occurred_at
+        """SELECT merchant, merchant_canonical, amount_cents, occurred_at
            FROM transactions
            WHERE user_id = ? AND type = 'EXPENSE' AND category = ? AND occurred_at LIKE ?
            ORDER BY occurred_at DESC""",
         (user_id, category, f"{month}%"),
     )
-    rows = cur.fetchall()
-    conn.close()
+    rows = cur.fetchall() or []
 
     if not rows:
+        conn.close()
         return f"Nenhuma transação em {category} em {month}."
 
-    total = sum(r[1] for r in rows)
-    total_fmt = f"R${total/100:,.2f}".replace(",", ".")
+    total = sum((r[2] or 0) for r in rows)
+    count = len(rows)
+    avg = total / count if count else 0
 
     months_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
                  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
@@ -2815,30 +2812,73 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
     except Exception:
         month_label = month
 
+    merchants: dict[str, int] = {}
+    for merchant, canonical, amount, _ in rows:
+        key = (canonical or merchant or "Sem nome").strip() or "Sem nome"
+        merchants[key] = merchants.get(key, 0) + (amount or 0)
+    top_merchants = sorted(merchants.items(), key=lambda x: -x[1])[:6]
+
+    # comparação segura com mês anterior
+    compare_total = 0
+    compare_count = 0
+    compare_label = ""
+    try:
+        curr_y, curr_m = map(int, month.split("-"))
+        prev_m = curr_m - 1
+        prev_y = curr_y
+        if prev_m == 0:
+            prev_m = 12
+            prev_y -= 1
+        prev_month = f"{prev_y}-{prev_m:02d}"
+        cur.execute(
+            """SELECT COALESCE(SUM(amount_cents), 0), COUNT(*)
+               FROM transactions
+               WHERE user_id = ? AND type = 'EXPENSE' AND category = ? AND occurred_at LIKE ?""",
+            (user_id, category, f"{prev_month}%"),
+        )
+        prev_row = cur.fetchone() or (0, 0)
+        compare_total = int(prev_row[0] or 0)
+        compare_count = int(prev_row[1] or 0)
+        compare_label = f"{months_pt[prev_m]}/{prev_y}"
+    except Exception:
+        compare_total = 0
+        compare_count = 0
+        compare_label = ""
+
+    conn.close()
+
     lines = [
-        f"📂 *{category} — {month_label}*",
-        f"",
-        f"💰 *Total:* {total_fmt}  ({len(rows)} transações)",
-        f"─────────────────────",
+        f"📂 *{user_name}, {category} — {month_label}*",
+        "",
+        f"💸 *Total:* {_fmt_brl(total)}",
+        f"🧾 *Transações:* {count}",
+        f"📊 *Ticket médio:* {_fmt_brl(int(avg))}",
     ]
 
-    # group by merchant
-    merchants: dict[str, int] = {}
-    for merchant, amount, _ in rows:
-        key = merchant or "Sem nome"
-        merchants[key] = merchants.get(key, 0) + amount
-
-    for m, amt in sorted(merchants.items(), key=lambda x: -x[1]):
-        pct = amt / total * 100
-        amt_fmt = f"R${amt/100:,.2f}".replace(",", ".")
-        bar_filled = round(pct / 5)
-        bar = "▓" * bar_filled + "░" * (20 - bar_filled)
-        lines.append(f"  *{m}*  —  {amt_fmt}  ({pct:.0f}%)")
-        lines.append(f"  {bar}")
+    if compare_label and compare_count > 0 and compare_total > 0:
+        delta = total - compare_total
+        delta_pct = (delta / compare_total) * 100.0
+        trend = "subiu" if delta > 0 else "caiu"
+        lines.append(f"📉 *Vs {compare_label}:* {trend} {_fmt_brl(abs(int(delta)))} ({abs(delta_pct):.0f}%)")
+    elif compare_label:
+        lines.append(f"📎 *Sem base suficiente para comparar com {compare_label}*")
 
     lines.append("")
-    lines.append(f"_Quer detalhar? \"gastos no [nome]\"_")
+    lines.append("🔎 *Onde mais pesou:*")
+    for name, amt in top_merchants:
+        pct = (amt / total * 100.0) if total else 0
+        lines.append(f"• {name}: {_fmt_brl(amt)} ({pct:.0f}%)")
 
+    if top_merchants:
+        top_name, top_amt = top_merchants[0]
+        conc = (top_amt / total * 100.0) if total else 0
+        lines.append("")
+        if conc >= 45:
+            lines.append(f"💡 *Insight:* {category} está concentrado em *{top_name}* ({conc:.0f}% da categoria).")
+        else:
+            lines.append(f"💡 *Insight:* {category} está distribuído; maior peso em *{top_name}* ({conc:.0f}%).")
+
+    lines.append("_Quer abrir um estabelecimento? ex.: \"quanto gastei no deville\"_")
     return "\n".join(lines)
 
 
