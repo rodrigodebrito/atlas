@@ -203,21 +203,21 @@ def _build_pri_transaction_microcopy(
 
 def _build_pri_batch_transaction_intro(items: list[dict]) -> str:
     """Abertura curta e humana para confirmacao de varios gastos de uma vez."""
+    sparkle = "\u2728"
     if not items:
-        return "Confirmei suas despesas e aqui esta o que foi registrado:"
+        return f"{sparkle} Confirmei suas despesas e aqui esta o que foi registrado:"
 
     categories = [str(item.get("category") or "") for item in items]
     normalized_categories = [_normalize_pt_text(cat) for cat in categories]
     total_cents = sum(int(item.get("amount_cents") or 0) for item in items)
 
     if normalized_categories and all(cat == "alimentacao" for cat in normalized_categories):
-        return f"Confirmei suas despesas de alimentacao. Total desta rodada: {_fmt_brl(total_cents)}."
+        return f"{sparkle} Confirmei suas despesas de alimentacao. Total desta rodada: {_fmt_brl(total_cents)}."
 
     if any(item.get("card_name") for item in items):
-        return "Confirmei suas compras e aqui esta o que foi registrado:"
+        return f"{sparkle} Confirmei suas compras e aqui esta o que foi registrado:"
 
-    return "Confirmei suas despesas e aqui esta o que foi registrado:"
-
+    return f"{sparkle} Confirmei suas despesas e aqui esta o que foi registrado:"
 
 
 def _build_pri_month_quick_closure(
@@ -1132,10 +1132,10 @@ def save_transaction(
 
     # Monta resposta WhatsApp formatada
     category_icons = {
-        "Alimenta??o": "???", "Alimentacao": "???", "Transporte": "??", "Moradia": "??",
-        "Sa?de": "??", "Saude": "??", "Lazer": "??", "Assinaturas": "??",
-        "Educa??o": "??", "Educacao": "??", "Vestu?rio": "??", "Vestuario": "??",
-        "Pets": "??", "Investimento": "??", "Outros": "??",
+        "Alimenta??o": "\U0001F37D", "Alimentacao": "\U0001F37D", "Transporte": "\U0001F697", "Moradia": "\U0001F3E0",
+        "Sa?de": "\U0001F48A", "Saude": "\U0001F48A", "Lazer": "\U0001F3AE", "Assinaturas": "\U0001F4F1",
+        "Educa??o": "\U0001F4DA", "Educacao": "\U0001F4DA", "Vestu?rio": "\U0001F45F", "Vestuario": "\U0001F45F",
+        "Pets": "\U0001F43E", "Investimento": "\U0001F4C8", "Outros": "\U0001F4E6",
     }
 
     amt_fmt = _fmt_brl(amount_cents)
@@ -1154,38 +1154,38 @@ def save_transaction(
     if transaction_type == "INCOME":
         lines.extend(
             [
-                "?? *Resumo da entrada:*",
+                "\U0001F4DC *Resumo da entrada:*",
                 "",
-                f"?? Descricao: {merchant_label}",
-                f"?? Valor: {amt_fmt}",
-                f"?? Categoria: {category}",
-                f"?? Data: {date_label}",
-                "? Status: recebido",
+                f"\U0001F9FE Descricao: {merchant_label}",
+                f"\U0001F4B8 Valor: {amt_fmt}",
+                f"\U0001F4BC Categoria: {category}",
+                f"\U0001F4C5 Data: {date_label}",
+                "\u2705 Status: recebido",
             ]
         )
     else:
         lines.extend(
             [
-                "?? *Resumo da despesa:*",
+                "\U0001F4DC *Resumo da despesa:*",
                 "",
-                f"?? Descricao: {merchant_label}",
-                f"?? Valor: {amt_fmt}",
-                f"{category_icons.get(category, '??')} Categoria: {category}",
-                f"?? Data: {date_label}",
+                f"\U0001F9FE Descricao: {merchant_label}",
+                f"\U0001F4B8 Valor: {amt_fmt}",
+                f"{category_icons.get(category, '\U0001F4E6')} Categoria: {category}",
+                f"\U0001F4C5 Data: {date_label}",
             ]
         )
         if card_name:
             if installments > 1:
-                lines.append(f"?? Compra: {card_display_name} ? {installments}x de {amt_fmt}")
+                lines.append(f"\U0001F4B3 Compra: {card_display_name} \u2022 {installments}x de {amt_fmt}")
                 if total_amount_cents > 0:
-                    lines.append(f"?? Total da compra: {_fmt_brl(total_amount_cents)}")
+                    lines.append(f"\U0001F9EE Total da compra: {_fmt_brl(total_amount_cents)}")
             else:
-                lines.append(f"?? Compra: {card_display_name} ? 1x")
+                lines.append(f"\U0001F4B3 Compra: {card_display_name} \u2022 1x")
             if next_bill_warning:
-                lines.append(f"?? {next_bill_warning.replace('*', '').strip()}")
-            lines.append("?? Status: a pagar")
+                lines.append(f"\U0001F4C2 {next_bill_warning.replace('*', '').strip()}")
+            lines.append("\U0001F552 Status: a pagar")
         else:
-            lines.append("? Status: pago")
+            lines.append("\u2705 Status: pago")
 
     result = "\n".join(lines)
 
@@ -10885,13 +10885,13 @@ def _parse_batch_expenses(raw_body: str) -> list[tuple[float, str]] | None:
 
 def _build_pri_batch_expense_response(user_phone: str, user_id: str, saved_items: list[dict]) -> str:
     """Monta uma unica confirmacao estruturada para varios gastos."""
-    lines = [f"? {_build_pri_batch_transaction_intro(saved_items)}", "", "?? *Resumo da despesa:*", ""]
+    lines = [_build_pri_batch_transaction_intro(saved_items), "", "\U0001F4DC *Resumo da despesa:*", ""]
 
     category_icons = {
-        "Alimenta??o": "???", "Alimentacao": "???", "Transporte": "??", "Moradia": "??",
-        "Sa?de": "??", "Saude": "??", "Lazer": "??", "Assinaturas": "??",
-        "Educa??o": "??", "Educacao": "??", "Vestu?rio": "??", "Vestuario": "??",
-        "Pets": "??", "Investimento": "??", "Outros": "??",
+        "Alimenta??o": "\U0001F37D", "Alimentacao": "\U0001F37D", "Transporte": "\U0001F697", "Moradia": "\U0001F3E0",
+        "Sa?de": "\U0001F48A", "Saude": "\U0001F48A", "Lazer": "\U0001F3AE", "Assinaturas": "\U0001F4F1",
+        "Educa??o": "\U0001F4DA", "Educacao": "\U0001F4DA", "Vestu?rio": "\U0001F45F", "Vestuario": "\U0001F45F",
+        "Pets": "\U0001F43E", "Investimento": "\U0001F4C8", "Outros": "\U0001F4E6",
     }
 
     for index, item in enumerate(saved_items):
@@ -10903,27 +10903,27 @@ def _build_pri_batch_expense_response(user_phone: str, user_id: str, saved_items
         total_amount_cents = int(item.get("total_amount_cents") or 0)
         next_bill_warning = str(item.get("next_bill_warning") or "").replace("*", "").strip()
 
-        lines.append(f"?? Descricao: {merchant}")
-        lines.append(f"?? Valor: {amount_fmt}")
-        lines.append(f"{category_icons.get(category, '??')} Categoria: {category}")
-        lines.append(f"?? Data: {item['date_label']}")
+        lines.append(f"\U0001F9FE Descricao: {merchant}")
+        lines.append(f"\U0001F4B8 Valor: {amount_fmt}")
+        lines.append(f"{category_icons.get(category, '\U0001F4E6')} Categoria: {category}")
+        lines.append(f"\U0001F4C5 Data: {item['date_label']}")
         if card_name:
             if installments > 1:
-                lines.append(f"?? Compra: {card_name} ? {installments}x de {amount_fmt}")
+                lines.append(f"\U0001F4B3 Compra: {card_name} \u2022 {installments}x de {amount_fmt}")
                 if total_amount_cents > 0:
-                    lines.append(f"?? Total da compra: {_fmt_brl(total_amount_cents)}")
+                    lines.append(f"\U0001F9EE Total da compra: {_fmt_brl(total_amount_cents)}")
             else:
-                lines.append(f"?? Compra: {card_name} ? 1x")
+                lines.append(f"\U0001F4B3 Compra: {card_name} \u2022 1x")
             if next_bill_warning:
-                lines.append(f"?? {next_bill_warning}")
-            lines.append("?? Status: a pagar")
+                lines.append(f"\U0001F4C2 {next_bill_warning}")
+            lines.append("\U0001F552 Status: a pagar")
         else:
-            lines.append("? Status: pago")
+            lines.append("\u2705 Status: pago")
         if index < len(saved_items) - 1:
             lines.append("")
 
     month_total = sum(int(item["amount_cents"]) for item in saved_items)
-    lines.extend(["", f"?? *Total lan?ado agora:* {_fmt_brl(month_total)}", "_Errou? Digite *painel* pra editar ou apagar_"])
+    lines.extend(["", f"\U0001F4B0 *Total lancado agora:* {_fmt_brl(month_total)}", "_Errou? Digite *painel* pra editar ou apagar_"])
     return "\n".join(line for line in lines if line is not None).strip()
 
 
