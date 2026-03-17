@@ -1493,3 +1493,33 @@ def test_agent_runs_shortcut_groups_multi_expense_before_agent(atlas):
     assert "Total lançado agora" in payload["content"]
 
 
+@pytest.mark.asyncio
+async def test_chat_endpoint_groups_multi_expense_before_router(atlas, monkeypatch):
+    phone = "+5511988887766"
+    user_id = f"user_{uuid.uuid4().hex}"
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    async def _should_not_route(*_args, **_kwargs):
+        raise AssertionError("mini-router não deveria rodar para lote claro de gastos")
+
+    monkeypatch.setattr(atlas, "_mini_route", _should_not_route)
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="gastei 35 na padaria e 22 no almoço")
+
+    assert result["routed"] is True
+    assert "R$35,00" in result["content"]
+    assert "R$22,00" in result["content"]
+    assert "Total lançado agora" in result["content"]
+    assert result["content"].count("Errou?") == 1
+
+

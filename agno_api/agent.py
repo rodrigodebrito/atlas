@@ -12522,6 +12522,14 @@ async def chat_endpoint(
             _touch_mentor_state(user_phone)
         return {"content": _strip_whatsapp_bold(_panel_url_response(user_phone)), "routed": True}
 
+    # 4c. Lote claro de gastos deve ser resolvido antes do mini-router.
+    # Isso evita cair no fluxo legado que concatena confirmações separadas.
+    _multi = _multi_expense_extract(user_phone, body)
+    if _multi:
+        if _in_mentor_session:
+            _touch_mentor_state(user_phone)
+        return {"content": _strip_whatsapp_bold(_multi["response"]), "routed": True}
+
     # 5. Mini-router (gpt-5-mini, ~200ms)
     _route = await _mini_route(body, user_phone, _in_mentor_session)
     _rt_logger.warning(f"[MINI_ROUTE] phone={user_phone} result={_route} body={body[:80]}")
