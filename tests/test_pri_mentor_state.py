@@ -436,6 +436,45 @@ def test_save_transaction_card_purchase_mentions_next_bill_queue(atlas):
     assert "proxima fatura" in normalized
 
 
+def test_save_transaction_installments_returns_spaced_blocks_with_statuses(atlas):
+    phone = "+5511944400019"
+    user_id = f"user_{uuid.uuid4().hex}"
+    card_id = f"card_{uuid.uuid4().hex}"
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 300000),
+        )
+        cur.execute(
+            "INSERT INTO credit_cards (id, user_id, name, closing_day, due_day) VALUES (?, ?, ?, ?, ?)",
+            (card_id, user_id, "Caixa", 5, 16),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = atlas.save_transaction.entrypoint(
+        user_phone=phone,
+        transaction_type="EXPENSE",
+        amount=100,
+        total_amount=300,
+        installments=3,
+        category="Vestuario",
+        merchant="tenis",
+        card_name="Caixa",
+    )
+
+    normalized = atlas._normalize_pt_text(response)
+    assert "resumo das transacoes" in normalized
+    assert normalized.count("descricao: tenis parcelado") == 3
+    assert "compra: caixa" in normalized and "3x" in normalized
+    assert "status: pago" in normalized
+    assert "status: a pagar" in normalized
+
+
 def test_save_transaction_repeated_merchant_does_not_add_pattern_microcopy(atlas):
     phone = "+5511944400003"
     user_id = f"user_{uuid.uuid4().hex}"

@@ -1187,28 +1187,50 @@ def save_transaction(
             ]
         )
     else:
-        lines.extend(
-            [
-                "\U0001F4DC *Resumo da despesa:*",
-                "",
-                f"\U0001F9FE Descricao: {merchant_label}",
-                f"\U0001F4B8 Valor: {amt_fmt}",
-                f"{_category_icon(category)} Categoria: {category}",
-                f"\U0001F4C5 Data: {date_label}",
-            ]
-        )
-        if card_name:
-            if installments > 1:
-                lines.append(f"\U0001F4B3 Compra: {card_display_name} \u2022 {installments}x de {amt_fmt}")
-                if total_amount_cents > 0:
-                    lines.append(f"\U0001F9EE Total da compra: {_fmt_brl(total_amount_cents)}")
-            else:
-                lines.append(f"\U0001F4B3 Compra: {card_display_name} \u2022 1x")
+        if card_name and installments > 1:
+            # Exibe parcelado em blocos por parcela, mais legível no WhatsApp.
+            lines.extend(["\U0001F4DC *Resumo das transacoes:*", ""])
+            parcel_total = total_amount_cents if total_amount_cents > 0 else amount_cents * installments
+            def _shift_month(y: int, m: int, n: int = 0) -> tuple[int, int]:
+                m_idx = (m - 1) + n
+                return y + (m_idx // 12), (m_idx % 12) + 1
+            for i in range(1, installments + 1):
+                y_i, m_i = _shift_month(base_dt.year, base_dt.month, i - 1)
+                day = min(base_dt.day, calendar.monthrange(y_i, m_i)[1])
+                parcel_date = f"{day:02d}/{m_i:02d}/{y_i}"
+                status = "Pago" if i == 1 else "A pagar"
+                lines.extend(
+                    [
+                        f"{_category_icon(category)} Descricao: {merchant_label} parcelado",
+                        f"\U0001F4B8 Valor: {amt_fmt}",
+                        f"{_category_icon(category)} Categoria: {category}",
+                        f"\U0001F4C5 Data: {parcel_date}",
+                        f"\U0001F552 Status: {status}",
+                        "",
+                    ]
+                )
+            lines.append(f"\U0001F4B3 Compra: {card_display_name} \u2022 {installments}x")
+            lines.append(f"\U0001F9EE Total da compra: {_fmt_brl(parcel_total)}")
             if next_bill_warning:
-                lines.append(f"\U0001F4C2 {next_bill_warning.replace('*', '').strip()}")
-            lines.append("\U0001F552 Status: a pagar")
+                lines.append(next_bill_warning.replace("*", "").strip())
         else:
-            lines.append("\u2705 Status: pago")
+            lines.extend(
+                [
+                    "\U0001F4DC *Resumo da despesa:*",
+                    "",
+                    f"\U0001F9FE Descricao: {merchant_label}",
+                    f"\U0001F4B8 Valor: {amt_fmt}",
+                    f"{_category_icon(category)} Categoria: {category}",
+                    f"\U0001F4C5 Data: {date_label}",
+                ]
+            )
+            if card_name:
+                lines.append(f"\U0001F4B3 Compra: {card_display_name} \u2022 1x")
+                if next_bill_warning:
+                    lines.append(f"\U0001F4C2 {next_bill_warning.replace('*', '').strip()}")
+                lines.append("\U0001F552 Status: a pagar")
+            else:
+                lines.append("\u2705 Status: pago")
 
     result = "\n".join(lines)
 
