@@ -11798,12 +11798,11 @@ def _sanitize_outbound_text(text: str) -> str:
 
 
 def _extract_repeated_save_blocks(text: str) -> list[dict]:
-    """Detecta múltiplas confirmações de save_transaction concatenadas na mesma resposta."""
+    """Detecta multiplas confirmacoes de save_transaction concatenadas na mesma resposta."""
     if not text:
         return []
 
-    normalized = text.replace("\r\n", "\n").strip()
-    normalized = normalized.replace("**", "*")
+    normalized = text.replace("\r\n", "\n").strip().replace("**", "*")
     error_re = _re_router.compile(
         r"_?Errou\?\s+Digite\s+\*?painel\*?\s+pra editar ou apagar_?",
         _re_router.IGNORECASE,
@@ -11813,7 +11812,16 @@ def _extract_repeated_save_blocks(text: str) -> list[dict]:
 
     for segment in segments:
         lines = [line.strip() for line in segment.split("\n") if line.strip()]
-        item_line = next((line for line in lines if line.startswith("✅")), "")
+        item_line = next(
+            (
+                line
+                for line in lines
+                if line.startswith("?")
+                or line.startswith("??")
+                or _re_router.search(r"R\$\s*[0-9]+(?:[.,][0-9]{2})?", line)
+            ),
+            "",
+        )
         if not item_line:
             continue
 
@@ -11822,13 +11830,17 @@ def _extract_repeated_save_blocks(text: str) -> list[dict]:
             continue
 
         raw_amount = amount_match.group(1)
-        amount = float(raw_amount.replace(".", "").replace(",", ".")) if "," in raw_amount and "." in raw_amount else float(raw_amount.replace(",", "."))
+        amount = (
+            float(raw_amount.replace(".", "").replace(",", "."))
+            if "," in raw_amount and "." in raw_amount
+            else float(raw_amount.replace(",", "."))
+        )
 
         item_idx = lines.index(item_line)
         detail_line = ""
         extras: list[str] = []
         for line in lines[item_idx + 1:]:
-            if line.startswith("✨"):
+            if line.startswith("?"):
                 continue
             if not detail_line:
                 detail_line = line
@@ -11851,7 +11863,7 @@ def _extract_repeated_save_blocks(text: str) -> list[dict]:
 
 
 def _compact_repeated_save_response(text: str) -> str:
-    """Agrupa saves concatenados em um único bloco visual."""
+    """Agrupa saves concatenados em um unico bloco visual."""
     blocks = _extract_repeated_save_blocks(text)
     if not blocks:
         return text
