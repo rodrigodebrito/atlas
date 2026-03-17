@@ -135,6 +135,9 @@ def _merchant_key(raw: str) -> str:
 
 def _infer_merchant_type(merchant_raw: str, merchant_canonical: str, category: str) -> str:
     text = f"{_normalize_pt_text(merchant_raw)} {_normalize_pt_text(merchant_canonical)} {_normalize_pt_text(category)}"
+    # E-commerce deve vir antes de "mercado" para evitar falso positivo (ex.: Mercado Livre)
+    if any(k in text for k in ("mercado livre", "amazon", "shopee", "aliexpress", "magalu", "kabum", "shein", "enjoei")):
+        return "ecommerce"
     if any(k in text for k in ("mercado", "supermercado", "hortifruti", "atacadao")):
         return "mercado"
     if any(k in text for k in ("restaurante", "ifood", "delivery", "lanchonete", "almoco", "janta")):
@@ -2331,8 +2334,8 @@ def set_merchant_alias(user_phone: str, alias: str, canonical: str, merchant_typ
 @tool(description="Define tipo de estabelecimento para um merchant (mercado/restaurante/farmacia/transporte/vestuario).")
 def set_merchant_type(user_phone: str, merchant_query: str, merchant_type: str) -> str:
     m_type = _normalize_merchant_type(merchant_type)
-    if m_type not in {"mercado", "restaurante", "farmacia", "transporte", "vestuario"}:
-        return "ERRO: tipo inválido. Use mercado, restaurante, farmacia, transporte ou vestuario."
+    if m_type not in {"mercado", "restaurante", "farmacia", "transporte", "vestuario", "ecommerce"}:
+        return "ERRO: tipo inválido. Use mercado, restaurante, farmacia, transporte, vestuario ou ecommerce."
     conn = _get_conn()
     cur = conn.cursor()
     user_id = _get_user_id(cur, user_phone)
@@ -5063,7 +5066,7 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     return "\n".join(lines)
 
 
-@tool(description="Total gasto por tipo de estabelecimento (mercado/restaurante/farmacia/transporte/vestuario). period=today|yesterday|last7|week|month. month=YYYY-MM quando period=month.")
+@tool(description="Total gasto por tipo de estabelecimento (mercado/restaurante/farmacia/transporte/vestuario/ecommerce). period=today|yesterday|last7|week|month. month=YYYY-MM quando period=month.")
 def get_spend_by_merchant_type(
     user_phone: str,
     merchant_type: str,
@@ -5081,10 +5084,10 @@ def get_spend_by_merchant_type(
     user_id, user_name = row[0], row[1]
 
     m_type = _normalize_merchant_type(merchant_type)
-    valid_types = {"mercado", "restaurante", "farmacia", "transporte", "vestuario"}
+    valid_types = {"mercado", "restaurante", "farmacia", "transporte", "vestuario", "ecommerce"}
     if m_type not in valid_types:
         conn.close()
-        return "Tipo de estabelecimento inválido. Use: mercado, restaurante, farmacia, transporte ou vestuario."
+        return "Tipo de estabelecimento inválido. Use: mercado, restaurante, farmacia, transporte, vestuario ou ecommerce."
 
     now = _now_br()
     period_key = (period or "month").strip().lower()
@@ -5138,8 +5141,12 @@ def get_spend_by_merchant_type(
         filtered = []
         for merchant, merchant_raw, merchant_canonical, stored_type, category, amount_cents, occurred_at in source_rows:
             tx_type = _normalize_merchant_type(stored_type)
+            inferred_type = _infer_merchant_type(merchant_raw or merchant or "", merchant_canonical or "", category or "")
             if not tx_type:
-                tx_type = _infer_merchant_type(merchant_raw or merchant or "", merchant_canonical or "", category or "")
+                tx_type = inferred_type
+            # Correção defensiva para histórico antigo classificado errado como "mercado".
+            if tx_type == "mercado" and inferred_type == "ecommerce":
+                tx_type = "ecommerce"
             if tx_type == m_type:
                 filtered.append((merchant, merchant_canonical, amount_cents, occurred_at))
         return filtered
@@ -11759,6 +11766,7 @@ def _extract_category_from_text(text: str) -> str:
 def _extract_merchant_type_from_text(text: str) -> str:
     body = _normalize_pt_text(text or "")
     mapping = {
+        "ecommerce": ["ecommerce", "e-commerce", "compra online", "compras online", "marketplace", "mercado livre", "amazon", "shopee", "aliexpress", "magalu", "kabum", "shein"],
         "mercado": ["mercado", "supermercado", "hortifruti", "atacadao"],
         "restaurante": ["restaurante", "ifood", "delivery", "lanchonete", "almoco", "janta"],
         "farmacia": ["farmacia", "drogaria", "remedio"],
@@ -11778,6 +11786,10 @@ def _normalize_merchant_type(value: str) -> str:
         "mercados": "mercado",
         "restaurantes": "restaurante",
         "drogaria": "farmacia",
+        "marketplace": "ecommerce",
+        "compra online": "ecommerce",
+        "compras online": "ecommerce",
+        "e-commerce": "ecommerce",
     }
     return aliases.get(v, v)
 
@@ -11785,6 +11797,7 @@ def _normalize_merchant_type(value: str) -> str:
 def _merchant_type_label(m_type: str) -> tuple[str, str]:
     normalized = _normalize_merchant_type(m_type)
     mapping = {
+        "ecommerce": ("E-commerce", "🛒"),
         "mercado": ("Mercado", "🛒"),
         "restaurante": ("Restaurante", "🍽️"),
         "farmacia": ("Farmácia", "💊"),
@@ -11868,7 +11881,7 @@ def _parse_alias_mapping_command(text: str) -> tuple[str, str] | None:
 def _parse_merchant_type_command(text: str) -> tuple[str, str] | None:
     body = _normalize_pt_text(text or "")
     # "talentos e restaurante"
-    m = _re_router.search(r"(.+?)\s+e\s+(mercado|restaurante|farmacia|transporte|vestuario)$", body)
+    m = _re_router.search(r"(.+?)\s+e\s+(mercado|restaurante|farmacia|transporte|vestuario|ecommerce)$", body)
     if not m:
         return None
     merchant = (m.group(1) or "").strip(" .,!?:;")

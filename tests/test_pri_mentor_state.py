@@ -2236,3 +2236,43 @@ async def test_pr9_feature_flag_off_falls_back_to_category_query(atlas, monkeypa
     assert "alimentacao" in content
 
 
+def test_infer_merchant_type_marketplace_is_ecommerce(atlas):
+    inferred = atlas._infer_merchant_type("Mercado Livre", "mercado livre", "Outros")
+    assert inferred == "ecommerce"
+
+
+def test_market_query_excludes_mercado_livre_even_if_legacy_tagged_mercado(atlas):
+    phone = "+5511911118895"
+    user_id = f"user_{uuid.uuid4().hex}"
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        # Histórico antigo, classificado errado como mercado (deve ser excluído da consulta de mercado)
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, merchant_type, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 243600, 'Outros', 'Mercado Livre', 'mercado', ?)""",
+            (str(uuid.uuid4()), user_id, f"{month}-06T12:00:00"),
+        )
+        # Mercado real
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, merchant_type, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 6541, 'Alimentacao', 'Supermercado Deville', 'mercado', ?)""",
+            (str(uuid.uuid4()), user_id, f"{month}-07T12:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = atlas.get_spend_by_merchant_type.entrypoint(phone, "mercado", "month", month)
+    assert "Supermercado Deville" in out
+    assert "Mercado Livre" not in out
+
+
