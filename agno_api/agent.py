@@ -4917,6 +4917,111 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
         pass
 
     return "\n".join(lines)
+
+
+@tool(description="Total gasto por tipo de estabelecimento (mercado/restaurante/farmacia/transporte/vestuario). period=today|yesterday|last7|week|month. month=YYYY-MM quando period=month.")
+def get_spend_by_merchant_type(
+    user_phone: str,
+    merchant_type: str,
+    period: str = "month",
+    month: str = "",
+) -> str:
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id, name FROM users WHERE phone = ?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return "Nenhuma transação encontrada."
+    user_id, user_name = row[0], row[1]
+
+    m_type = _normalize_pt_text(merchant_type or "").strip()
+    valid_types = {"mercado", "restaurante", "farmacia", "transporte", "vestuario"}
+    if m_type not in valid_types:
+        conn.close()
+        return "Tipo de estabelecimento inválido. Use: mercado, restaurante, farmacia, transporte ou vestuario."
+
+    now = _now_br()
+    period_key = (period or "month").strip().lower()
+
+    date_filter_sql = ""
+    params = [user_id]
+    period_label = ""
+
+    if period_key == "today":
+        d = now.strftime("%Y-%m-%d")
+        date_filter_sql = "AND occurred_at LIKE ?"
+        params.append(f"{d}%")
+        period_label = f"hoje ({now.strftime('%d/%m/%Y')})"
+    elif period_key == "yesterday":
+        y = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        date_filter_sql = "AND occurred_at LIKE ?"
+        params.append(f"{y}%")
+        period_label = f"ontem ({(now - timedelta(days=1)).strftime('%d/%m/%Y')})"
+    elif period_key == "last7":
+        start = (now - timedelta(days=6)).strftime("%Y-%m-%d")
+        end = now.strftime("%Y-%m-%d")
+        date_filter_sql = "AND occurred_at >= ? AND occurred_at <= ? || 'T23:59:59'"
+        params.extend([start, end])
+        period_label = f"últimos 7 dias ({(now - timedelta(days=6)).strftime('%d/%m')} a {now.strftime('%d/%m')})"
+    elif period_key == "week":
+        start_dt = now - timedelta(days=now.weekday())
+        start = start_dt.strftime("%Y-%m-%d")
+        end = now.strftime("%Y-%m-%d")
+        date_filter_sql = "AND occurred_at >= ? AND occurred_at <= ? || 'T23:59:59'"
+        params.extend([start, end])
+        period_label = f"semana ({start_dt.strftime('%d/%m')} a {now.strftime('%d/%m')})"
+    else:
+        month_ref = month or _current_month()
+        date_filter_sql = "AND occurred_at LIKE ?"
+        params.append(f"{month_ref}%")
+        try:
+            period_label = f"{['', 'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'][int(month_ref[5:7])]}/{month_ref[:4]}"
+        except Exception:
+            period_label = month_ref
+
+    cur.execute(
+        f"""SELECT merchant, merchant_canonical, amount_cents, occurred_at
+            FROM transactions
+            WHERE user_id = ? AND type = 'EXPENSE'
+              AND (
+                LOWER(COALESCE(merchant_type, '')) = ?
+              )
+              {date_filter_sql}
+            ORDER BY occurred_at DESC""",
+        [*params[:1], m_type, *params[1:]],
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        return f"Nenhum gasto de *{m_type}* em {period_label}."
+
+    total = sum((r[2] or 0) for r in rows)
+    count = len(rows)
+    avg = total / count if count else 0
+
+    by_merchant = {}
+    for merchant, canonical, amount, _ in rows:
+        key = (canonical or merchant or "Sem nome").strip()
+        by_merchant[key] = by_merchant.get(key, 0) + (amount or 0)
+
+    top_merchant = sorted(by_merchant.items(), key=lambda x: -x[1])[:3]
+
+    lines = [
+        f"🏪 *{user_name}, gasto com {m_type}* — {period_label}",
+        "",
+        f"💸 *Total:* {_fmt_brl(total)}",
+        f"🧾 *Compras:* {count}",
+        f"📊 *Ticket médio:* {_fmt_brl(int(avg))}",
+    ]
+    if top_merchant:
+        lines.append("")
+        lines.append("🔎 *Onde mais pesou:*")
+        for name, amt in top_merchant:
+            lines.append(f"• {name}: {_fmt_brl(amt)}")
+    return "\n".join(lines)
     today = _now_br()
     days_since_monday = today.weekday()
     monday = today - timedelta(days=days_since_monday)
@@ -8975,7 +9080,7 @@ atlas_agent = Agent(
     add_history_to_context=ATLAS_ENABLE_HISTORY,
     num_history_runs=ATLAS_HISTORY_RUNS,
     max_tool_calls_from_history=2,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event, pause_agenda_event, resume_agenda_event, edit_agenda_event_time, set_category_budget, get_category_budgets, remove_category_budget, get_user_financial_snapshot, get_market_rates, simulate_debt_payoff, simulate_investment],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_spend_by_merchant_type, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event, pause_agenda_event, resume_agenda_event, edit_agenda_event_time, set_category_budget, get_category_budgets, remove_category_budget, get_user_financial_snapshot, get_market_rates, simulate_debt_payoff, simulate_investment],
     add_datetime_to_context=False,
     store_tool_messages=False,
     telemetry=False,
@@ -11429,6 +11534,57 @@ def _extract_category_from_text(text: str) -> str:
     return ""
 
 
+def _extract_merchant_type_from_text(text: str) -> str:
+    body = _normalize_pt_text(text or "")
+    mapping = {
+        "mercado": ["mercado", "supermercado", "hortifruti", "atacadao"],
+        "restaurante": ["restaurante", "ifood", "delivery", "lanchonete", "almoco", "janta"],
+        "farmacia": ["farmacia", "drogaria", "remedio"],
+        "transporte": ["transporte", "uber", "99", "taxi", "posto", "gasolina", "combustivel"],
+        "vestuario": ["vestuario", "roupa", "tenis", "sapato", "calcado"],
+    }
+    for m_type, words in mapping.items():
+        if any(w in body for w in words):
+            return m_type
+    return ""
+
+
+def _extract_period_for_type_query(text: str) -> tuple[str, str]:
+    """Retorna (period, month_ref). period: today|yesterday|last7|week|month"""
+    body = _normalize_pt_text(text or "")
+    if "ontem" in body:
+        return "yesterday", ""
+    if any(k in body for k in ("hoje", "dia de hoje")):
+        return "today", ""
+    if any(k in body for k in ("ultimos 7 dias", "ultimos sete dias", "7 dias")):
+        return "last7", ""
+    if "semana passada" in body or "ultima semana" in body:
+        return "last7", ""
+    if "semana" in body:
+        return "week", ""
+    return "month", _extract_month_from_text_or_current(text)
+
+
+def _extract_merchant_query_from_text(text: str) -> str:
+    body_raw = (text or "").strip()
+    body = _normalize_pt_text(body_raw)
+    patterns = [
+        r"quanto gastei no\s+([a-z0-9\s]+)",
+        r"quanto gastei na\s+([a-z0-9\s]+)",
+        r"gastos no\s+([a-z0-9\s]+)",
+        r"gastos na\s+([a-z0-9\s]+)",
+        r"quanto foi no\s+([a-z0-9\s]+)",
+        r"quanto foi na\s+([a-z0-9\s]+)",
+    ]
+    for pat in patterns:
+        m = _re_router.search(pat, body)
+        if m:
+            value = (m.group(1) or "").strip(" .,!?:;")
+            if value and value not in {"mes", "semana", "hoje", "ontem"}:
+                return value
+    return ""
+
+
 async def _mini_route(body: str, user_phone: str, in_mentor: bool) -> dict:
     """Roteador universal via gpt-5-mini. Custo: ~430 tokens/msg."""
     import openai as _oai, json as _json
@@ -12835,6 +12991,29 @@ async def chat_endpoint(
                 _touch_mentor_state(user_phone)
             _resp = _call(get_category_breakdown, user_phone, _category_ref, _month_ref)
             return {"content": _strip_whatsapp_bold(_resp), "routed": True}
+
+    # 4e. Consulta direta por tipo de estabelecimento (mercado/restaurante etc.)
+    _merchant_type_ref = _extract_merchant_type_from_text(body or "")
+    _period_ref, _period_month_ref = _extract_period_for_type_query(body or "")
+    if _merchant_type_ref and any(k in _body_norm for k in ("quanto gastei", "gastos de", "gastei de", "gastei com")):
+        if _in_mentor_session:
+            _touch_mentor_state(user_phone)
+        _resp = _call(
+            get_spend_by_merchant_type,
+            user_phone,
+            _merchant_type_ref,
+            _period_ref,
+            _period_month_ref,
+        )
+        return {"content": _strip_whatsapp_bold(_resp), "routed": True}
+
+    # 4f. Consulta por estabelecimento específico (ex.: "quanto gastei no talentos")
+    _merchant_query_ref = _extract_merchant_query_from_text(body or "")
+    if _merchant_query_ref:
+        if _in_mentor_session:
+            _touch_mentor_state(user_phone)
+        _resp = _call(get_transactions_by_merchant, user_phone, _merchant_query_ref, _month_ref)
+        return {"content": _strip_whatsapp_bold(_resp), "routed": True}
 
     # 5. Mini-router (gpt-5-mini, ~200ms)
     _route = await _mini_route(body, user_phone, _in_mentor_session)
