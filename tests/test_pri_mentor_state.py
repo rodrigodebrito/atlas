@@ -1542,6 +1542,64 @@ def test_agent_runs_shortcut_groups_multi_expense_before_agent(atlas):
     assert "total la" in normalized and "r$57,00" in normalized
 
 
+def test_pr1_schema_adds_merchant_intelligence_columns_and_alias_table(atlas):
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(transactions)")
+        cols = {row[1] for row in cur.fetchall()}
+        assert "merchant_raw" in cols
+        assert "merchant_canonical" in cols
+        assert "merchant_type" in cols
+
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='merchant_aliases'")
+        row = cur.fetchone()
+        assert row is not None
+    finally:
+        conn.close()
+
+
+def test_pr1_backfills_merchant_raw_and_canonical_from_legacy_merchant(atlas):
+    phone = "+5511977700001"
+    user_id = f"user_{uuid.uuid4().hex}"
+    tx_id = f"tx_{uuid.uuid4().hex}"
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, merchant_raw, merchant_canonical, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 3500, 'Alimentação', 'Mercado Deville', '', '', '2026-03-10T12:00:00')""",
+            (tx_id, user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Reexecuta init para disparar backfill de compatibilidade.
+    atlas._init_sqlite_tables()
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT merchant, merchant_raw, merchant_canonical FROM transactions WHERE id = ?",
+            (tx_id,),
+        )
+        row = cur.fetchone()
+        assert row is not None
+        assert row[0] == "Mercado Deville"
+        assert row[1] == "Mercado Deville"
+        assert row[2] == "Mercado Deville"
+    finally:
+        conn.close()
+
+
 @pytest.mark.asyncio
 async def test_chat_endpoint_groups_multi_expense_before_router(atlas, monkeypatch):
     phone = "+5511988887766"

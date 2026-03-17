@@ -320,6 +320,9 @@ def _init_sqlite_tables():
             installment_number INTEGER DEFAULT 1,
             category TEXT NOT NULL,
             merchant TEXT,
+            merchant_raw TEXT DEFAULT '',
+            merchant_canonical TEXT DEFAULT '',
+            merchant_type TEXT DEFAULT '',
             payment_method TEXT,
             notes TEXT,
             occurred_at TEXT NOT NULL,
@@ -391,8 +394,21 @@ def _init_sqlite_tables():
         "ALTER TABLE transactions ADD COLUMN card_id TEXT DEFAULT NULL",
         "ALTER TABLE transactions ADD COLUMN installment_group_id TEXT DEFAULT NULL",
         "ALTER TABLE transactions ADD COLUMN import_source TEXT DEFAULT NULL",
+        "ALTER TABLE transactions ADD COLUMN merchant_raw TEXT DEFAULT ''",
+        "ALTER TABLE transactions ADD COLUMN merchant_canonical TEXT DEFAULT ''",
+        "ALTER TABLE transactions ADD COLUMN merchant_type TEXT DEFAULT ''",
         "ALTER TABLE credit_cards ADD COLUMN available_limit_cents INTEGER DEFAULT NULL",
         "ALTER TABLE users ADD COLUMN daily_report_enabled INTEGER DEFAULT 1",
+    ]:
+        try:
+            conn.execute(migration)
+            conn.commit()
+        except Exception:
+            pass
+    # Backfill de compatibilidade (mantém comportamento antigo e prepara canônico)
+    for migration in [
+        "UPDATE transactions SET merchant_raw = COALESCE(NULLIF(TRIM(merchant_raw), ''), COALESCE(merchant, ''))",
+        "UPDATE transactions SET merchant_canonical = COALESCE(NULLIF(TRIM(merchant_canonical), ''), COALESCE(NULLIF(TRIM(merchant_raw), ''), COALESCE(merchant, '')))",
     ]:
         try:
             conn.execute(migration)
@@ -419,6 +435,19 @@ def _init_sqlite_tables():
             card_id TEXT NOT NULL,
             created_at TEXT DEFAULT (datetime('now')),
             UNIQUE(user_id, merchant_pattern)
+        );
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS merchant_aliases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            alias TEXT NOT NULL,
+            canonical TEXT NOT NULL,
+            merchant_type TEXT DEFAULT '',
+            confidence REAL DEFAULT 1.0,
+            source TEXT DEFAULT 'manual',
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(user_id, alias)
         );
     """)
     # Log de mensagens não roteadas (caíram no LLM)
@@ -535,6 +564,9 @@ def _init_postgres_tables():
             installment_number INTEGER DEFAULT 1,
             category TEXT NOT NULL,
             merchant TEXT,
+            merchant_raw TEXT DEFAULT '',
+            merchant_canonical TEXT DEFAULT '',
+            merchant_type TEXT DEFAULT '',
             payment_method TEXT,
             notes TEXT,
             occurred_at TEXT NOT NULL,
@@ -609,8 +641,20 @@ def _init_postgres_tables():
         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS card_id TEXT DEFAULT NULL",
         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS installment_group_id TEXT DEFAULT NULL",
         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS import_source TEXT DEFAULT NULL",
+        "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS merchant_raw TEXT DEFAULT ''",
+        "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS merchant_canonical TEXT DEFAULT ''",
+        "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS merchant_type TEXT DEFAULT ''",
         "ALTER TABLE credit_cards ADD COLUMN IF NOT EXISTS available_limit_cents INTEGER DEFAULT NULL",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_report_enabled INTEGER DEFAULT 1",
+    ]:
+        try:
+            cur.execute(migration)
+        except Exception:
+            pass
+    # Backfill de compatibilidade (mantém comportamento antigo e prepara canônico)
+    for migration in [
+        "UPDATE transactions SET merchant_raw = COALESCE(NULLIF(BTRIM(merchant_raw), ''), COALESCE(merchant, ''))",
+        "UPDATE transactions SET merchant_canonical = COALESCE(NULLIF(BTRIM(merchant_canonical), ''), COALESCE(NULLIF(BTRIM(merchant_raw), ''), COALESCE(merchant, '')))",
     ]:
         try:
             cur.execute(migration)
@@ -636,6 +680,19 @@ def _init_postgres_tables():
             card_id TEXT NOT NULL,
             created_at TEXT DEFAULT (now()::text),
             UNIQUE(user_id, merchant_pattern)
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS merchant_aliases (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            alias TEXT NOT NULL,
+            canonical TEXT NOT NULL,
+            merchant_type TEXT DEFAULT '',
+            confidence DOUBLE PRECISION DEFAULT 1.0,
+            source TEXT DEFAULT 'manual',
+            created_at TEXT DEFAULT (now()::text),
+            UNIQUE(user_id, alias)
         );
     """)
     # Log de mensagens não roteadas (caíram no LLM)
