@@ -334,12 +334,12 @@ def test_month_summary_shows_card_purchase_but_separates_next_bill_cashflow(atla
     summary = atlas.get_month_summary.entrypoint(phone, current_month, "ALL")
 
     assert "Compra nova" in summary
-    assert "Total comprado" in summary
+    assert "Comprado no mês" in summary
     assert "Peso no caixa" in summary
-    assert "próxima fatura" in summary.lower()
-    assert "R$400.00" in summary
-    assert "R$300.00" in summary
-    assert "💡" in summary
+    summary_norm = atlas._normalize_pt_text(summary)
+    assert "vai cair nas proximas faturas" in summary_norm
+    assert "R$400,00" in summary
+    assert "R$300,00" in summary
     assert "__insight:" not in summary
 
 
@@ -380,7 +380,7 @@ def test_save_transaction_expense_response_is_human_and_compact(atlas):
         merchant="almoco",
     )
 
-    assert "✨" in response
+    assert "✅" in response
     assert "Resumo da despesa" in response
     assert "Descricao: almoco" in response
     assert "Valor: R$5,00" in response or "Valor: R$5.00" in response
@@ -2098,5 +2098,141 @@ async def test_chat_endpoint_hard_routes_specific_merchant_query_before_mini_rou
 
     content = atlas._normalize_pt_text(result["content"])
     assert "gasto total" in content
+
+
+@pytest.mark.asyncio
+async def test_pr6_chat_endpoint_hard_routes_alias_command_before_mini_router(atlas, monkeypatch):
+    phone = "+5511911118891"
+    user_id = f"user_{uuid.uuid4().hex}"
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    async def _should_not_route(*_args, **_kwargs):
+        raise AssertionError("mini-router não deveria rodar para comando de alias")
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _should_not_route)
+    monkeypatch.setattr(atlas, "atlas_agent", _StubAtlasAgent([]))
+
+    result = await atlas.chat_endpoint(
+        user_phone=phone,
+        message="compra supermercado deville e mercado deville sao deville",
+    )
+    content = atlas._normalize_pt_text(result["content"])
+    assert "alias salvo" in content
+
+
+@pytest.mark.asyncio
+async def test_pr6_chat_endpoint_hard_routes_type_command_before_mini_router(atlas, monkeypatch):
+    phone = "+5511911118892"
+    user_id = f"user_{uuid.uuid4().hex}"
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    async def _should_not_route(*_args, **_kwargs):
+        raise AssertionError("mini-router não deveria rodar para comando de tipo")
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _should_not_route)
+    monkeypatch.setattr(atlas, "atlas_agent", _StubAtlasAgent([]))
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="talentos e restaurante")
+    content = atlas._normalize_pt_text(result["content"])
+    assert "tipo atualizado para" in content
+    assert "restaurante" in content
+
+
+def test_pr6_set_merchant_alias_updates_history(atlas):
+    phone = "+5511911118893"
+    user_id = f"user_{uuid.uuid4().hex}"
+    tx_id = str(uuid.uuid4())
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, merchant_raw, merchant_canonical, merchant_type, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 5000, 'Alimentação', 'compra supermercado deville', 'compra supermercado deville', 'compra supermercado deville', '', '2026-03-17T12:00:00')""",
+            (tx_id, user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = atlas._call(atlas.set_merchant_alias, phone, "compra supermercado deville", "deville", "mercado")
+    assert "Alias salvo" in out
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT merchant_canonical, merchant_type FROM transactions WHERE id = ?", (tx_id,))
+        row = cur.fetchone()
+        assert row is not None
+        assert row[0] == "deville"
+        assert row[1] == "mercado"
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pr9_feature_flag_off_falls_back_to_category_query(atlas, monkeypatch):
+    phone = "+5511911118894"
+    user_id = f"user_{uuid.uuid4().hex}"
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 3800, 'Alimentação', 'Mercado Deville', ?)""",
+            (str(uuid.uuid4()), user_id, f"{month}-10T12:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    async def _should_not_route(*_args, **_kwargs):
+        raise AssertionError("mini-router não deveria rodar no hard-route de categoria")
+
+    monkeypatch.setattr(atlas, "MERCHANT_INTEL_ENABLED", False)
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _should_not_route)
+    monkeypatch.setattr(atlas, "atlas_agent", _StubAtlasAgent([]))
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="quanto gastei de mercado este mes")
+    content = atlas._normalize_pt_text(result["content"])
+    assert "alimentacao" in content
 
 

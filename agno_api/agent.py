@@ -74,6 +74,7 @@ ATLAS_ENABLE_HISTORY = _env_bool("ATLAS_ENABLE_HISTORY", False)
 ATLAS_HISTORY_RUNS = _env_int("ATLAS_HISTORY_RUNS", 2)
 ATLAS_MAX_INPUT_CHARS = _env_int("ATLAS_MAX_INPUT_CHARS", 4000)
 ATLAS_PERSIST_SESSIONS = _env_bool("ATLAS_PERSIST_SESSIONS", False)
+MERCHANT_INTEL_ENABLED = _env_bool("MERCHANT_INTEL_ENABLED", True)
 
 logger = logging.getLogger("atlas.api")
 
@@ -153,6 +154,9 @@ def _resolve_merchant_identity(cur, user_id: str, merchant: str, category: str) 
     merchant_raw = (merchant or "").strip()
     if not merchant_raw:
         return "", "", "unknown"
+    if not MERCHANT_INTEL_ENABLED:
+        base = merchant_raw
+        return merchant_raw, base, _infer_merchant_type(merchant_raw, base, category)
 
     key = _merchant_key(merchant_raw)
     canonical = key or _normalize_pt_text(merchant_raw).strip()
@@ -2272,6 +2276,96 @@ def update_merchant_category(user_phone: str, merchant_query: str, category: str
 
     except Exception as e:
         return f"ERRO: {str(e)}"
+
+
+@tool(description="Define alias canônico de estabelecimento (ex.: 'compra supermercado deville' -> 'deville').")
+def set_merchant_alias(user_phone: str, alias: str, canonical: str, merchant_type: str = "") -> str:
+    if not alias or not canonical:
+        return "ERRO: informe alias e canonical."
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "ERRO: usuário não encontrado."
+
+    alias_key = _merchant_key(alias) or _normalize_pt_text(alias)
+    canonical_clean = (canonical or "").strip()
+    m_type = _normalize_merchant_type(merchant_type or "") if merchant_type else ""
+    if not m_type:
+        m_type = _infer_merchant_type(alias, canonical_clean, "")
+
+    cur.execute(
+        """INSERT INTO merchant_aliases (user_id, alias, canonical, merchant_type, confidence, source)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (user_id, alias)
+           DO UPDATE SET canonical = EXCLUDED.canonical,
+                         merchant_type = EXCLUDED.merchant_type,
+                         confidence = EXCLUDED.confidence,
+                         source = EXCLUDED.source""",
+        (user_id, alias_key, canonical_clean, m_type, 1.0, "manual"),
+    )
+
+    like_alias = f"%{alias_key}%"
+    cur.execute(
+        """UPDATE transactions
+           SET merchant_canonical = ?, merchant_type = ?
+           WHERE user_id = ?
+             AND (
+               LOWER(COALESCE(merchant,'')) LIKE ?
+               OR LOWER(COALESCE(merchant_raw,'')) LIKE ?
+               OR LOWER(COALESCE(merchant_canonical,'')) LIKE ?
+             )""",
+        (canonical_clean, m_type, user_id, like_alias, like_alias, like_alias),
+    )
+    affected = cur.rowcount or 0
+    conn.commit()
+    conn.close()
+    return (
+        f"✅ Alias salvo: *{alias}* → *{canonical_clean}*"
+        f"\n🏷️ Tipo: *{m_type}*"
+        f"\n🔁 Histórico atualizado: *{affected}* transação(ões)."
+    )
+
+
+@tool(description="Define tipo de estabelecimento para um merchant (mercado/restaurante/farmacia/transporte/vestuario).")
+def set_merchant_type(user_phone: str, merchant_query: str, merchant_type: str) -> str:
+    m_type = _normalize_merchant_type(merchant_type)
+    if m_type not in {"mercado", "restaurante", "farmacia", "transporte", "vestuario"}:
+        return "ERRO: tipo inválido. Use mercado, restaurante, farmacia, transporte ou vestuario."
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "ERRO: usuário não encontrado."
+
+    merchant_key = _merchant_key(merchant_query) or _normalize_pt_text(merchant_query)
+    cur.execute(
+        """INSERT INTO merchant_aliases (user_id, alias, canonical, merchant_type, confidence, source)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (user_id, alias)
+           DO UPDATE SET merchant_type = EXCLUDED.merchant_type,
+                         source = EXCLUDED.source""",
+        (user_id, merchant_key, merchant_query.strip(), m_type, 1.0, "manual_type"),
+    )
+
+    like_q = f"%{merchant_query}%"
+    cur.execute(
+        """UPDATE transactions
+           SET merchant_type = ?
+           WHERE user_id = ?
+             AND (
+               LOWER(COALESCE(merchant,'')) LIKE LOWER(?)
+               OR LOWER(COALESCE(merchant_raw,'')) LIKE LOWER(?)
+               OR LOWER(COALESCE(merchant_canonical,'')) LIKE LOWER(?)
+             )""",
+        (m_type, user_id, like_q, like_q, like_q),
+    )
+    affected = cur.rowcount or 0
+    conn.commit()
+    conn.close()
+    return f"✅ Tipo atualizado para *{m_type}* em *{affected}* transação(ões) de _{merchant_query}_."
 
 
 @tool(description="Apaga UMA transação. Sem find_*=última. find_merchant/find_date/find_amount para buscar outra. Múltiplas→use delete_transactions.")
@@ -9208,7 +9302,7 @@ atlas_agent = Agent(
     add_history_to_context=ATLAS_ENABLE_HISTORY,
     num_history_runs=ATLAS_HISTORY_RUNS,
     max_tool_calls_from_history=2,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_spend_by_merchant_type, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event, pause_agenda_event, resume_agenda_event, edit_agenda_event_time, set_category_budget, get_category_budgets, remove_category_budget, get_user_financial_snapshot, get_market_rates, simulate_debt_payoff, simulate_investment],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, set_merchant_alias, set_merchant_type, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_spend_by_merchant_type, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event, pause_agenda_event, resume_agenda_event, edit_agenda_event_time, set_category_budget, get_category_budgets, remove_category_budget, get_user_financial_snapshot, get_market_rates, simulate_debt_payoff, simulate_investment],
     add_datetime_to_context=False,
     store_tool_messages=False,
     telemetry=False,
@@ -11751,6 +11845,39 @@ def _extract_merchant_query_from_text(text: str) -> str:
     return ""
 
 
+def _parse_alias_mapping_command(text: str) -> tuple[str, str] | None:
+    body = _normalize_pt_text(text or "")
+    # "x e y sao deville" / "x sao deville"
+    m = _re_router.search(r"(.+?)\s+sao\s+([a-z0-9\s]+)$", body)
+    if not m:
+        return None
+    left = (m.group(1) or "").strip(" .,!?:;")
+    canonical = (m.group(2) or "").strip(" .,!?:;")
+    if not left or not canonical or len(canonical) < 2:
+        return None
+    # pega o último alias explícito se vier em lista
+    if " e " in left:
+        alias = [p.strip() for p in left.split(" e ") if p.strip()][-1]
+    else:
+        alias = left
+    if len(alias) < 2:
+        return None
+    return alias, canonical
+
+
+def _parse_merchant_type_command(text: str) -> tuple[str, str] | None:
+    body = _normalize_pt_text(text or "")
+    # "talentos e restaurante"
+    m = _re_router.search(r"(.+?)\s+e\s+(mercado|restaurante|farmacia|transporte|vestuario)$", body)
+    if not m:
+        return None
+    merchant = (m.group(1) or "").strip(" .,!?:;")
+    m_type = _normalize_merchant_type(m.group(2) or "")
+    if not merchant or not m_type:
+        return None
+    return merchant, m_type
+
+
 async def _mini_route(body: str, user_phone: str, in_mentor: bool) -> dict:
     """Roteador universal via gpt-5-mini. Custo: ~430 tokens/msg."""
     import openai as _oai, json as _json
@@ -13152,7 +13279,7 @@ async def chat_endpoint(
         _resp = _call(get_transactions, user_phone, "", _month_ref)
         return {"content": _strip_whatsapp_bold(_resp), "routed": True}
 
-    if (not _merchant_type_ref) and _category_ref and any(k in _body_norm for k in ("com ", "categoria", "detalhar", "detalhe", "quanto gastei", "gastos de")):
+    if (not (MERCHANT_INTEL_ENABLED and _merchant_type_ref)) and _category_ref and any(k in _body_norm for k in ("com ", "categoria", "detalhar", "detalhe", "quanto gastei", "gastos de")):
         if "mes" in _body_norm or "mês" in (body or "").lower():
             if _in_mentor_session:
                 _touch_mentor_state(user_phone)
@@ -13161,7 +13288,7 @@ async def chat_endpoint(
 
     # 4e. Consulta direta por tipo de estabelecimento (mercado/restaurante etc.)
     _period_ref, _period_month_ref = _extract_period_for_type_query(body or "")
-    if _merchant_type_ref and any(k in _body_norm for k in ("quanto gastei", "gastos de", "gastei de", "gastei com")):
+    if MERCHANT_INTEL_ENABLED and _merchant_type_ref and any(k in _body_norm for k in ("quanto gastei", "gastos de", "gastei de", "gastei com")):
         if _in_mentor_session:
             _touch_mentor_state(user_phone)
         _resp = _call(
@@ -13180,6 +13307,24 @@ async def chat_endpoint(
             _touch_mentor_state(user_phone)
         _resp = _call(get_transactions_by_merchant, user_phone, _merchant_query_ref, _month_ref)
         return {"content": _strip_whatsapp_bold(_resp), "routed": True}
+
+    # 4g. Comandos explícitos de aprendizado manual (alias/tipo), sem passar no LLM.
+    if MERCHANT_INTEL_ENABLED:
+        _alias_cmd = _parse_alias_mapping_command(body or "")
+        if _alias_cmd:
+            _alias, _canonical = _alias_cmd
+            if _in_mentor_session:
+                _touch_mentor_state(user_phone)
+            _resp = _call(set_merchant_alias, user_phone, _alias, _canonical, "")
+            return {"content": _strip_whatsapp_bold(_resp), "routed": True}
+
+        _type_cmd = _parse_merchant_type_command(body or "")
+        if _type_cmd:
+            _merchant_name, _merchant_type = _type_cmd
+            if _in_mentor_session:
+                _touch_mentor_state(user_phone)
+            _resp = _call(set_merchant_type, user_phone, _merchant_name, _merchant_type)
+            return {"content": _strip_whatsapp_bold(_resp), "routed": True}
 
     # 5. Mini-router (gpt-5-mini, ~200ms)
     _route = await _mini_route(body, user_phone, _in_mentor_session)
