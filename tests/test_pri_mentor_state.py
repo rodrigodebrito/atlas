@@ -381,6 +381,10 @@ def test_save_transaction_expense_response_is_human_and_compact(atlas):
     )
 
     assert "✨" in response
+    assert "Resumo da despesa" in response
+    assert "Descricao: almoco" in response
+    assert "Valor: R$5,00" in response or "Valor: R$5.00" in response
+    assert "Status: pago" in response
     assert "Fechamento" not in response
     assert "Entradas:" not in response
     assert "Comprado" not in response
@@ -424,9 +428,12 @@ def test_save_transaction_card_purchase_mentions_next_bill_queue(atlas):
         card_name="Caixa",
     )
 
-    assert "Compra no cartão anotada" in response
-    assert "próxima fatura" in response.lower()
-    assert "fila da próxima fatura" in response.lower()
+    normalized = atlas._normalize_pt_text(response)
+    assert "resumo da despesa" in normalized
+    assert "compra: caixa" in normalized
+    assert "1x" in normalized
+    assert "status: a pagar" in normalized
+    assert "proxima fatura" in normalized
 
 
 def test_save_transaction_repeated_merchant_does_not_add_pattern_microcopy(atlas):
@@ -495,12 +502,14 @@ def test_inline_multi_expense_returns_single_pri_batch_confirmation(atlas):
     response = atlas._multi_expense_extract(phone, "gastei 30 na padaria e 25 no almoÃ§o")
 
     assert response is not None
-    text = response["response"]
-    assert "✨" in text
-    assert "padaria" in text.lower()
-    assert "almo" in text.lower()
-    assert "Fechamento" not in text
-    assert "Total lançado agora" in text
+    text = atlas._normalize_pt_text(response["response"])
+    assert "confirmei suas despesas" in text
+    assert "resumo da despesa" in text
+    assert "status: pago" in text
+    assert "padaria" in text
+    assert "almo" in text
+    assert "fechamento" not in text
+    assert "total la" in text and "r$55,00" in text
 
     conn = atlas._get_conn()
     try:
@@ -1490,7 +1499,8 @@ def test_agent_runs_shortcut_groups_multi_expense_before_agent(atlas):
     assert payload is not None
     assert "R$35,00" in payload["content"]
     assert "R$22,00" in payload["content"]
-    assert "Total lançado agora" in payload["content"]
+    normalized = atlas._normalize_pt_text(payload["content"])
+    assert "total la" in normalized and "r$57,00" in normalized
 
 
 @pytest.mark.asyncio
@@ -1519,7 +1529,8 @@ async def test_chat_endpoint_groups_multi_expense_before_router(atlas, monkeypat
     assert result["routed"] is True
     assert "R$35,00" in result["content"]
     assert "R$22,00" in result["content"]
-    assert "Total lançado agora" in result["content"]
+    normalized = atlas._normalize_pt_text(result["content"])
+    assert "total la" in normalized and "r$57,00" in normalized
     assert result["content"].count("Errou?") == 1
 
 
