@@ -1649,3 +1649,79 @@ async def test_query_mes_com_categoria_forces_category_breakdown(atlas, monkeypa
     assert "total" in content
 
 
+@pytest.mark.asyncio
+async def test_chat_endpoint_hard_routes_detalhar_mes_before_mini_router(atlas, monkeypatch):
+    phone = "+5511911114444"
+    user_id = f"user_{uuid.uuid4().hex}"
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 3500, 'Alimentação', 'Padaria', ?)""",
+            (str(uuid.uuid4()), user_id, f"{month}-10T12:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    async def _should_not_route(*_args, **_kwargs):
+        raise AssertionError("mini-router não deveria rodar para 'detalhar mês'")
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _should_not_route)
+    monkeypatch.setattr(atlas, "atlas_agent", _StubAtlasAgent([]))
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="detalhar mês")
+
+    content = result["content"].lower()
+    assert "extrato de" in content
+    assert month in result["content"]
+
+
+@pytest.mark.asyncio
+async def test_chat_endpoint_hard_routes_month_category_before_mini_router(atlas, monkeypatch):
+    phone = "+5511911115555"
+    user_id = f"user_{uuid.uuid4().hex}"
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 4200, 'Alimentação', 'Restaurante', ?)""",
+            (str(uuid.uuid4()), user_id, f"{month}-11T12:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    async def _should_not_route(*_args, **_kwargs):
+        raise AssertionError("mini-router não deveria rodar para consulta mês+categoria")
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _should_not_route)
+    monkeypatch.setattr(atlas, "atlas_agent", _StubAtlasAgent([]))
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="quanto gastei este mês com alimentação")
+
+    content = atlas._normalize_pt_text(result["content"])
+    assert "alimentacao" in content
+    assert "total" in content
+
+

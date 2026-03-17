@@ -12603,6 +12603,25 @@ async def chat_endpoint(
             _touch_mentor_state(user_phone)
         return {"content": _strip_whatsapp_bold(_multi["response"]), "routed": True}
 
+    # 4d. Detalhe de mês/categoria deve ser resolvido ANTES do mini-router.
+    # Evita cair em "resumo" quando o pedido é explicitamente "detalhar mês".
+    _body_norm = _normalize_pt_text(body or "")
+    _month_ref = _extract_month_from_text_or_current(body or "")
+    _category_ref = _extract_category_from_text(body or "")
+
+    if any(k in _body_norm for k in ("detalhar mes", "mes detalhado", "detalhe do mes", "detalhar o mes")):
+        if _in_mentor_session:
+            _touch_mentor_state(user_phone)
+        _resp = _call(get_transactions, user_phone, "", _month_ref)
+        return {"content": _strip_whatsapp_bold(_resp), "routed": True}
+
+    if _category_ref and any(k in _body_norm for k in ("com ", "categoria", "detalhar", "detalhe", "quanto gastei", "gastos de")):
+        if "mes" in _body_norm or "mês" in (body or "").lower():
+            if _in_mentor_session:
+                _touch_mentor_state(user_phone)
+            _resp = _call(get_category_breakdown, user_phone, _category_ref, _month_ref)
+            return {"content": _strip_whatsapp_bold(_resp), "routed": True}
+
     # 5. Mini-router (gpt-5-mini, ~200ms)
     _route = await _mini_route(body, user_phone, _in_mentor_session)
     _rt_logger.warning(f"[MINI_ROUTE] phone={user_phone} result={_route} body={body[:80]}")
