@@ -1869,6 +1869,34 @@ def test_pr3_get_spend_by_merchant_type_month(atlas):
     assert "total" in normalized
 
 
+def test_pr3_get_spend_by_merchant_type_uses_fallback_when_type_missing(atlas):
+    phone = "+5511911116667"
+    user_id = f"user_{uuid.uuid4().hex}"
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, merchant_raw, merchant_canonical, merchant_type, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 7000, 'Alimentação', 'Mercado Deville', 'Mercado Deville', 'deville', '', ?)""",
+            (str(uuid.uuid4()), user_id, f"{month}-16T12:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = atlas._call(atlas.get_spend_by_merchant_type, phone, "mercado", "week", "")
+    normalized = atlas._normalize_pt_text(result)
+    assert "nenhum gasto de *mercado*" not in normalized
+    assert "total" in normalized
+
+
 @pytest.mark.asyncio
 async def test_chat_endpoint_hard_routes_merchant_type_query_before_mini_router(atlas, monkeypatch):
     phone = "+5511911117777"
@@ -1903,7 +1931,7 @@ async def test_chat_endpoint_hard_routes_merchant_type_query_before_mini_router(
     result = await atlas.chat_endpoint(user_phone=phone, message="quanto gastei de mercado este mes")
 
     content = atlas._normalize_pt_text(result["content"])
-    assert "mercado" in content
+    assert "gasto com mercado" in content
     assert "total" in content
 
 

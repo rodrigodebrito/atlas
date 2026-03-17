@@ -4982,18 +4982,23 @@ def get_spend_by_merchant_type(
             period_label = month_ref
 
     cur.execute(
-        f"""SELECT merchant, merchant_canonical, amount_cents, occurred_at
+        f"""SELECT merchant, merchant_raw, merchant_canonical, merchant_type, category, amount_cents, occurred_at
             FROM transactions
             WHERE user_id = ? AND type = 'EXPENSE'
-              AND (
-                LOWER(COALESCE(merchant_type, '')) = ?
-              )
               {date_filter_sql}
             ORDER BY occurred_at DESC""",
-        [*params[:1], m_type, *params[1:]],
+        params,
     )
-    rows = cur.fetchall()
+    all_rows = cur.fetchall()
     conn.close()
+
+    rows = []
+    for merchant, merchant_raw, merchant_canonical, stored_type, category, amount_cents, occurred_at in all_rows:
+        tx_type = _normalize_pt_text(stored_type or "").strip()
+        if not tx_type:
+            tx_type = _infer_merchant_type(merchant_raw or merchant or "", merchant_canonical or "", category or "")
+        if tx_type == m_type:
+            rows.append((merchant, merchant_canonical, amount_cents, occurred_at))
 
     if not rows:
         return f"Nenhum gasto de *{m_type}* em {period_label}."
@@ -12977,6 +12982,7 @@ async def chat_endpoint(
     # Evita cair em "resumo" quando o pedido é explicitamente "detalhar mês".
     _body_norm = _normalize_pt_text(body or "")
     _month_ref = _extract_month_from_text_or_current(body or "")
+    _merchant_type_ref = _extract_merchant_type_from_text(body or "")
     _category_ref = _extract_category_from_text(body or "")
 
     if any(k in _body_norm for k in ("detalhar mes", "mes detalhado", "detalhe do mes", "detalhar o mes")):
@@ -12985,7 +12991,7 @@ async def chat_endpoint(
         _resp = _call(get_transactions, user_phone, "", _month_ref)
         return {"content": _strip_whatsapp_bold(_resp), "routed": True}
 
-    if _category_ref and any(k in _body_norm for k in ("com ", "categoria", "detalhar", "detalhe", "quanto gastei", "gastos de")):
+    if (not _merchant_type_ref) and _category_ref and any(k in _body_norm for k in ("com ", "categoria", "detalhar", "detalhe", "quanto gastei", "gastos de")):
         if "mes" in _body_norm or "mês" in (body or "").lower():
             if _in_mentor_session:
                 _touch_mentor_state(user_phone)
@@ -12993,7 +12999,6 @@ async def chat_endpoint(
             return {"content": _strip_whatsapp_bold(_resp), "routed": True}
 
     # 4e. Consulta direta por tipo de estabelecimento (mercado/restaurante etc.)
-    _merchant_type_ref = _extract_merchant_type_from_text(body or "")
     _period_ref, _period_month_ref = _extract_period_for_type_query(body or "")
     if _merchant_type_ref and any(k in _body_norm for k in ("quanto gastei", "gastos de", "gastei de", "gastei com")):
         if _in_mentor_session:
