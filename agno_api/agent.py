@@ -157,6 +157,7 @@ def _build_pri_transaction_intro(
     """Abre confirmacoes de lancamento com tom humano e objetivo."""
     merchant_l = _normalize_pt_text(merchant)
     category_l = _normalize_pt_text(category)
+    merchant_clean = (merchant or "").strip()
     vibe = {
         "alimentacao": "\U0001F955",
         "transporte": "\U0001F697",
@@ -176,8 +177,19 @@ def _build_pri_transaction_intro(
 
     if installments > 1:
         if category_l == "vestuario":
-            return f"{vibe} Boa compra: parcelado organizado para nao baguncar as proximas faturas."
-        return f"{vibe} Parcelado registrado direitinho pra nao se esconder nas proximas faturas."
+            if merchant_clean:
+                return (
+                    f"{vibe} Boa compra. Ja organizei {merchant_clean} em parcelas para voce "
+                    "enxergar o impacto real e nao tomar susto nas proximas faturas."
+                )
+            return (
+                f"{vibe} Boa compra. Ja organizei esse parcelado para voce enxergar "
+                "o impacto real e nao tomar susto nas proximas faturas."
+            )
+        return (
+            f"{vibe} Parcelado registrado com visao de longo prazo: "
+            "foco em manter as proximas faturas sob controle."
+        )
     if card_name:
         return f"{vibe} Compra no cartao anotada e com fatura mapeada."
     if category_l == "alimentacao" or any(k in merchant_l for k in ("padaria", "restaurante", "ifood", "mercado", "almoco")):
