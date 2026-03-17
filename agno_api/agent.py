@@ -11158,6 +11158,63 @@ def _current_month() -> str:
     return _now_br().strftime("%Y-%m")
 
 
+def _extract_month_from_text_or_current(text: str) -> str:
+    """Extrai mês de referência da frase (YYYY-MM). Fallback: mês atual."""
+    body = _normalize_pt_text(text or "")
+    now = _now_br()
+
+    if "mes passado" in body:
+        y = now.year
+        m = now.month - 1
+        if m == 0:
+            m = 12
+            y -= 1
+        return f"{y}-{m:02d}"
+
+    m_iso = _re_router.search(r"\b(20\d{2})[-/](0[1-9]|1[0-2])\b", body)
+    if m_iso:
+        return f"{m_iso.group(1)}-{m_iso.group(2)}"
+
+    m_br = _re_router.search(r"\b(0[1-9]|1[0-2])[/-](20\d{2})\b", body)
+    if m_br:
+        return f"{m_br.group(2)}-{m_br.group(1)}"
+
+    month_map = {
+        "janeiro": 1, "fevereiro": 2, "marco": 3, "abril": 4, "maio": 5, "junho": 6,
+        "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12,
+    }
+    for name, num in month_map.items():
+        if name in body:
+            y = now.year
+            y_match = _re_router.search(r"\b(20\d{2})\b", body)
+            if y_match:
+                y = int(y_match.group(1))
+            return f"{y}-{num:02d}"
+
+    return _current_month()
+
+
+def _extract_category_from_text(text: str) -> str:
+    """Tenta identificar categoria padrão pela frase do usuário."""
+    body = _normalize_pt_text(text or "")
+    aliases = {
+        "Alimentação": ["alimentacao", "comida", "mercado", "restaurante", "ifood", "padaria"],
+        "Transporte": ["transporte", "uber", "gasolina", "posto", "pedagio", "onibus"],
+        "Saúde": ["saude", "farmacia", "remedio", "consulta", "hospital"],
+        "Moradia": ["moradia", "aluguel", "condominio", "luz", "agua", "internet"],
+        "Lazer": ["lazer", "cinema", "bar", "show", "festa"],
+        "Assinaturas": ["assinatura", "netflix", "spotify", "prime", "youtube", "disney"],
+        "Educação": ["educacao", "curso", "faculdade", "escola", "livro"],
+        "Vestuário": ["vestuario", "roupa", "tenis", "sapato", "camisa", "calca"],
+        "Pets": ["pets", "pet", "racao", "veterinario", "petshop"],
+        "Outros": ["outros", "outras"],
+    }
+    for cat, words in aliases.items():
+        if any(w in body for w in words):
+            return cat
+    return ""
+
+
 async def _mini_route(body: str, user_phone: str, in_mentor: bool) -> dict:
     """Roteador universal via gpt-5-mini. Custo: ~430 tokens/msg."""
     import openai as _oai, json as _json
@@ -11451,6 +11508,20 @@ async def _execute_intent(result: dict, user_phone: str, body: str, full_message
         if parsed:
             return parsed
         return None  # fallback pro LLM
+
+    if intent == "query":
+        body_norm = _normalize_pt_text(body or "")
+        month_ref = _extract_month_from_text_or_current(body or "")
+        category_ref = _extract_category_from_text(body or "")
+
+        # "detalhar mês" deve mostrar o mês completo (não resumo compacto)
+        if any(k in body_norm for k in ("detalhar mes", "mes detalhado", "detalhe do mes", "detalhar o mes")):
+            return {"response": _call(get_transactions, user_phone, "", month_ref)}
+
+        # "quanto gastei este mês com alimentação" / "detalhar categoria"
+        if category_ref and any(k in body_norm for k in ("com ", "categoria", "detalhar", "detalhe", "quanto gastei", "gastos de")):
+            if "mes" in body_norm or "mês" in (body or "").lower():
+                return {"response": _call(get_category_breakdown, user_phone, category_ref, month_ref)}
 
     if intent == "query" and action in _QUERY_DISPATCH:
         try:
