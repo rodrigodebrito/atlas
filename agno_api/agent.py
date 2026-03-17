@@ -19,6 +19,8 @@ import uuid
 import calendar
 import hashlib
 import traceback
+import re
+from difflib import SequenceMatcher
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -111,6 +113,139 @@ def _normalize_pt_text(raw: str) -> str:
 
     text = unicodedata.normalize("NFKD", (raw or "").lower())
     return "".join(ch for ch in text if not unicodedata.combining(ch))
+
+
+_MERCHANT_NOISE_TOKENS = {
+    "compra", "compras", "mercado", "supermercado", "super", "restaurante", "lanchonete",
+    "padaria", "delivery", "app", "online", "loja", "ltda", "sa", "e", "de", "da", "do",
+    "na", "no", "em", "com", "para", "pra", "pro",
+}
+
+
+def _merchant_key(raw: str) -> str:
+    text = _normalize_pt_text(raw or "")
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    tokens = [tok for tok in text.split() if tok and tok not in _MERCHANT_NOISE_TOKENS]
+    if not tokens:
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+    return " ".join(tokens)
+
+
+def _infer_merchant_type(merchant_raw: str, merchant_canonical: str, category: str) -> str:
+    text = f"{_normalize_pt_text(merchant_raw)} {_normalize_pt_text(merchant_canonical)} {_normalize_pt_text(category)}"
+    if any(k in text for k in ("mercado", "supermercado", "hortifruti", "atacadao")):
+        return "mercado"
+    if any(k in text for k in ("restaurante", "ifood", "delivery", "lanchonete", "almoco", "janta")):
+        return "restaurante"
+    if any(k in text for k in ("farmacia", "drogaria")):
+        return "farmacia"
+    if any(k in text for k in ("posto", "gasolina", "combustivel", "uber", "99", "taxi")):
+        return "transporte"
+    if any(k in text for k in ("academia", "crossfit", "smart fit")):
+        return "fitness"
+    if any(k in text for k in ("vestuario", "tenis", "roupa", "calcado")):
+        return "vestuario"
+    return "unknown"
+
+
+def _resolve_merchant_identity(cur, user_id: str, merchant: str, category: str) -> tuple[str, str, str]:
+    merchant_raw = (merchant or "").strip()
+    if not merchant_raw:
+        return "", "", "unknown"
+
+    key = _merchant_key(merchant_raw)
+    canonical = key or _normalize_pt_text(merchant_raw).strip()
+    confidence = 0.75
+    source = "auto_key"
+
+    # 1) Alias explícito por usuário
+    alias_rows = []
+    try:
+        cur.execute(
+            "SELECT alias, canonical FROM merchant_aliases WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
+        )
+        alias_rows = cur.fetchall() or []
+    except Exception:
+        alias_rows = []
+
+    alias_map = {}
+    for row in alias_rows:
+        a = _merchant_key((row[0] or "").strip())
+        c = (row[1] or "").strip()
+        if a and c and a not in alias_map:
+            alias_map[a] = c
+
+    if key and key in alias_map:
+        canonical = alias_map[key]
+        confidence = 1.0
+        source = "alias_exact"
+    elif key:
+        # 2) Match por contenção em alias
+        for a_key, a_can in alias_map.items():
+            if len(a_key) >= 4 and (a_key in key or key in a_key):
+                canonical = a_can
+                confidence = 0.92
+                source = "alias_contains"
+                break
+
+    # 3) Fuzzy em canônicos já existentes do usuário
+    if source.startswith("auto"):
+        try:
+            cur.execute(
+                """SELECT DISTINCT merchant_canonical
+                   FROM transactions
+                   WHERE user_id = ? AND merchant_canonical IS NOT NULL AND TRIM(merchant_canonical) <> ''
+                   ORDER BY merchant_canonical""",
+                (user_id,),
+            )
+            candidates = [str(r[0]).strip() for r in (cur.fetchall() or []) if r and r[0]]
+        except Exception:
+            candidates = []
+
+        best_cand = ""
+        best_score = 0.0
+        key_set = set(key.split()) if key else set()
+        for cand in candidates:
+            cand_key = _merchant_key(cand)
+            if not cand_key:
+                continue
+            cand_set = set(cand_key.split())
+            overlap = len(key_set & cand_set)
+            union = len(key_set | cand_set) or 1
+            jacc = overlap / union
+            seq = SequenceMatcher(None, key, cand_key).ratio() if key else 0.0
+            score = (0.65 * seq) + (0.35 * jacc)
+            if score > best_score:
+                best_score = score
+                best_cand = cand
+
+        if best_cand and best_score >= 0.9:
+            canonical = best_cand
+            confidence = round(best_score, 3)
+            source = "fuzzy_history"
+
+    merchant_type = _infer_merchant_type(merchant_raw, canonical, category)
+
+    # Persistência leve do alias detectado para próximas rodadas
+    try:
+        alias_key = key or _normalize_pt_text(merchant_raw).strip()
+        if alias_key and canonical:
+            cur.execute(
+                """INSERT INTO merchant_aliases (user_id, alias, canonical, merchant_type, confidence, source)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (user_id, alias)
+                   DO UPDATE SET canonical = EXCLUDED.canonical,
+                                 merchant_type = EXCLUDED.merchant_type,
+                                 confidence = EXCLUDED.confidence,
+                                 source = EXCLUDED.source""",
+                (user_id, alias_key, canonical, merchant_type, float(confidence), source),
+            )
+    except Exception:
+        pass
+
+    return merchant_raw, canonical, merchant_type
 
 
 def _get_purchase_expense_total_for_month(cur, user_id: str, month: str) -> int:
@@ -1035,6 +1170,11 @@ def save_transaction(
     if installments > 1 and total_amount_cents == 0:
         total_amount_cents = amount_cents * installments
 
+    merchant_raw, merchant_canonical, merchant_type = _resolve_merchant_identity(
+        cur, user_id, merchant, category
+    )
+    merchant = merchant_raw
+
     # Resolve card_id — cria cartão automaticamente se não existir
     card_id = None
     card_is_new = False
@@ -1086,10 +1226,12 @@ def save_transaction(
             cur.execute(
                 """INSERT INTO transactions
                    (id, user_id, type, amount_cents, total_amount_cents, installments, installment_number,
-                    category, merchant, payment_method, notes, occurred_at, card_id, installment_group_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    category, merchant, merchant_raw, merchant_canonical, merchant_type,
+                    payment_method, notes, occurred_at, card_id, installment_group_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (inst_id, user_id, transaction_type, amount_cents, total_amount_cents,
-                 installments, i, category, merchant, payment_method, notes,
+                 installments, i, category, merchant, merchant_raw, merchant_canonical, merchant_type,
+                 payment_method, notes,
                  inst_occurred, card_id, group_id),
             )
     else:
@@ -1097,10 +1239,12 @@ def save_transaction(
         cur.execute(
             """INSERT INTO transactions
                (id, user_id, type, amount_cents, total_amount_cents, installments, installment_number,
-                category, merchant, payment_method, notes, occurred_at, card_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                category, merchant, merchant_raw, merchant_canonical, merchant_type,
+                payment_method, notes, occurred_at, card_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (tx_id, user_id, transaction_type, amount_cents, total_amount_cents,
-             installments, 1, category, merchant, payment_method, notes, now, card_id),
+             installments, 1, category, merchant, merchant_raw, merchant_canonical, merchant_type,
+             payment_method, notes, now, card_id),
         )
     # --- Reduz limite disponível do cartão se aplicável ---
     if card_id and transaction_type == "EXPENSE":
@@ -1124,7 +1268,7 @@ def save_transaction(
 
     # --- Auto-aprendizado: salva merchant→categoria + merchant→cartão ---
     if merchant and category and transaction_type == "EXPENSE":
-        merchant_key = merchant.upper().strip()
+        merchant_key = (merchant_canonical or merchant_raw or merchant).upper().strip()
         if merchant_key:
             try:
                 # SAVEPOINT protege a transação principal se o upsert falhar
@@ -2916,23 +3060,36 @@ def get_transactions_by_merchant(
     user_id = row[0]
 
     query_like = f"%{merchant_query.lower()}%"
+    query_key = _merchant_key(merchant_query)
+    query_key_like = f"%{query_key}%" if query_key else query_like
 
     if month:
         cur.execute(
             """SELECT type, category, amount_cents, merchant, occurred_at
                FROM transactions
-               WHERE user_id = ? AND LOWER(merchant) LIKE ? AND occurred_at LIKE ?
+               WHERE user_id = ?
+                 AND (
+                    LOWER(COALESCE(merchant, '')) LIKE ?
+                    OR LOWER(COALESCE(merchant_raw, '')) LIKE ?
+                    OR LOWER(COALESCE(merchant_canonical, '')) LIKE ?
+                 )
+                 AND occurred_at LIKE ?
                ORDER BY occurred_at DESC""",
-            (user_id, query_like, f"{month}%"),
+            (user_id, query_like, query_like, query_key_like, f"{month}%"),
         )
     else:
         cur.execute(
             """SELECT type, category, amount_cents, merchant, occurred_at
                FROM transactions
-               WHERE user_id = ? AND LOWER(merchant) LIKE ?
+               WHERE user_id = ?
+                 AND (
+                    LOWER(COALESCE(merchant, '')) LIKE ?
+                    OR LOWER(COALESCE(merchant_raw, '')) LIKE ?
+                    OR LOWER(COALESCE(merchant_canonical, '')) LIKE ?
+                 )
                ORDER BY occurred_at DESC
                LIMIT 20""",
-            (user_id, query_like),
+            (user_id, query_like, query_like, query_key_like),
         )
     rows = cur.fetchall()
     conn.close()

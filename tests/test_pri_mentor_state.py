@@ -1600,6 +1600,64 @@ def test_pr1_backfills_merchant_raw_and_canonical_from_legacy_merchant(atlas):
         conn.close()
 
 
+def test_pr2_save_transaction_populates_canonical_merchant(atlas):
+    phone = "+5511977700002"
+
+    atlas._call(
+        atlas.save_transaction,
+        phone,
+        "EXPENSE",
+        35.0,
+        "Alimentação",
+        "compra supermercado deville",
+    )
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT merchant, merchant_raw, merchant_canonical, merchant_type
+               FROM transactions
+               ORDER BY created_at DESC
+               LIMIT 1"""
+        )
+        row = cur.fetchone()
+        assert row is not None
+        assert row[0] == "compra supermercado deville"
+        assert row[1] == "compra supermercado deville"
+        assert row[2] == "deville"
+        assert row[3] in {"mercado", "unknown"}
+    finally:
+        conn.close()
+
+
+def test_pr2_get_transactions_by_merchant_matches_canonical_field(atlas):
+    phone = "+5511977700003"
+    user_id = f"user_{uuid.uuid4().hex}"
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, merchant_raw, merchant_canonical, merchant_type, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 4200, 'Alimentação', 'compra sv dvl', 'compra sv dvl', 'deville', 'mercado', '2026-03-11T12:00:00')""",
+            (str(uuid.uuid4()), user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = atlas._call(atlas.get_transactions_by_merchant, phone, "deville", "2026-03")
+    normalized = atlas._normalize_pt_text(result)
+    assert "nenhuma transacao encontrada" not in normalized
+    assert "gasto total" in normalized
+
+
 @pytest.mark.asyncio
 async def test_chat_endpoint_groups_multi_expense_before_router(atlas, monkeypatch):
     phone = "+5511988887766"
