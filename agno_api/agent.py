@@ -1534,7 +1534,26 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
             "SELECT id, name, due_day, current_bill_opening_cents, last_bill_paid_at FROM credit_cards WHERE user_id = ? AND due_day > 0",
             (user_id,),
         )
-        for card_id, card_name, due_day, opening_cents, last_paid in cur.fetchall() or []:
+        # Compromissos do mês: só faturas de cartão com vencimento FUTURO no mês atual.
+        today_str = now.strftime("%Y-%m-%d")
+        cur.execute(
+            """SELECT name, amount_cents, due_date
+               FROM bills
+               WHERE user_id = ?
+                 AND recurring_id LIKE 'card_%'
+                 AND paid = 0
+                 AND due_date LIKE ?
+                 AND due_date >= ?
+               ORDER BY due_date ASC""",
+            (user_id, f"{current_month}%", today_str),
+        )
+        for b_name, b_amt, b_due in cur.fetchall() or []:
+            if (b_amt or 0) <= 0:
+                continue
+            pending_commitments += b_amt
+            d_lbl = f"{b_due[8:10]}/{b_due[5:7]}" if b_due and len(b_due) >= 10 else f"??/{current_month[5:7]}"
+            commitment_details.append(f"â€¢ {d_lbl} â€” {b_name}: {_fmt_brl(b_amt)}")
+        for card_id, card_name, due_day, opening_cents, last_paid in []:
             if last_paid:
                 cur.execute(
                     "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at >= ?",
