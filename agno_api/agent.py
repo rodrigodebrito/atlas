@@ -1363,6 +1363,7 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
 
     conn = _get_conn()
     cur = conn.cursor()
+    now = _now_br()
 
     cur.execute("SELECT id, name FROM users WHERE phone = ?", (user_phone,))
     row = cur.fetchone()
@@ -1371,8 +1372,8 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         return "Nenhuma transação encontrada. Comece registrando um gasto!"
 
     user_id, user_name = row
+    current_month = month
 
-    # Totals per type (for income)
     cur.execute(
         """SELECT type, category, SUM(amount_cents) as total
            FROM transactions
@@ -1382,9 +1383,10 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         (user_id, f"{month}%"),
     )
     rows = cur.fetchall()
+    if not rows:
+        conn.close()
+        return f"Nenhuma transação em {month}."
 
-    # Individual transactions — TODAS pelo mês de occurred_at (caixa + crédito)
-    # Crédito é anotado com 💳 fat. cartão (mês) para o usuário saber quando será cobrado
     cur.execute(
         """SELECT t.category, t.merchant, t.amount_cents, t.occurred_at,
                   t.card_id, t.installments, t.installment_number,
@@ -1392,90 +1394,44 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
            FROM transactions t
            LEFT JOIN credit_cards c ON t.card_id = c.id
            WHERE t.user_id = ? AND UPPER(t.type) = 'EXPENSE'
-           AND t.occurred_at LIKE ?
-           ORDER BY t.category, t.amount_cents DESC""",
+             AND t.occurred_at LIKE ?
+           ORDER BY t.amount_cents DESC""",
         (user_id, f"{month}%"),
     )
     tx_rows = cur.fetchall()
 
-    # Individual INCOME transactions (para mostrar detalhes)
-    cur.execute(
-        """SELECT t.category, t.merchant, t.amount_cents, t.occurred_at
-           FROM transactions t
-           WHERE t.user_id = ? AND UPPER(t.type) = 'INCOME'
-           AND t.occurred_at LIKE ?
-           ORDER BY t.amount_cents DESC""",
-        (user_id, f"{month}%"),
-    )
-    inc_tx_rows = cur.fetchall()
-
-    # Date range of the month's transactions
     cur.execute(
         "SELECT MIN(occurred_at), MAX(occurred_at) FROM transactions WHERE user_id = ? AND occurred_at LIKE ?",
         (user_id, f"{month}%"),
     )
     date_range = cur.fetchone()
 
-    conn.close()
-
-    if not rows:
-        return f"Nenhuma transação em {month}."
-
     _BILL_PAY_CATS = {"Pagamento Fatura", "Pagamento Conta"}
+    from collections import defaultdict, Counter
+
     income = sum(r[2] for r in rows if r[0] == "INCOME")
-    # Pagamentos de fatura/conta: saída real mas não duplicar nos gastos
-    expenses = sum(r[2] for r in rows if r[0] == "EXPENSE" and r[1] not in _BILL_PAY_CATS)
     bill_payment_total = sum(r[2] for r in rows if r[0] == "EXPENSE" and r[1] in _BILL_PAY_CATS)
 
-    # Separa gastos em caixa (débito/PIX/dinheiro) e crédito (cartão)
-    # card_id IS NULL → caixa (sai do banco agora)
-    # card_id NOT NULL → crédito (sai do banco quando a fatura vencer)
-    cash_expenses = 0
-    credit_expenses = 0
-
-    # Month label
-    months_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
-                 "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
-    try:
-        y, m_num = map(int, month.split("-"))
-        month_label = f"{months_pt[m_num]}/{y}"
-    except Exception:
-        month_label = month
-
-    # Date range label
-    date_label = ""
-    if date_range and date_range[0] and date_range[1]:
-        d_start = date_range[0][:10]
-        d_end = date_range[1][:10]
-        try:
-            d1 = f"{d_start[8:10]}/{d_start[5:7]}"
-            d2 = f"{d_end[8:10]}/{d_end[5:7]}"
-            date_label = f" ({d1} a {d2})"
-        except Exception:
-            pass
-
-    # Group individual transactions by category, anotando crédito
-    # Toda transação de crédito em tx_rows já passou pelo filtro _compute_due_month == month,
-    # portanto pertence ao ciclo desta fatura e abate o saldo normalmente.
-    from collections import defaultdict, Counter
-    cat_txs: dict = defaultdict(list)
-    cat_totals_display: dict = defaultdict(int)
-    day_totals: dict = defaultdict(int)  # para insight: dia mais gastador
-    merchant_freq: Counter = Counter()   # para insight: merchant mais frequente
-    bill_payment_lines = []
+    cat_totals_display: dict[str, int] = defaultdict(int)
+    cat_counts: dict[str, int] = defaultdict(int)
+    merchant_freq: Counter = Counter()
     current_month_credit_expenses = 0
     deferred_credit_expenses = 0
-    for cat, merchant, amount, occurred, card_id, inst_total, inst_num, card_name, closing_day, due_day, total_amt in tx_rows:
-        # Pagamento de fatura/conta: mostrar separado, não somar nos gastos
+    cash_expenses = 0
+    credit_expenses = 0
+    top_transactions: list[tuple[int, str]] = []
+
+    for cat, merchant, amount, occurred, card_id, inst_total, _inst_num, card_name, closing_day, due_day, total_amt in tx_rows:
         if cat in _BILL_PAY_CATS:
-            dt_lbl = f"{occurred[8:10]}/{occurred[5:7]}" if occurred and len(occurred) >= 10 else ""
-            bill_payment_lines.append(f"• {dt_lbl} — {merchant}: R${amount/100:,.2f}".replace(",", "."))
             continue
-        label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
+        category = cat or "Outros"
+        label = (merchant or "Sem descrição").strip() or "Sem descrição"
         dt_lbl = f"{occurred[8:10]}/{occurred[5:7]}" if occurred and len(occurred) >= 10 else ""
-        day_totals[occurred[:10]] += amount
-        if merchant and merchant.strip():
-            merchant_freq[merchant.strip()] += 1
+
+        cat_totals_display[category] += amount
+        cat_counts[category] += 1
+        merchant_freq[label] += 1
+
         if card_id:
             credit_expenses += amount
             due_month = _compute_due_month(occurred, closing_day or 0, due_day or 0)
@@ -1485,113 +1441,81 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
                 deferred_credit_expenses += amount
             due_lbl = _month_label_pt(due_month) if due_month else "?"
             short_card = card_name.split()[0] if card_name else "cartão"
-            # Label mostra o total da compra se parcelado (contexto), mas amount é a parcela do mês
             if inst_total and inst_total > 1 and total_amt and total_amt > amount:
-                inst_suffix = f" R${total_amt/100:,.2f} em {inst_total}x (R${amount/100:,.2f}/parc.)".replace(",", ".")
+                detail = f"{dt_lbl} • {label} • {_fmt_brl(total_amt)} em {inst_total}x ({_fmt_brl(amount)}/parc.) • 💳 {short_card} ({due_lbl})"
             else:
-                inst_suffix = f" R${amount/100:,.2f}".replace(",", ".")
-            item = f"• {dt_lbl} — {label}:{inst_suffix} 💳 fat. {short_card} ({due_lbl})"
+                detail = f"{dt_lbl} • {label} • {_fmt_brl(amount)} • 💳 {short_card} ({due_lbl})"
         else:
             cash_expenses += amount
-            item = f"• {dt_lbl} — {label}: R${amount/100:,.2f}".replace(",", ".")
-        cat_totals_display[cat] += amount
-        cat_txs[cat].append((occurred, amount, item))
+            detail = f"{dt_lbl} • {label} • {_fmt_brl(amount)}"
 
-    # Category emoji map
-    cat_emoji = {
-        "Alimentação": "🍽️", "Transporte": "🚗", "Saúde": "💊",
-        "Moradia": "🏠", "Lazer": "🎮", "Assinaturas": "📱",
-        "Educação": "📚", "Vestuário": "👟", "Investimento": "📈",
-        "Outros": "📦",
-    }
+        top_transactions.append((amount, detail))
 
-    # Compras feitas no mês podem incluir cartão que só vence depois.
+    total_expenses = cash_expenses + credit_expenses
     month_cashflow_total = cash_expenses + current_month_credit_expenses
     balance = income - month_cashflow_total
 
-    # Filter type label
-    type_label_m = {"EXPENSE": "gastos", "INCOME": "receitas", "ALL": "resumo"}.get(filter_type, "resumo")
-    lines = [
-        f"📊 *{user_name}, seu {type_label_m} de {month_label}*",
-        f"📆 {date_label.strip(' ()')}" if date_label else "",
-        f"",
-        f"─────────────────────",
-    ]
-    lines = [l for l in lines if l or l == ""]  # remove empty date line if no date
+    months_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+                 "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+    try:
+        y, m_num = map(int, month.split("-"))
+        month_label = f"{months_pt[m_num]}/{y}"
+    except Exception:
+        month_label = month
 
-    income_rows_detail = [(r[1], r[2]) for r in rows if r[0] == "INCOME"]
-    total_expenses = cash_expenses + credit_expenses
+    period_line = ""
+    if date_range and date_range[0] and date_range[1]:
+        d_start = date_range[0][:10]
+        d_end = date_range[1][:10]
+        try:
+            period_line = f"{d_start[8:10]}/{d_start[5:7]} a {d_end[8:10]}/{d_end[5:7]}"
+        except Exception:
+            period_line = ""
+
+    lines = [f"📊 *{user_name}, resumo de {month_label}*"]
+    if period_line:
+        lines.append(f"📆 {period_line}")
+    lines.append("")
+    lines.append("🎯 *Fechamento do período*")
+    lines.append(f"💰 Entradas: {_fmt_brl(income)}")
+    lines.append(f"🛍️ Comprado no mês: {_fmt_brl(total_expenses)}")
+    lines.append(f"🗓️ Peso no caixa: {_fmt_brl(month_cashflow_total)}")
+    lines.append(f"{'✅' if balance >= 0 else '⚠️'} Saldo: {_fmt_brl(balance)}")
+
+    if deferred_credit_expenses > 0:
+        lines.append(f"⏭️ Vai cair nas próximas faturas: {_fmt_brl(deferred_credit_expenses)}")
+    if bill_payment_total > 0:
+        lines.append(f"💳 Pagamentos de faturas/contas já feitos: {_fmt_brl(bill_payment_total)}")
 
     if filter_type in ("ALL", "EXPENSE") and cat_totals_display:
-        if filter_type == "ALL" and income_rows_detail:
-            lines.append("")
-            lines.append("📤 *SAÍDAS*")
-            lines.append("")
-        for cat, total in sorted(cat_totals_display.items(), key=lambda x: -x[1]):
-            pct = total / total_expenses * 100 if total_expenses else 0
-            emoji = cat_emoji.get(cat, "💸")
-            lines.append(f"{emoji} *{cat}* — R${total/100:,.2f} ({pct:.0f}%)".replace(",", "."))
-            # Ordena por data, depois por valor desc
-            for _occ, _amt, item_line in sorted(cat_txs.get(cat, []), key=lambda x: (x[0], -x[1])):
-                lines.append(f"  {item_line}")
-            lines.append("")
-
-        lines.append(f"─────────────────────")
-        if credit_expenses > 0:
-            lines.append(
-                f"💸 *Total comprado no mês:* R${total_expenses/100:,.2f}"
-                f"  (R${cash_expenses/100:,.2f} à vista · R${credit_expenses/100:,.2f} 💳 cartão)".replace(",", ".")
-            )
-            lines.append(f"🗓️ *Peso no caixa deste mês:* R${month_cashflow_total/100:,.2f}".replace(",", "."))
-            if deferred_credit_expenses > 0:
-                lines.append(f"⏭️ Compra no cartão que entra só na próxima fatura: R${deferred_credit_expenses/100:,.2f}".replace(",", "."))
-        else:
-            lines.append(f"💸 *Total gasto no mês:* R${total_expenses/100:,.2f}".replace(",", "."))
-
-    # Pagamentos de fatura (saída real, mas não duplica nos gastos)
-    if bill_payment_lines:
         lines.append("")
-        lines.append(f"💳 *Pagamentos (faturas/contas):* R${bill_payment_total/100:,.2f}".replace(",", "."))
-        for bpl in bill_payment_lines:
-            lines.append(f"  {bpl}")
+        lines.append("📦 *Onde mais pesou*")
+        top_cats = sorted(cat_totals_display.items(), key=lambda x: -x[1])[:6]
+        for cat, total in top_cats:
+            pct = (total / total_expenses * 100) if total_expenses else 0
+            count = cat_counts.get(cat, 0)
+            lines.append(f"• {cat}: {_fmt_brl(total)} ({pct:.0f}%) · {count} lanç.")
 
-    if filter_type in ("ALL", "INCOME") and income_rows_detail:
+    if filter_type in ("ALL", "EXPENSE") and top_transactions:
         lines.append("")
-        if filter_type == "ALL":
-            lines.append("📥 *ENTRADAS*")
-            lines.append("")
-        # Agrupa transações individuais de income por categoria
-        from collections import defaultdict as _dd_inc
-        _inc_by_cat = _dd_inc(list)
-        for cat, merchant, amount, occurred in inc_tx_rows:
-            label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
-            dt_lbl = f"{occurred[8:10]}/{occurred[5:7]}" if occurred and len(occurred) >= 10 else ""
-            _inc_by_cat[cat].append((dt_lbl, label, amount))
-        for cat, total in sorted(income_rows_detail, key=lambda x: -x[1]):
-            lines.append(f"💰 *{cat}* — R${total/100:,.2f}".replace(",", "."))
-            for dt_lbl, label, amt in _inc_by_cat.get(cat, []):
-                lines.append(f"  • {dt_lbl} — {label}: R${amt/100:,.2f}".replace(",", "."))
-            lines.append("")
-        lines.append(f"─────────────────────")
-        lines.append(f"💰 *Total recebido:* R${income/100:,.2f}".replace(",", "."))
+        lines.append("🔎 *Maiores lançamentos do período*")
+        max_items = 10
+        sorted_top = sorted(top_transactions, key=lambda x: -x[0])
+        for _, detail in sorted_top[:max_items]:
+            lines.append(f"• {detail}")
+        remaining = len(sorted_top) - max_items
+        if remaining > 0:
+            lines.append(f"_… e mais {remaining} lançamentos. Se quiser, peça: \"detalhar mês\"._")
 
-    if filter_type == "ALL":
-        lines.append("")
-        lines.append(f"─────────────────────")
-        lines.append(f"{'✅' if balance >= 0 else '⚠️'} *Saldo:* R${balance/100:,.2f}".replace(",", "."))
-
-    # Calcula compromissos restantes do mês — direto da fonte, sem depender da tabela bills
     pending_commitments = 0
     commitment_details = []
     try:
-        today_day = today.day
-        # 1) Gastos fixos com vencimento restante neste mês (não pagos ainda)
+        today_day = now.day
         cur.execute(
             "SELECT name, amount_cents, day_of_month FROM recurring_transactions WHERE user_id = ? AND active = 1 AND day_of_month > ?",
             (user_id, today_day),
         )
         for r_name, r_amt, r_day in cur.fetchall():
-            # Verifica se já foi pago (existe bill marcada como paid)
             paid = False
             try:
                 cur.execute(
@@ -1604,99 +1528,48 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
                 pass
             if not paid:
                 pending_commitments += r_amt
-                commitment_details.append(f"  ⬜ {r_day:02d}/{current_month[5:7]} — {r_name}: R${r_amt/100:,.2f}".replace(",", "."))
+                commitment_details.append(f"• {r_day:02d}/{current_month[5:7]} — {r_name}: {_fmt_brl(r_amt)}")
 
-        # 2) Faturas de cartão de crédito
-        try:
-            cur.execute(
-                "SELECT id, name, due_day, current_bill_opening_cents, last_bill_paid_at FROM credit_cards WHERE user_id = ? AND due_day > 0",
-                (user_id,),
-            )
-            for card_id, card_name, due_day, opening_cents, last_paid in cur.fetchall():
-                if last_paid:
-                    cur.execute(
-                        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at >= ?",
-                        (user_id, card_id, last_paid),
-                    )
-                else:
-                    cur.execute(
-                        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
-                        (user_id, card_id, f"{current_month}%"),
-                    )
-                card_spent = cur.fetchone()[0]
-                fatura_total = card_spent + (opening_cents or 0)
-                if fatura_total > 0:
-                    # Verifica se já foi paga
-                    paid = False
-                    try:
-                        cur.execute(
-                            "SELECT paid FROM bills WHERE user_id = ? AND recurring_id = ? AND due_date LIKE ? AND paid = 1",
-                            (user_id, f"card_{card_id}", f"{current_month}%"),
-                        )
-                        if cur.fetchone():
-                            paid = True
-                    except Exception:
-                        pass
-                    if not paid:
-                        pending_commitments += fatura_total
-                        commitment_details.append(f"  💳 {due_day:02d}/{current_month[5:7]} — Fatura {card_name}: R${fatura_total/100:,.2f}".replace(",", "."))
-        except Exception:
-            pass
-
-        # 3) Contas avulsas pendentes (boletos etc)
-        try:
-            cur.execute(
-                "SELECT name, amount_cents, due_date FROM bills WHERE user_id = ? AND due_date LIKE ? AND paid = 0 AND (recurring_id IS NULL OR recurring_id NOT LIKE 'card_%')",
-                (user_id, f"{current_month}%"),
-            )
-            for b_name, b_amt, b_due in cur.fetchall():
-                # Exclui se já contou como recurring acima
-                already = any(b_name.lower() in d.lower() for d in commitment_details)
-                if not already:
-                    pending_commitments += b_amt
-                    d_lbl = f"{b_due[8:10]}/{b_due[5:7]}"
-                    commitment_details.append(f"  ⬜ {d_lbl} — {b_name}: R${b_amt/100:,.2f}".replace(",", "."))
-        except Exception:
-            pass
+        cur.execute(
+            "SELECT id, name, due_day, current_bill_opening_cents, last_bill_paid_at FROM credit_cards WHERE user_id = ? AND due_day > 0",
+            (user_id,),
+        )
+        for card_id, card_name, due_day, opening_cents, last_paid in cur.fetchall() or []:
+            if last_paid:
+                cur.execute(
+                    "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at >= ?",
+                    (user_id, card_id, last_paid),
+                )
+            else:
+                cur.execute(
+                    "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND card_id = ? AND type = 'EXPENSE' AND occurred_at LIKE ?",
+                    (user_id, card_id, f"{current_month}%"),
+                )
+            card_spent = cur.fetchone()[0]
+            bill_total = card_spent + (opening_cents or 0)
+            if bill_total > 0:
+                pending_commitments += bill_total
+                commitment_details.append(f"• {due_day:02d}/{current_month[5:7]} — Fatura {card_name}: {_fmt_brl(bill_total)}")
     except Exception:
         pass
 
-    # Mostra compromissos pendentes visualmente
     if filter_type == "ALL" and pending_commitments > 0:
         remaining_after = balance - pending_commitments
         lines.append("")
-        lines.append(f"📋 *Compromissos pendentes: R${pending_commitments/100:,.2f}*".replace(",", "."))
-        for detail in commitment_details:
+        lines.append(f"📋 *Compromissos ainda no mês:* {_fmt_brl(pending_commitments)}")
+        for detail in commitment_details[:8]:
             lines.append(detail)
-        lines.append("")
-        if remaining_after >= 0:
-            lines.append(f"💰 Saldo após compromissos: *R${remaining_after/100:,.2f}*".replace(",", "."))
-        else:
-            lines.append(f"⚠️ Saldo após compromissos: *R${remaining_after/100:,.2f}* _(falta cobrir!)_".replace(",", "."))
+        if len(commitment_details) > 8:
+            lines.append(f"_… e mais {len(commitment_details) - 8} compromissos._")
+        lines.append(f"{'✅' if remaining_after >= 0 else '⚠️'} Saldo após compromissos: {_fmt_brl(remaining_after)}")
+    else:
+        remaining_after = balance
 
-    # Nenhuma receita lançada
-    if filter_type == "ALL" and income == 0:
-        try:
-            _mo_lbl = months_pt[m_num].lower()
-        except Exception:
-            _mo_lbl = month
-        lines.append(f"Você ainda não lançou receitas em {_mo_lbl}.")
-
-    # Largest category for summary insight
-    top_cat_name, top_pct_val = "", 0.0
+    top_cat_name = ""
     if filter_type in ("ALL", "EXPENSE") and cat_totals_display:
-        top_cat, top_total = sorted(cat_totals_display.items(), key=lambda x: -x[1])[0]
-        top_pct = top_total / total_expenses * 100 if total_expenses else 0
-        top_cat_name, top_pct_val = top_cat, top_pct
-        lines.append(f"__top_category:{top_cat}:{top_pct:.0f}%")
-    elif income_rows_detail:
-        top_cat, top_total = sorted(income_rows_detail, key=lambda x: -x[1])[0]
-        top_pct = top_total / income * 100 if income else 0
-        top_cat_name, top_pct_val = top_cat, top_pct
-        lines.append(f"__top_category:{top_cat}:{top_pct:.0f}%")
+        top_cat_name = max(cat_totals_display, key=lambda k: cat_totals_display[k])
 
     if filter_type in ("ALL", "EXPENSE"):
-        remaining_after = balance - pending_commitments
         pri_insight = _build_pri_month_summary_insight(
             top_cat_name=top_cat_name,
             merchant_freq=merchant_freq,
@@ -1709,14 +1582,14 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
             lines.append("")
             lines.append(pri_insight)
 
-    # Link do painel (sempre incluído no resumo mensal)
     try:
         panel_url = get_panel_url(user_phone)
         if panel_url:
-            lines.append(f"\n📊 *Ver painel com gráficos:* {panel_url}")
+            lines.append(f"\n📊 *Painel com gráficos:* {panel_url}")
     except Exception:
         pass
 
+    conn.close()
     return "\n".join(lines)
 
 
@@ -2404,10 +2277,7 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
     Exemplos: "gastos dos últimos 3 dias" → days=3, "o que gastei ontem" → days=2 filter_type=EXPENSE
     """
     today = _now_br()
-
-    # Gera lista de datas (hoje até N dias atrás)
     date_list = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
-
     if days == 1:
         period_label = f"hoje ({today.strftime('%d/%m/%Y')})"
     elif days == 2:
@@ -2419,18 +2289,15 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
 
     conn = _get_conn()
     cur = conn.cursor()
-
     cur.execute("SELECT id, name FROM users WHERE phone = ?", (user_phone,))
     row = cur.fetchone()
     if not row:
         conn.close()
         return "Nenhuma movimentação registrada ainda."
-
     user_id, user_name = row
 
     date_conditions = " OR ".join(["t.occurred_at LIKE ?" for _ in date_list])
     date_params = tuple(f"{d}%" for d in date_list)
-
     filter_type = filter_type.strip().upper()
     type_filter = "" if filter_type == "ALL" else f"AND UPPER(t.type) = '{filter_type}'"
     cur.execute(
@@ -2448,10 +2315,84 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
 
     if not rows:
         label_map = {"EXPENSE": "gastos", "INCOME": "receitas", "ALL": "movimentações"}
-        label = label_map.get(filter_type, "movimentação")
-        return f"Nenhum {label} registrado para {period_label}."
+        return f"Nenhum {label_map.get(filter_type, 'movimentação')} registrado para {period_label}."
 
     from collections import defaultdict
+    exp_rows = [r for r in rows if r[0] == "EXPENSE"]
+    inc_rows = [r for r in rows if r[0] == "INCOME"]
+    lines = [f"📅 *{user_name}, resumo do período*",
+             f"📆 {period_label}",
+             ""]
+
+    if filter_type in ("ALL", "EXPENSE") and exp_rows:
+        bill_cats = {"Pagamento Fatura", "Pagamento Conta"}
+        exp_real = [r for r in exp_rows if (r[1] or "") not in bill_cats]
+        cat_totals: dict[str, int] = defaultdict(int)
+        cat_counts: dict[str, int] = defaultdict(int)
+        top_items: list[tuple[int, str]] = []
+        cash_total = 0
+        credit_total = 0
+
+        for _, cat, merchant, amount, card_id, occurred, inst_total, _inst_num, card_name, closing_day, due_day, total_amt in exp_real:
+            category = cat or "Outros"
+            cat_totals[category] += amount
+            cat_counts[category] += 1
+            merchant_label = (merchant or "Sem descrição").strip() or "Sem descrição"
+            date_lbl = f"{occurred[8:10]}/{occurred[5:7]}" if occurred and len(occurred) >= 10 else ""
+            if card_id:
+                credit_total += amount
+                due_lbl = _month_label_pt(_compute_due_month(occurred, closing_day or 0, due_day or 0))
+                card_lbl = card_name.split()[0] if card_name else "cartão"
+                if inst_total and inst_total > 1 and total_amt and total_amt > amount:
+                    detail = f"{date_lbl} • {merchant_label} • {_fmt_brl(total_amt)} em {inst_total}x ({_fmt_brl(amount)}/parc.) • 💳 {card_lbl} ({due_lbl})"
+                else:
+                    detail = f"{date_lbl} • {merchant_label} • {_fmt_brl(amount)} • 💳 {card_lbl} ({due_lbl})"
+            else:
+                cash_total += amount
+                detail = f"{date_lbl} • {merchant_label} • {_fmt_brl(amount)}"
+            top_items.append((amount, detail))
+
+        total_exp = sum(cat_totals.values())
+        lines.append("🎯 *Fechamento do período*")
+        lines.append(f"🛍️ Total gasto: {_fmt_brl(total_exp)}")
+        if credit_total > 0:
+            lines.append(f"💵 À vista: {_fmt_brl(cash_total)} · 💳 Cartão: {_fmt_brl(credit_total)}")
+
+        lines.append("")
+        lines.append("📦 *Categorias que mais pesaram*")
+        for cat_name, cat_total in sorted(cat_totals.items(), key=lambda x: -x[1])[:5]:
+            pct = (cat_total / total_exp * 100) if total_exp else 0
+            lines.append(f"• {cat_name}: {_fmt_brl(cat_total)} ({pct:.0f}%) · {cat_counts[cat_name]} lanç.")
+
+        lines.append("")
+        lines.append("🔎 *Maiores lançamentos*")
+        limit = 6
+        sorted_top = sorted(top_items, key=lambda x: -x[0])
+        for _, detail in sorted_top[:limit]:
+            lines.append(f"• {detail}")
+        if len(sorted_top) > limit:
+            lines.append(f"_… e mais {len(sorted_top) - limit} lançamentos._")
+
+    if filter_type in ("ALL", "INCOME") and inc_rows:
+        total_inc = sum(r[3] for r in inc_rows)
+        lines.append("")
+        lines.append(f"💰 *Entradas no período:* {_fmt_brl(total_inc)}")
+
+    if filter_type == "ALL":
+        total_out = sum(r[3] for r in exp_rows) if exp_rows else 0
+        total_in = sum(r[3] for r in inc_rows) if inc_rows else 0
+        balance = total_in - total_out
+        lines.append("")
+        lines.append(f"{'✅' if balance >= 0 else '⚠️'} *Saldo do período:* {_fmt_brl(balance)}")
+
+    try:
+        panel_url = get_panel_url(user_phone)
+        if panel_url:
+            lines.append(f"\n📊 Painel completo: {panel_url}")
+    except Exception:
+        pass
+
+    return "\n".join(lines)
     cat_emoji = {
         "Alimentação": "🍽️", "Transporte": "🚗", "Saúde": "💊",
         "Moradia": "🏠", "Lazer": "🎮", "Assinaturas": "📱",
@@ -2459,137 +2400,79 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
         "Pets": "🐾", "Outros": "📦", "Indefinido": "❓",
     }
 
-    # Separate by type; include card info for expenses
     exp_rows = [r for r in rows if r[0] == "EXPENSE"]
-    inc_rows = [(r[1], r[2], r[3]) for r in rows if r[0] == "INCOME"]
-
+    inc_rows = [r for r in rows if r[0] == "INCOME"]
     type_label = {"EXPENSE": "gastos", "INCOME": "receitas", "ALL": "movimentações"}.get(filter_type, "movimentações")
-    lines = [
-        f"📅 *{user_name}, seus {type_label}*",
-        f"📆 {period_label}",
-        f"",
-        f"─────────────────────",
-    ]
-
-    def build_exp_block(tx_list, ref_total):
-        cat_totals: dict = defaultdict(int)
-        cat_txs: dict = defaultdict(list)
-        cash_total = 0
-        credit_total = 0
-        for _, cat, merchant, amount, card_id, occurred, inst_total, inst_num, card_name, closing_day, due_day, total_amt in tx_list:
-            cat_totals[cat] += amount
-            label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
-            if card_id:
-                credit_total += amount
-                if closing_day and due_day:
-                    due_lbl = _month_label_pt(_compute_due_month(occurred, closing_day, due_day))
-                else:
-                    due_lbl = "?"
-                short_card = card_name.split()[0] if card_name else "cartão"
-                if inst_total and inst_total > 1 and total_amt and total_amt > amount:
-                    inst_suffix = f" R${total_amt/100:,.2f} em {inst_total}x (R${amount/100:,.2f}/parc.)".replace(",", ".")
-                else:
-                    inst_suffix = f" R${amount/100:,.2f}".replace(",", ".")
-                item = f"• {label}:{inst_suffix} 💳 fat. {short_card} ({due_lbl})"
-            else:
-                cash_total += amount
-                item = f"• {label}: R${amount/100:,.2f}".replace(",", ".")
-            cat_txs[cat].append((amount, item))
-        result = []
-        for cat, total_cat in sorted(cat_totals.items(), key=lambda x: -x[1]):
-            pct = total_cat / ref_total * 100 if ref_total else 0
-            emoji = cat_emoji.get(cat, "💸")
-            result.append(f"{emoji} *{cat}* — R${total_cat/100:,.2f} ({pct:.0f}%)".replace(",", "."))
-            for _amt, item_line in sorted(cat_txs[cat], key=lambda x: -x[0]):
-                result.append(f"  {item_line}")
-            result.append("")
-        return cat_totals, result, cash_total, credit_total
-
-    def build_inc_block(tx_list, ref_total):
-        cat_totals: dict = defaultdict(int)
-        cat_txs: dict = defaultdict(list)
-        for cat, merchant, amount in tx_list:
-            cat_totals[cat] += amount
-            label = merchant.strip() if merchant and merchant.strip() else "Sem descrição"
-            cat_txs[cat].append((label, amount))
-        result = []
-        for cat, total_cat in sorted(cat_totals.items(), key=lambda x: -x[1]):
-            pct = total_cat / ref_total * 100 if ref_total else 0
-            result.append(f"💰 *{cat}* — R${total_cat/100:,.2f} ({pct:.0f}%)".replace(",", "."))
-            for label, amt in cat_txs[cat]:
-                result.append(f"  • {label}: R${amt/100:,.2f}".replace(",", "."))
-            result.append("")
-        return cat_totals, result
-
-    top_cat_name, top_pct_val = "", 0.0
+    lines = [f"📅 *{user_name}, {type_label}*",
+             f"📆 {period_label}",
+             ""]
 
     if filter_type in ("ALL", "EXPENSE") and exp_rows:
-        # Separa pagamentos de fatura/conta (não duplicar nos gastos)
         _BILL_PAY_CATS_D = {"Pagamento Fatura", "Pagamento Conta"}
-        _bill_pay_rows = [r for r in exp_rows if r[1] in _BILL_PAY_CATS_D]
-        _real_exp_rows = [r for r in exp_rows if r[1] not in _BILL_PAY_CATS_D]
-        total_exp = sum(r[3] for r in _real_exp_rows)
-        if _real_exp_rows:
-            if filter_type == "ALL":
-                lines.append("")
-                lines.append("📤 *SAÍDAS*")
-                lines.append("")
-            cat_totals_exp, exp_block, cash_tot, credit_tot = build_exp_block(_real_exp_rows, total_exp)
-            lines.extend(exp_block)
-            lines.append(f"─────────────────────")
-            if credit_tot > 0:
-                lines.append(
-                    f"💸 *Total gastos:* R${total_exp/100:,.2f}"
-                    f"  (R${cash_tot/100:,.2f} à vista · R${credit_tot/100:,.2f} 💳 crédito)".replace(",", ".")
-                )
+        real_exp = [r for r in exp_rows if r[1] not in _BILL_PAY_CATS_D]
+        cat_totals: dict[str, int] = defaultdict(int)
+        cat_counts: dict[str, int] = defaultdict(int)
+        top_items: list[tuple[int, str]] = []
+        cash_total = 0
+        credit_total = 0
+
+        for _, cat, merchant, amount, card_id, occurred, inst_total, _inst_num, card_name, closing_day, due_day, total_amt in real_exp:
+            category = cat or "Outros"
+            cat_totals[category] += amount
+            cat_counts[category] += 1
+            merchant_label = (merchant or "Sem descrição").strip() or "Sem descrição"
+            date_lbl = f"{occurred[8:10]}/{occurred[5:7]}" if occurred and len(occurred) >= 10 else ""
+            if card_id:
+                credit_total += amount
+                due_lbl = _month_label_pt(_compute_due_month(occurred, closing_day or 0, due_day or 0))
+                card_lbl = card_name.split()[0] if card_name else "cartão"
+                if inst_total and inst_total > 1 and total_amt and total_amt > amount:
+                    detail = f"{date_lbl} • {merchant_label} • {_fmt_brl(total_amt)} em {inst_total}x ({_fmt_brl(amount)}/parc.) • 💳 {card_lbl} ({due_lbl})"
+                else:
+                    detail = f"{date_lbl} • {merchant_label} • {_fmt_brl(amount)} • 💳 {card_lbl} ({due_lbl})"
             else:
-                lines.append(f"💸 *Total gastos:* R${total_exp/100:,.2f}".replace(",", "."))
-        else:
-            cat_totals_exp = {}
-        # Pagamentos de fatura separados
-        if _bill_pay_rows:
-            _bp_total = sum(r[3] for r in _bill_pay_rows)
-            lines.append("")
-            lines.append(f"💳 *Pagamentos (faturas/contas):* R${_bp_total/100:,.2f}".replace(",", "."))
-            for _bpr in _bill_pay_rows:
-                _bp_merchant = _bpr[2].strip() if _bpr[2] else "Fatura"
-                lines.append(f"  • {_bp_merchant}: R${_bpr[3]/100:,.2f}".replace(",", "."))
-        if cat_totals_exp and total_exp > 0:
-            tc = max(cat_totals_exp, key=lambda x: cat_totals_exp[x])
-            top_cat_name, top_pct_val = tc, cat_totals_exp[tc] / total_exp * 100
+                cash_total += amount
+                detail = f"{date_lbl} • {merchant_label} • {_fmt_brl(amount)}"
+            top_items.append((amount, detail))
+
+        total_exp = sum(cat_totals.values())
+        lines.append("🎯 *Fechamento do período*")
+        lines.append(f"🛍️ Total gasto: {_fmt_brl(total_exp)}")
+        if credit_total > 0:
+            lines.append(f"💵 À vista: {_fmt_brl(cash_total)} · 💳 Cartão: {_fmt_brl(credit_total)}")
+
+        top_cats = sorted(cat_totals.items(), key=lambda x: -x[1])[:5]
+        lines.append("")
+        lines.append("📦 *Categorias que mais pesaram*")
+        for cat_name, cat_total in top_cats:
+            pct = (cat_total / total_exp * 100) if total_exp else 0
+            lines.append(f"• {cat_name}: {_fmt_brl(cat_total)} ({pct:.0f}%) · {cat_counts[cat_name]} lanç.")
+
+        lines.append("")
+        lines.append("🔎 *Maiores lançamentos*")
+        limit = 7
+        sorted_items = sorted(top_items, key=lambda x: -x[0])
+        for _, detail in sorted_items[:limit]:
+            lines.append(f"• {detail}")
+        if len(sorted_items) > limit:
+            lines.append(f"_… e mais {len(sorted_items) - limit} lançamentos._")
 
     if filter_type in ("ALL", "INCOME") and inc_rows:
-        total_inc = sum(r[2] for r in inc_rows)
+        total_inc = sum(r[3] for r in inc_rows)
         lines.append("")
-        if filter_type == "ALL":
-            lines.append("📥 *ENTRADAS*")
-            lines.append("")
-        cat_totals_inc, inc_block = build_inc_block(inc_rows, total_inc)
-        lines.extend(inc_block)
-        lines.append(f"─────────────────────")
-        lines.append(f"💰 *Total recebido:* R${total_inc/100:,.2f}".replace(",", "."))
-        if filter_type == "INCOME" and cat_totals_inc:
-            tc = max(cat_totals_inc, key=lambda x: cat_totals_inc[x])
-            top_cat_name, top_pct_val = tc, cat_totals_inc[tc] / total_inc * 100
+        lines.append(f"💰 *Entradas no período:* {_fmt_brl(total_inc)}")
 
-    # Saldo quando mostrando ALL (entradas - saídas)
     if filter_type == "ALL":
-        _total_out = sum(r[3] for r in exp_rows) if exp_rows else 0
-        _total_in = sum(r[2] for r in inc_rows) if inc_rows else 0
-        _balance = _total_in - _total_out
-        _bal_emoji = "✅" if _balance >= 0 else "⚠️"
+        total_out = sum(r[3] for r in exp_rows) if exp_rows else 0
+        total_in = sum(r[3] for r in inc_rows) if inc_rows else 0
+        balance = total_in - total_out
         lines.append("")
-        lines.append("─────────────────────")
-        lines.append(f"{_bal_emoji} *Saldo do dia:* R${_balance/100:,.2f}".replace(",", "."))
+        lines.append(f"{'✅' if balance >= 0 else '⚠️'} *Saldo do período:* {_fmt_brl(balance)}")
 
-    if top_cat_name:
-        lines.append(f"__top_category:{top_cat_name}:{top_pct_val:.0f}%")
-
-    # Link do painel
     try:
         panel_url = get_panel_url(user_phone)
         if panel_url:
-            lines.append(f"\n📊 Ver painel com gráficos: {panel_url}")
+            lines.append(f"\n📊 Painel completo: {panel_url}")
     except Exception:
         pass
 
@@ -4686,7 +4569,121 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
     Resumo da semana atual (segunda a hoje) com lançamentos por categoria.
     filter_type: "ALL" (padrão), "EXPENSE" (só gastos), "INCOME" (só receitas).
     """
-    from collections import defaultdict, Counter
+    from collections import defaultdict
+    # Novo formato compacto/executivo: KPIs + top categorias + top lançamentos.
+    # Mantém o relatório completo sem estourar o limite visual do WhatsApp.
+    today = _now_br()
+    days_since_monday = today.weekday()
+    monday = today - timedelta(days=days_since_monday)
+    start_label = monday.strftime("%d/%m/%Y")
+    end_label = today.strftime("%d/%m/%Y")
+    week_dates = [
+        (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        for i in range(days_since_monday, -1, -1)
+    ]
+
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name FROM users WHERE phone = ?", (user_phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return "Nenhum dado encontrado."
+    user_id, user_name = row
+
+    date_conditions = " OR ".join(["t.occurred_at LIKE ?" for _ in week_dates])
+    date_params = tuple(f"{d}%" for d in week_dates)
+    filter_type = filter_type.strip().upper()
+    type_filter = "" if filter_type == "ALL" else f"AND UPPER(t.type) = '{filter_type}'"
+    cur.execute(
+        f"""SELECT t.type, t.category, t.merchant, t.amount_cents, t.occurred_at,
+                   t.card_id, t.installments, t.installment_number,
+                   c.name as card_name, c.closing_day, c.due_day, t.total_amount_cents
+           FROM transactions t
+           LEFT JOIN credit_cards c ON t.card_id = c.id
+           WHERE t.user_id = ? {type_filter} AND ({date_conditions})
+           ORDER BY t.amount_cents DESC""",
+        (user_id,) + date_params,
+    )
+    tx_rows = cur.fetchall()
+    conn.close()
+
+    if not tx_rows:
+        label_map = {"EXPENSE": "gastos", "INCOME": "receitas", "ALL": "movimentações"}
+        return f"Nenhum(a) {label_map.get(filter_type, 'movimentação')} essa semana ainda."
+
+    exp_rows = [r for r in tx_rows if r[0] == "EXPENSE"]
+    inc_rows = [r for r in tx_rows if r[0] == "INCOME"]
+    period = f"{start_label}" if start_label == end_label else f"{start_label} a {end_label}"
+    lines = [f"📆 *{user_name}, resumo da semana*", f"📅 {period}", ""]
+
+    if filter_type in ("ALL", "EXPENSE") and exp_rows:
+        cat_totals: dict[str, int] = defaultdict(int)
+        cat_counts: dict[str, int] = defaultdict(int)
+        top_items: list[tuple[int, str]] = []
+        cash_total = 0
+        credit_total = 0
+
+        for _, category, merchant, amount, occurred, card_id, inst_total, _inst_num, card_name, closing_day, due_day, total_amt in exp_rows:
+            cat = category or "Outros"
+            cat_totals[cat] += amount
+            cat_counts[cat] += 1
+            merchant_label = (merchant or "Sem descrição").strip() or "Sem descrição"
+            date_lbl = f"{occurred[8:10]}/{occurred[5:7]}" if occurred and len(occurred) >= 10 else ""
+            if card_id:
+                credit_total += amount
+                due_lbl = _month_label_pt(_compute_due_month(occurred, closing_day or 0, due_day or 0))
+                card_lbl = card_name.split()[0] if card_name else "cartão"
+                if inst_total and inst_total > 1 and total_amt and total_amt > amount:
+                    detail = f"{date_lbl} • {merchant_label} • {_fmt_brl(total_amt)} em {inst_total}x ({_fmt_brl(amount)}/parc.) • 💳 {card_lbl} ({due_lbl})"
+                else:
+                    detail = f"{date_lbl} • {merchant_label} • {_fmt_brl(amount)} • 💳 {card_lbl} ({due_lbl})"
+            else:
+                cash_total += amount
+                detail = f"{date_lbl} • {merchant_label} • {_fmt_brl(amount)}"
+            top_items.append((amount, detail))
+
+        total_exp = sum(cat_totals.values())
+        lines.append("🎯 *Fechamento da semana*")
+        lines.append(f"🛍️ Total gasto: {_fmt_brl(total_exp)}")
+        if credit_total > 0:
+            lines.append(f"💵 À vista: {_fmt_brl(cash_total)} · 💳 Cartão: {_fmt_brl(credit_total)}")
+
+        lines.append("")
+        lines.append("📦 *Categorias que mais pesaram*")
+        for cat, total in sorted(cat_totals.items(), key=lambda x: -x[1])[:5]:
+            pct = (total / total_exp * 100) if total_exp else 0
+            lines.append(f"• {cat}: {_fmt_brl(total)} ({pct:.0f}%) · {cat_counts[cat]} lanç.")
+
+        lines.append("")
+        lines.append("🔎 *Maiores lançamentos da semana*")
+        limit = 7
+        sorted_items = sorted(top_items, key=lambda x: -x[0])
+        for _, detail in sorted_items[:limit]:
+            lines.append(f"• {detail}")
+        if len(sorted_items) > limit:
+            lines.append(f"_… e mais {len(sorted_items) - limit} lançamentos._")
+
+    if filter_type in ("ALL", "INCOME") and inc_rows:
+        total_inc = sum(r[3] for r in inc_rows)
+        lines.append("")
+        lines.append(f"💰 *Total recebido na semana:* {_fmt_brl(total_inc)}")
+
+    if filter_type == "ALL":
+        total_out = sum(r[3] for r in exp_rows) if exp_rows else 0
+        total_in = sum(r[3] for r in inc_rows) if inc_rows else 0
+        balance = total_in - total_out
+        lines.append("")
+        lines.append(f"{'✅' if balance >= 0 else '⚠️'} *Saldo da semana:* {_fmt_brl(balance)}")
+
+    try:
+        panel_url = get_panel_url(user_phone)
+        if panel_url:
+            lines.append(f"\n📊 Painel completo: {panel_url}")
+    except Exception:
+        pass
+
+    return "\n".join(lines)
     today = _now_br()
     days_since_monday = today.weekday()
     monday = today - timedelta(days=days_since_monday)
