@@ -4936,7 +4936,7 @@ def get_spend_by_merchant_type(
         return "Nenhuma transação encontrada."
     user_id, user_name = row[0], row[1]
 
-    m_type = _normalize_pt_text(merchant_type or "").strip()
+    m_type = _normalize_merchant_type(merchant_type)
     valid_types = {"mercado", "restaurante", "farmacia", "transporte", "vestuario"}
     if m_type not in valid_types:
         conn.close()
@@ -4981,26 +4981,29 @@ def get_spend_by_merchant_type(
         except Exception:
             period_label = month_ref
 
-    cur.execute(
-        f"""SELECT merchant, merchant_raw, merchant_canonical, merchant_type, category, amount_cents, occurred_at
-            FROM transactions
-            WHERE user_id = ? AND type = 'EXPENSE'
-              {date_filter_sql}
-            ORDER BY occurred_at DESC""",
-        params,
-    )
-    all_rows = cur.fetchall()
-    conn.close()
+    def _load_rows(filter_sql: str, filter_params: list):
+        cur.execute(
+            f"""SELECT merchant, merchant_raw, merchant_canonical, merchant_type, category, amount_cents, occurred_at
+                FROM transactions
+                WHERE user_id = ? AND type = 'EXPENSE'
+                  {filter_sql}
+                ORDER BY occurred_at DESC""",
+            [user_id, *filter_params],
+        )
+        source_rows = cur.fetchall() or []
+        filtered = []
+        for merchant, merchant_raw, merchant_canonical, stored_type, category, amount_cents, occurred_at in source_rows:
+            tx_type = _normalize_merchant_type(stored_type)
+            if not tx_type:
+                tx_type = _infer_merchant_type(merchant_raw or merchant or "", merchant_canonical or "", category or "")
+            if tx_type == m_type:
+                filtered.append((merchant, merchant_canonical, amount_cents, occurred_at))
+        return filtered
 
-    rows = []
-    for merchant, merchant_raw, merchant_canonical, stored_type, category, amount_cents, occurred_at in all_rows:
-        tx_type = _normalize_pt_text(stored_type or "").strip()
-        if not tx_type:
-            tx_type = _infer_merchant_type(merchant_raw or merchant or "", merchant_canonical or "", category or "")
-        if tx_type == m_type:
-            rows.append((merchant, merchant_canonical, amount_cents, occurred_at))
+    rows = _load_rows(date_filter_sql, params[1:])
 
     if not rows:
+        conn.close()
         return f"Nenhum gasto de *{m_type}* em {period_label}."
 
     total = sum((r[2] or 0) for r in rows)
@@ -5021,11 +5024,76 @@ def get_spend_by_merchant_type(
         f"🧾 *Compras:* {count}",
         f"📊 *Ticket médio:* {_fmt_brl(int(avg))}",
     ]
+
+    # Comparação: só entra quando existe base anterior real.
+    compare_total = 0
+    compare_count = 0
+    compare_label = ""
+
+    if period_key == "today":
+        y = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        prev_rows = _load_rows("AND occurred_at LIKE ?", [f"{y}%"])
+        compare_total = sum((r[2] or 0) for r in prev_rows)
+        compare_count = len(prev_rows)
+        compare_label = "ontem"
+    elif period_key == "yesterday":
+        d = (now - timedelta(days=2)).strftime("%Y-%m-%d")
+        prev_rows = _load_rows("AND occurred_at LIKE ?", [f"{d}%"])
+        compare_total = sum((r[2] or 0) for r in prev_rows)
+        compare_count = len(prev_rows)
+        compare_label = "anteontem"
+    elif period_key == "last7":
+        prev_end = now - timedelta(days=7)
+        prev_start = now - timedelta(days=13)
+        prev_rows = _load_rows(
+            "AND occurred_at >= ? AND occurred_at <= ? || 'T23:59:59'",
+            [prev_start.strftime("%Y-%m-%d"), prev_end.strftime("%Y-%m-%d")],
+        )
+        compare_total = sum((r[2] or 0) for r in prev_rows)
+        compare_count = len(prev_rows)
+        compare_label = "7 dias anteriores"
+    elif period_key == "week":
+        start_dt = now - timedelta(days=now.weekday())
+        prev_start_dt = start_dt - timedelta(days=7)
+        prev_end_dt = start_dt - timedelta(days=1)
+        prev_rows = _load_rows(
+            "AND occurred_at >= ? AND occurred_at <= ? || 'T23:59:59'",
+            [prev_start_dt.strftime("%Y-%m-%d"), prev_end_dt.strftime("%Y-%m-%d")],
+        )
+        compare_total = sum((r[2] or 0) for r in prev_rows)
+        compare_count = len(prev_rows)
+        compare_label = "semana anterior"
+    else:
+        month_ref = month or _current_month()
+        try:
+            y = int(month_ref[:4]); m = int(month_ref[5:7])
+            prev_m = m - 1; prev_y = y
+            if prev_m == 0:
+                prev_m = 12; prev_y -= 1
+            prev_month_ref = f"{prev_y}-{prev_m:02d}"
+            prev_rows = _load_rows("AND occurred_at LIKE ?", [f"{prev_month_ref}%"])
+            compare_total = sum((r[2] or 0) for r in prev_rows)
+            compare_count = len(prev_rows)
+            compare_label = f"{['', 'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'][prev_m]}/{prev_y}"
+        except Exception:
+            compare_total = 0
+            compare_count = 0
+            compare_label = ""
+
+    if compare_count > 0 and compare_total > 0:
+        delta = total - compare_total
+        delta_pct = (delta / compare_total) * 100.0
+        trend = "subiu" if delta > 0 else "caiu"
+        lines.append(f"📉 *Vs {compare_label}:* {trend} {_fmt_brl(abs(int(delta)))} ({abs(delta_pct):.0f}%)")
+    elif compare_label:
+        lines.append(f"📎 *Sem base suficiente para comparar com {compare_label}*")
+
     if top_merchant:
         lines.append("")
         lines.append("🔎 *Onde mais pesou:*")
         for name, amt in top_merchant:
             lines.append(f"• {name}: {_fmt_brl(amt)}")
+    conn.close()
     return "\n".join(lines)
     today = _now_br()
     days_since_monday = today.weekday()
@@ -11552,6 +11620,17 @@ def _extract_merchant_type_from_text(text: str) -> str:
         if any(w in body for w in words):
             return m_type
     return ""
+
+
+def _normalize_merchant_type(value: str) -> str:
+    v = _normalize_pt_text(value or "").strip()
+    aliases = {
+        "supermercado": "mercado",
+        "mercados": "mercado",
+        "restaurantes": "restaurante",
+        "drogaria": "farmacia",
+    }
+    return aliases.get(v, v)
 
 
 def _extract_period_for_type_query(text: str) -> tuple[str, str]:

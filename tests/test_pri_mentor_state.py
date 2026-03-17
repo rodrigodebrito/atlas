@@ -1897,6 +1897,70 @@ def test_pr3_get_spend_by_merchant_type_uses_fallback_when_type_missing(atlas):
     assert "total" in normalized
 
 
+def test_pr4_type_query_shows_no_comparison_when_no_previous_base(atlas):
+    phone = "+5511911116668"
+    user_id = f"user_{uuid.uuid4().hex}"
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, merchant_raw, merchant_canonical, merchant_type, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 4500, 'Alimentação', 'Mercado Novo', 'Mercado Novo', 'mercado novo', 'mercado', ?)""",
+            (str(uuid.uuid4()), user_id, f"{month}-10T12:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = atlas._call(atlas.get_spend_by_merchant_type, phone, "mercado", "month", month)
+    normalized = atlas._normalize_pt_text(result)
+    assert "sem base suficiente para comparar" in normalized
+
+
+def test_pr4_type_query_compares_when_previous_base_exists(atlas):
+    phone = "+5511911116669"
+    user_id = f"user_{uuid.uuid4().hex}"
+    now = atlas._now_br()
+    month = now.strftime("%Y-%m")
+    prev_y, prev_m = atlas._shift_year_month(now.year, now.month, -1)
+    prev_month = f"{prev_y}-{prev_m:02d}"
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, merchant_raw, merchant_canonical, merchant_type, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 5000, 'Alimentação', 'Mercado Deville', 'Mercado Deville', 'deville', 'mercado', ?)""",
+            (str(uuid.uuid4()), user_id, f"{month}-10T12:00:00"),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, merchant_raw, merchant_canonical, merchant_type, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 3000, 'Alimentação', 'Mercado Deville', 'Mercado Deville', 'deville', 'mercado', ?)""",
+            (str(uuid.uuid4()), user_id, f"{prev_month}-10T12:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = atlas._call(atlas.get_spend_by_merchant_type, phone, "mercado", "month", month)
+    normalized = atlas._normalize_pt_text(result)
+    assert "vs" in normalized
+    assert "subiu" in normalized or "caiu" in normalized
+
+
 @pytest.mark.asyncio
 async def test_chat_endpoint_hard_routes_merchant_type_query_before_mini_router(atlas, monkeypatch):
     phone = "+5511911117777"
