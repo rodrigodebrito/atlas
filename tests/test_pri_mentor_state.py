@@ -2439,3 +2439,87 @@ def test_market_query_excludes_mercado_livre_even_if_legacy_tagged_mercado(atlas
     assert "Mercado Livre" not in out
 
 
+def test_category_expansion_detects_cuidados_pessoais(atlas):
+    category = atlas._categorize_merchant_text("cabeleireiro do bairro")
+    assert atlas._normalize_pt_text(category) == "cuidados pessoais"
+
+
+def test_recategorize_history_dry_run_does_not_persist(atlas):
+    phone = "+5511911118896"
+    user_id = f"user_{uuid.uuid4().hex}"
+    tx_id = str(uuid.uuid4())
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, merchant_raw, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 7000, 'Outros', 'cabeleireiro', 'cabeleireiro', ?)""",
+            (tx_id, user_id, f"{month}-12T12:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = atlas._call(atlas.recategorize_transactions_history, phone, "dry-run", "Outros", month, 0, 100)
+    normalized = atlas._normalize_pt_text(out)
+    assert "dry-run" in normalized
+    assert "cuidados pessoais" in normalized
+    assert "candidatas para mudanca: 1" in normalized
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT category FROM transactions WHERE id = ?", (tx_id,))
+        row = cur.fetchone()
+        assert row is not None
+        assert atlas._normalize_pt_text(row[0]) == "outros"
+    finally:
+        conn.close()
+
+
+def test_recategorize_history_apply_persists(atlas):
+    phone = "+5511911118897"
+    user_id = f"user_{uuid.uuid4().hex}"
+    tx_id = str(uuid.uuid4())
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, merchant_raw, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 9000, 'Outros', 'barbearia centro', 'barbearia centro', ?)""",
+            (tx_id, user_id, f"{month}-13T12:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = atlas._call(atlas.recategorize_transactions_history, phone, "apply", "Outros", month, 0, 100)
+    normalized = atlas._normalize_pt_text(out)
+    assert "aplicada" in normalized
+    assert "transacoes atualizadas" in normalized
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT category FROM transactions WHERE id = ?", (tx_id,))
+        row = cur.fetchone()
+        assert row is not None
+        assert atlas._normalize_pt_text(row[0]) == "cuidados pessoais"
+    finally:
+        conn.close()
+
+

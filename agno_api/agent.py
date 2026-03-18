@@ -282,6 +282,10 @@ def _category_icon(category: str) -> str:
         "assinaturas": "\U0001F4F1",
         "educacao": "\U0001F4DA",
         "vestuario": "\U0001F45F",
+        "cuidados pessoais": "\U0001F487",
+        "casa": "\U0001F6E0",
+        "servicos": "\U0001F9FE",
+        "pagamento fatura": "\U0001F4B3",
         "pets": "\U0001F43E",
         "investimento": "\U0001F4C8",
         "outros": "\U0001F4E6",
@@ -2302,6 +2306,150 @@ def update_merchant_category(user_phone: str, merchant_query: str, category: str
 
     except Exception as e:
         return f"ERRO: {str(e)}"
+
+
+@tool(description="""Recategoriza histórico com segurança usando modo dry-run/apply.
+Use para corrigir lançamentos antigos em massa.
+
+Parâmetros:
+- mode: 'dry-run' (padrão, só simula) ou 'apply' (aplica de verdade)
+- from_category: categoria de origem a revisar (padrão: 'Outros'; use '*' para todas)
+- month: filtro opcional YYYY-MM
+- days: filtro opcional de últimos N dias (ignorado quando month informado)
+- limit: máximo de transações analisadas (padrão 2000)
+""")
+def recategorize_transactions_history(
+    user_phone: str,
+    mode: str = "dry-run",
+    from_category: str = "Outros",
+    month: str = "",
+    days: int = 0,
+    limit: int = 2000,
+) -> str:
+    normalized_mode = _normalize_pt_text(mode or "").strip()
+    apply_mode = normalized_mode in {"apply", "aplicar", "executar", "confirmar"}
+    effective_mode = "apply" if apply_mode else "dry-run"
+
+    max_rows = max(1, min(int(limit or 2000), 5000))
+    from_cat_norm = _normalize_pt_text(from_category or "").strip()
+    wildcard_category = from_cat_norm in {"", "*", "todas", "all"}
+    month = (month or "").strip()
+
+    conn = _get_conn()
+    cur = conn.cursor()
+    user_id = _get_user_id(cur, user_phone)
+    if not user_id:
+        conn.close()
+        return "ERRO: usuário não encontrado."
+
+    query = [
+        "SELECT id, amount_cents, category, merchant, merchant_raw, merchant_canonical, occurred_at",
+        "FROM transactions",
+        "WHERE user_id = ?",
+        "  AND UPPER(COALESCE(type,'')) = 'EXPENSE'",
+    ]
+    params: list = [user_id]
+
+    if month:
+        query.append("  AND occurred_at LIKE ?")
+        params.append(f"{month}%")
+    elif days and int(days) > 0:
+        dt_from = (_now_br() - timedelta(days=int(days))).strftime("%Y-%m-%dT00:00:00")
+        query.append("  AND occurred_at >= ?")
+        params.append(dt_from)
+
+    if not wildcard_category:
+        query.append("  AND LOWER(COALESCE(category,'')) = LOWER(?)")
+        params.append(from_category)
+
+    query.append("ORDER BY occurred_at DESC LIMIT ?")
+    params.append(max_rows)
+
+    cur.execute("\n".join(query), tuple(params))
+    rows = cur.fetchall() or []
+
+    scanned = len(rows)
+    if scanned == 0:
+        conn.close()
+        return "Nenhuma transação encontrada para o filtro informado."
+
+    suggestions: list[tuple[str, str, int, str, str, str]] = []
+    agg: dict[str, dict[str, int]] = {}
+
+    for row in rows:
+        tx_id, amount_cents, current_category, merchant, merchant_raw, merchant_canonical, occurred_at = row
+        merchant_text = (merchant_raw or merchant or merchant_canonical or "").strip()
+        if not merchant_text:
+            continue
+        suggested_category = _categorize_merchant_text(merchant_text)
+        current_category = (current_category or "Outros").strip() or "Outros"
+        if suggested_category == "Outros":
+            continue
+        if _normalize_pt_text(suggested_category) == _normalize_pt_text(current_category):
+            continue
+
+        suggestions.append(
+            (
+                tx_id,
+                suggested_category,
+                int(amount_cents or 0),
+                merchant_text,
+                current_category,
+                str(occurred_at or ""),
+            )
+        )
+
+        bucket = agg.setdefault(suggested_category, {"count": 0, "cents": 0})
+        bucket["count"] += 1
+        bucket["cents"] += int(amount_cents or 0)
+
+    if not suggestions:
+        conn.close()
+        return (
+            f"✅ Recategorização ({effective_mode}): nada para mudar.\n"
+            f"• Transações analisadas: {scanned}\n"
+            "• Candidatas para mudança: 0"
+        )
+
+    changed = 0
+    impacted_total = sum(item[2] for item in suggestions)
+    if apply_mode:
+        cur.executemany(
+            "UPDATE transactions SET category = ? WHERE id = ?",
+            [(item[1], item[0]) for item in suggestions],
+        )
+        changed = cur.rowcount if isinstance(cur.rowcount, int) and cur.rowcount >= 0 else len(suggestions)
+        conn.commit()
+    conn.close()
+
+    top_targets = sorted(agg.items(), key=lambda kv: kv[1]["cents"], reverse=True)
+
+    lines = [
+        "🧪 Recategorização histórica (dry-run)" if not apply_mode else "✅ Recategorização histórica aplicada",
+        f"• Modo: {effective_mode}",
+        f"• Transações analisadas: {scanned}",
+        f"• Candidatas para mudança: {len(suggestions)}",
+        f"• Valor potencial impactado: {_fmt_brl(impacted_total)}",
+    ]
+    if apply_mode:
+        lines.append(f"• Transações atualizadas: {changed}")
+
+    lines.append("")
+    lines.append("📂 Novas categorias sugeridas:")
+    for cat, data in top_targets[:8]:
+        lines.append(f"• {cat}: {_fmt_brl(data['cents'])} ({data['count']} lanç.)")
+
+    lines.append("")
+    lines.append("🔎 Amostra das mudanças:")
+    for tx_id, new_cat, amount_cents, merchant_text, old_cat, occurred_at in suggestions[:12]:
+        date_label = occurred_at[:10] if occurred_at else ""
+        lines.append(f"• {date_label} · {_fmt_brl(amount_cents)} · {merchant_text}: {old_cat} → {new_cat}")
+
+    if not apply_mode:
+        lines.append("")
+        lines.append("Para aplicar: diga *\"aplicar recategorização\"*.")
+
+    return "\n".join(lines)
 
 
 @tool(description="Define alias canônico de estabelecimento (ex.: 'compra supermercado deville' -> 'deville').")
@@ -9370,7 +9518,7 @@ atlas_agent = Agent(
     add_history_to_context=ATLAS_ENABLE_HISTORY,
     num_history_runs=ATLAS_HISTORY_RUNS,
     max_tool_calls_from_history=2,
-    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, set_merchant_alias, set_merchant_type, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_spend_by_merchant_type, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event, pause_agenda_event, resume_agenda_event, edit_agenda_event_time, set_category_budget, get_category_budgets, remove_category_budget, get_user_financial_snapshot, get_market_rates, simulate_debt_payoff, simulate_investment],
+    tools=[get_user, update_user_name, update_user_income, save_transaction, get_last_transaction, update_last_transaction, update_merchant_category, recategorize_transactions_history, set_merchant_alias, set_merchant_type, delete_last_transaction, delete_transactions, get_month_summary, get_month_comparison, get_week_summary, get_today_total, get_transactions, get_transactions_by_merchant, get_spend_by_merchant_type, get_category_breakdown, get_installments_summary, can_i_buy, create_goal, get_goals, add_to_goal, get_financial_score, set_salary_day, get_salary_cycle, will_i_have_leftover, register_card, get_cards, close_bill, set_card_bill, set_future_bill, register_recurring, get_recurring, deactivate_recurring, get_next_bill, set_reminder_days, get_upcoming_commitments, get_pending_statement, register_bill, pay_bill, get_bills, get_card_statement, update_card_limit, create_agenda_event, list_agenda_events, complete_agenda_event, delete_agenda_event, pause_agenda_event, resume_agenda_event, edit_agenda_event_time, set_category_budget, get_category_budgets, remove_category_budget, get_user_financial_snapshot, get_market_rates, simulate_debt_payoff, simulate_investment],
     add_datetime_to_context=False,
     store_tool_messages=False,
     telemetry=False,
@@ -11524,12 +11672,7 @@ def _multi_expense_extract(user_phone: str, raw_body: str) -> dict | None:
     if not user_id:
         return None
     for val, merchant in parsed:
-        category = "Outros"
-        m_lower = merchant.lower()
-        for keywords, cat_name in _CAT_RULES:
-            if any(k in m_lower for k in keywords):
-                category = cat_name
-                break
+        category = _categorize_merchant_text(merchant)
         try:
             fn(user_phone, "EXPENSE", val, category, merchant, "", "", 1, 0, "", "")
             tx_date = _now_br().strftime("%d/%m/%Y (hoje)")
@@ -11620,6 +11763,72 @@ _NOISE_WORDS = frozenset({
     "meu", "minha", "meus", "minhas", "esse", "essa", "este", "esta",
     "já", "ja", "ai", "aí", "lá", "la", "só", "so",
 }) | _EXPENSE_VERBS
+
+# Regras de categorização ampliadas (bloco único para extrator e recategorização).
+_CAT_RULES = [
+    (("ifood", "rappi", "restaurante", "lanche", "mercado", "almo", "pizza",
+      "burger", "sushi", "padaria", "acougue", "marmit", "comida",
+      "supermercado", "feira", "hortifruti"), "Alimentação"),
+    (("uber", "99", "gasolina", "pedagio", "onibus", "metro", "taxi",
+      "combustivel", "posto", "estacionamento", "passagem"), "Transporte"),
+    (("netflix", "spotify", "amazon", "disney", "hbo", "youtube",
+      "assinatura", "prime", "globoplay", "deezer"), "Assinaturas"),
+    (("farmacia", "medico", "remedio", "consulta", "plano de saude", "drogaria", "exame", "hospital"), "Saúde"),
+    (("aluguel", "condominio", "luz", "agua", "internet", "gas", "iptu", "energia"), "Moradia"),
+    (("academia", "bar", "cinema", "show", "viagem", "lazer", "ingresso", "festa", "boate", "parque"), "Lazer"),
+    (("curso", "livro", "faculdade", "escola", "claude", "chatgpt", "copilot", "cursor", "udemy", "alura"), "Educação"),
+    (("roupa", "tenis", "sapato", "acessorio", "moda", "camisa", "calca", "blusa"), "Vestuário"),
+    (("cabeleireiro", "barbearia", "barbeiro", "manicure", "pedicure", "salao", "salon", "estetica", "depilacao", "cosmetico", "perfume"), "Cuidados Pessoais"),
+    (("moveis", "eletrodomestico", "reforma", "manutencao", "ferramenta", "material construcao", "decoracao"), "Casa"),
+    (("cartorio", "contador", "advogado", "taxa", "tarifa", "servico"), "Servicos"),
+    (("fatura", "pagamento fatura", "quitei fatura", "paguei fatura"), "Pagamento Fatura"),
+    (("racao", "veterinario", "pet", "banho", "petshop"), "Pets"),
+]
+
+
+def _categorize_merchant_text(merchant_text: str) -> str:
+    normalized = _normalize_pt_text(merchant_text or "")
+    for keywords, cat_name in _CAT_RULES:
+        for keyword in keywords:
+            k_norm = _normalize_pt_text(keyword)
+            if not k_norm:
+                continue
+            if " " in k_norm:
+                if k_norm in normalized:
+                    return cat_name
+            elif re.search(rf"\b{re.escape(k_norm)}\b", normalized):
+                return cat_name
+    return "Outros"
+
+
+def _extract_category_from_text_legacy(text: str) -> str:
+    """Versão ampliada para roteamento rápido de consultas por categoria."""
+    body = _normalize_pt_text(text or "")
+    if any(
+        token in body
+        for token in ("cabeleireiro", "barbearia", "barbeiro", "manicure", "pedicure", "salao", "estetica")
+    ):
+        return "Cuidados Pessoais"
+    aliases = {
+        "Alimentação": ["alimentacao", "comida", "mercado", "restaurante", "ifood", "padaria"],
+        "Transporte": ["transporte", "uber", "gasolina", "posto", "pedagio", "onibus"],
+        "Saúde": ["saude", "farmacia", "remedio", "consulta", "hospital"],
+        "Moradia": ["moradia", "aluguel", "condominio", "luz", "agua", "internet"],
+        "Lazer": ["lazer", "cinema", "bar", "show", "festa"],
+        "Assinaturas": ["assinatura", "netflix", "spotify", "prime", "youtube", "disney"],
+        "Educação": ["educacao", "curso", "faculdade", "escola", "livro"],
+        "Vestuário": ["vestuario", "roupa", "tenis", "sapato", "camisa", "calca"],
+        "Cuidados Pessoais": ["cabeleireiro", "barbearia", "barbeiro", "manicure", "pedicure", "salao", "salon", "estetica", "depilacao", "cosmetico", "perfume"],
+        "Casa": ["moveis", "eletrodomestico", "reforma", "manutencao", "ferramenta", "material construcao", "decoracao"],
+        "Servicos": ["cartorio", "contador", "advogado", "taxa", "tarifa", "servico"],
+        "Pagamento Fatura": ["fatura", "pagamento fatura", "quitei fatura", "paguei fatura"],
+        "Pets": ["pets", "pet", "racao", "veterinario", "petshop"],
+        "Outros": ["outros", "outras"],
+    }
+    for cat, words in aliases.items():
+        if any(w in body for w in words):
+            return cat
+    return ""
 
 
 def _smart_income_extract(user_phone: str, msg: str) -> dict | None:
@@ -11776,12 +11985,7 @@ def _smart_expense_extract(user_phone: str, msg: str) -> dict | None:
     merchant = text.strip()
 
     # ── 5. Auto-categorizar ──
-    category = "Outros"
-    m_lower = merchant.lower()
-    for keywords, cat_name in _CAT_RULES:
-        if any(k in m_lower for k in keywords):
-            category = cat_name
-            break
+    category = _categorize_merchant_text(merchant)
 
     # ── 6. Decisão final ──
     # Com verbo de gasto → sempre salva (mesmo sem merchant: "gastei 50")
@@ -11863,7 +12067,7 @@ def _extract_month_from_text_or_current(text: str) -> str:
     return _current_month()
 
 
-def _extract_category_from_text(text: str) -> str:
+def _extract_category_from_text_old(text: str) -> str:
     """Tenta identificar categoria padrão pela frase do usuário."""
     body = _normalize_pt_text(text or "")
     aliases = {
@@ -11882,6 +12086,10 @@ def _extract_category_from_text(text: str) -> str:
         if any(w in body for w in words):
             return cat
     return ""
+
+
+def _extract_category_from_text(text: str) -> str:
+    return _extract_category_from_text_legacy(text)
 
 
 def _extract_merchant_type_from_text(text: str) -> str:
@@ -12010,6 +12218,33 @@ def _parse_merchant_type_command(text: str) -> tuple[str, str] | None:
     if not merchant or not m_type:
         return None
     return merchant, m_type
+
+
+def _parse_recategorize_command(text: str) -> dict | None:
+    body = _normalize_pt_text(text or "")
+    if not any(k in body for k in ("recategor", "reclassific", "corrigir categorias")):
+        return None
+
+    mode = "dry-run"
+    if any(k in body for k in ("apply", "aplicar", "executar", "confirmar")):
+        mode = "apply"
+
+    from_category = "Outros"
+    if any(k in body for k in ("todas categorias", "todas as categorias", "todas")):
+        from_category = "*"
+    elif "de outros" in body or "categoria outros" in body:
+        from_category = "Outros"
+
+    month = ""
+    m_iso = _re_router.search(r"\b(20\d{2})[-/](0[1-9]|1[0-2])\b", body)
+    if m_iso:
+        month = f"{m_iso.group(1)}-{m_iso.group(2)}"
+
+    return {
+        "mode": mode,
+        "from_category": from_category,
+        "month": month,
+    }
 
 
 async def _mini_route(body: str, user_phone: str, in_mentor: bool) -> dict:
@@ -13462,6 +13697,22 @@ async def chat_endpoint(
                 _touch_mentor_state(user_phone)
             _resp = _call(set_merchant_type, user_phone, _merchant_name, _merchant_type)
             return {"content": _strip_whatsapp_bold(_resp), "routed": True}
+
+    # 4h. Recategorização histórica com modo seguro (dry-run/apply), sem depender do mini-router.
+    _recat_cmd = _parse_recategorize_command(body or "")
+    if _recat_cmd:
+        if _in_mentor_session:
+            _touch_mentor_state(user_phone)
+        _resp = _call(
+            recategorize_transactions_history,
+            user_phone,
+            _recat_cmd.get("mode", "dry-run"),
+            _recat_cmd.get("from_category", "Outros"),
+            _recat_cmd.get("month", ""),
+            0,
+            2000,
+        )
+        return {"content": _strip_whatsapp_bold(_resp), "routed": True}
 
     # 5. Mini-router (gpt-5-mini, ~200ms)
     _route = await _mini_route(body, user_phone, _in_mentor_session)
