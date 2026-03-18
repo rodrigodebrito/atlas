@@ -2416,10 +2416,20 @@ def recategorize_transactions_history(
     if apply_mode:
         update_sql = "UPDATE transactions SET category = ? WHERE id = ?"
         update_params = [(item[1], item[0]) for item in suggestions]
+        used_fallback = False
         if hasattr(cur, "executemany"):
-            cur.executemany(update_sql, update_params)
-            changed = cur.rowcount if isinstance(cur.rowcount, int) and cur.rowcount >= 0 else len(update_params)
-        else:
+            try:
+                cur.executemany(update_sql, update_params)
+                changed = cur.rowcount if isinstance(cur.rowcount, int) and cur.rowcount >= 0 else len(update_params)
+            except AttributeError:
+                used_fallback = True
+            except Exception as ex:
+                # Alguns wrappers expõem o método mas quebram internamente em _PGCursor.
+                if "executemany" in _normalize_pt_text(str(ex)):
+                    used_fallback = True
+                else:
+                    raise
+        if (not hasattr(cur, "executemany")) or used_fallback:
             # Fallback para cursores que não implementam executemany (ex.: _PGCursor do Agno/Postgres).
             changed_local = 0
             for params in update_params:
