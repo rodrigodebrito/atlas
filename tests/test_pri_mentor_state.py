@@ -2507,6 +2507,66 @@ def test_recategorize_history_apply_persists(atlas):
     finally:
         conn.close()
 
+
+def test_recategorize_history_apply_without_executemany_fallback(atlas, monkeypatch):
+    phone = "+5511911118898"
+    user_id = f"user_{uuid.uuid4().hex}"
+    tx_id = str(uuid.uuid4())
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, merchant_raw, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 9000, 'Outros', 'barbearia premium', 'barbearia premium', ?)""",
+            (tx_id, user_id, f"{month}-14T12:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    class _CursorNoExecutemany:
+        def __init__(self, real):
+            self._real = real
+            self.rowcount = 0
+
+        def execute(self, *args, **kwargs):
+            out = self._real.execute(*args, **kwargs)
+            self.rowcount = getattr(self._real, "rowcount", 0)
+            return out
+
+        def fetchall(self):
+            return self._real.fetchall()
+
+        def fetchone(self):
+            return self._real.fetchone()
+
+    class _ConnWrap:
+        def __init__(self, real):
+            self._real = real
+
+        def cursor(self):
+            return _CursorNoExecutemany(self._real.cursor())
+
+        def commit(self):
+            return self._real.commit()
+
+        def close(self):
+            return self._real.close()
+
+    real_get_conn = atlas._get_conn
+
+    def _wrapped_conn():
+        return _ConnWrap(real_get_conn())
+
+    monkeypatch.setattr(atlas, "_get_conn", _wrapped_conn)
+
     out = atlas._call(atlas.recategorize_transactions_history, phone, "apply", "Outros", month, 0, 100)
     normalized = atlas._normalize_pt_text(out)
     assert "aplicada" in normalized

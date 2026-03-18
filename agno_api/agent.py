@@ -2414,11 +2414,19 @@ def recategorize_transactions_history(
     changed = 0
     impacted_total = sum(item[2] for item in suggestions)
     if apply_mode:
-        cur.executemany(
-            "UPDATE transactions SET category = ? WHERE id = ?",
-            [(item[1], item[0]) for item in suggestions],
-        )
-        changed = cur.rowcount if isinstance(cur.rowcount, int) and cur.rowcount >= 0 else len(suggestions)
+        update_sql = "UPDATE transactions SET category = ? WHERE id = ?"
+        update_params = [(item[1], item[0]) for item in suggestions]
+        if hasattr(cur, "executemany"):
+            cur.executemany(update_sql, update_params)
+            changed = cur.rowcount if isinstance(cur.rowcount, int) and cur.rowcount >= 0 else len(update_params)
+        else:
+            # Fallback para cursores que não implementam executemany (ex.: _PGCursor do Agno/Postgres).
+            changed_local = 0
+            for params in update_params:
+                cur.execute(update_sql, params)
+                if isinstance(cur.rowcount, int) and cur.rowcount > 0:
+                    changed_local += cur.rowcount
+            changed = changed_local if changed_local > 0 else len(update_params)
         conn.commit()
     conn.close()
 
