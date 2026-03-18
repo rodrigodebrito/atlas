@@ -338,6 +338,7 @@ def test_month_summary_shows_card_purchase_but_separates_next_bill_cashflow(atla
     assert "Peso no caixa" in summary
     summary_norm = atlas._normalize_pt_text(summary)
     assert "vai cair nas proximas faturas" in summary_norm
+    assert "reconciliacao" in summary_norm
     assert "R$400,00" in summary
     assert "R$300,00" in summary
     assert "__insight:" not in summary
@@ -1941,6 +1942,8 @@ def test_pr5_category_breakdown_groups_merchant_variations_and_lists_all(atlas):
     assert "supermercado deville" not in normalized
     assert "compra supermercado deville" not in normalized
     assert "restaurante talentos" in normalized
+    assert "reconciliacao" in normalized
+    assert "diferenca: r$0,00" in normalized
 
 
 def test_pr3_get_spend_by_merchant_type_month(atlas):
@@ -1969,6 +1972,7 @@ def test_pr3_get_spend_by_merchant_type_month(atlas):
     normalized = atlas._normalize_pt_text(result)
     assert "gasto com mercado" in normalized
     assert "total" in normalized
+    assert "reconciliacao" in normalized
 
 
 def test_pr3_get_spend_by_merchant_type_lists_all_merchants(atlas):

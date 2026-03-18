@@ -433,6 +433,20 @@ def _build_pri_month_quick_closure(
     return "\n".join(lines)
 
 
+def _append_reconciliation_block(lines: list[str], listed_sum: int, reference_total: int, listed_label: str, total_label: str) -> None:
+    """Adiciona bloco padrão de reconciliação para aumentar confiança do usuário."""
+    diff = reference_total - listed_sum
+    lines.append("")
+    lines.append("🧮 *Reconciliação*")
+    lines.append(f"• {listed_label}: {_fmt_brl(listed_sum)}")
+    lines.append(f"• {total_label}: {_fmt_brl(reference_total)}")
+    if diff == 0:
+        lines.append("✅ Diferença: R$0,00")
+    else:
+        sign = "+" if diff > 0 else "-"
+        lines.append(f"⚠️ Diferença: {sign}{_fmt_brl(abs(diff))}")
+
+
 # ============================================================
 # TABELAS FINANCEIRAS — criadas automaticamente no SQLite
 # (No PostgreSQL do Render, rodar o script SQL uma vez)
@@ -1699,10 +1713,19 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
         lines.append("")
         lines.append("📦 *Onde mais pesou*")
         top_cats = sorted(cat_totals_display.items(), key=lambda x: -x[1])[:6]
+        listed_sum = 0
         for cat, total in top_cats:
             pct = (total / total_expenses * 100) if total_expenses else 0
             count = cat_counts.get(cat, 0)
             lines.append(f"• {cat}: {_fmt_brl(total)} ({pct:.0f}%) · {count} lanç.")
+            listed_sum += total
+        _append_reconciliation_block(
+            lines,
+            listed_sum=listed_sum,
+            reference_total=total_expenses,
+            listed_label="Soma das categorias listadas",
+            total_label="Total comprado no mês",
+        )
 
     if filter_type in ("ALL", "EXPENSE") and top_transactions:
         lines.append("")
@@ -2971,9 +2994,18 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
 
     lines.append("")
     lines.append("🔎 *Onde mais pesou (todos):*")
+    listed_sum = 0
     for name, amt in merchant_ranking:
         pct = (amt / total * 100.0) if total else 0
         lines.append(f"• {name}: {_fmt_brl(amt)} ({pct:.0f}%)")
+        listed_sum += amt
+    _append_reconciliation_block(
+        lines,
+        listed_sum=listed_sum,
+        reference_total=total,
+        listed_label="Soma dos estabelecimentos listados",
+        total_label="Total da categoria",
+    )
 
     if merchant_ranking:
         top_name, top_amt = merchant_ranking[0]
@@ -5263,8 +5295,17 @@ def get_spend_by_merchant_type(
     if merchant_ranking:
         lines.append("")
         lines.append("🔎 *Onde mais pesou (todos):*")
+        listed_sum = 0
         for name, amt in merchant_ranking:
             lines.append(f"• {name}: {_fmt_brl(amt)}")
+            listed_sum += amt
+        _append_reconciliation_block(
+            lines,
+            listed_sum=listed_sum,
+            reference_total=total,
+            listed_label="Soma dos estabelecimentos listados",
+            total_label=f"Total de {type_label.lower()}",
+        )
     insight = _build_type_query_insight(total, count, top_merchant, m_type)
     if insight:
         lines.append("")
