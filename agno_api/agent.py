@@ -702,6 +702,16 @@ def _init_postgres_tables():
     import psycopg2
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
+
+    def _safe_exec(sql: str, label: str = "") -> None:
+        try:
+            cur.execute(sql)
+        except Exception as e:
+            conn.rollback()
+            try:
+                logger.warning(f"[PG_INIT] etapa ignorada ({label or 'sql'}): {e}")
+            except Exception:
+                pass
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
@@ -795,6 +805,8 @@ def _init_postgres_tables():
             expires_at TEXT NOT NULL
         )
     """)
+    # Persiste schema-base antes de migrações opcionais.
+    conn.commit()
     # Migrations
     for migration in [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_days_before INTEGER DEFAULT 3",
@@ -810,7 +822,7 @@ def _init_postgres_tables():
         try:
             cur.execute(migration)
         except Exception:
-            pass
+            conn.rollback()
     # Backfill de compatibilidade (mantém comportamento antigo e prepara canônico)
     for migration in [
         "UPDATE transactions SET merchant_raw = COALESCE(NULLIF(BTRIM(merchant_raw), ''), COALESCE(merchant, ''))",
@@ -819,9 +831,10 @@ def _init_postgres_tables():
         try:
             cur.execute(migration)
         except Exception:
-            pass
+            conn.rollback()
+    conn.commit()
     # Tabela de regras merchant→categoria (memória de categorização)
-    cur.execute("""
+    _safe_exec("""
         CREATE TABLE IF NOT EXISTS merchant_category_rules (
             id SERIAL PRIMARY KEY,
             user_id TEXT NOT NULL,
@@ -830,9 +843,9 @@ def _init_postgres_tables():
             created_at TEXT DEFAULT (now()::text),
             UNIQUE(user_id, merchant_pattern)
         );
-    """)
+    """, "merchant_category_rules")
     # Tabela de regras merchant→cartão padrão
-    cur.execute("""
+    _safe_exec("""
         CREATE TABLE IF NOT EXISTS merchant_card_rules (
             id SERIAL PRIMARY KEY,
             user_id TEXT NOT NULL,
@@ -841,8 +854,8 @@ def _init_postgres_tables():
             created_at TEXT DEFAULT (now()::text),
             UNIQUE(user_id, merchant_pattern)
         );
-    """)
-    cur.execute("""
+    """, "merchant_card_rules")
+    _safe_exec("""
         CREATE TABLE IF NOT EXISTS merchant_aliases (
             id SERIAL PRIMARY KEY,
             user_id TEXT NOT NULL,
@@ -854,9 +867,9 @@ def _init_postgres_tables():
             created_at TEXT DEFAULT (now()::text),
             UNIQUE(user_id, alias)
         );
-    """)
+    """, "merchant_aliases")
     # Log de mensagens não roteadas (caíram no LLM)
-    cur.execute("""
+    _safe_exec("""
         CREATE TABLE IF NOT EXISTS unrouted_messages (
             id SERIAL PRIMARY KEY,
             message TEXT NOT NULL,
@@ -883,16 +896,16 @@ def _init_postgres_tables():
             transaction_id TEXT,
             created_at TEXT DEFAULT (now()::text)
         );
-    """)
-    cur.execute("""
+    """, "unrouted_pending_bills")
+    _safe_exec("""
         CREATE TABLE IF NOT EXISTS panel_tokens (
             token TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
             created_at TEXT DEFAULT (now()::text),
             expires_at TEXT NOT NULL
         );
-    """)
-    cur.execute("""
+    """, "panel_tokens")
+    _safe_exec("""
         CREATE TABLE IF NOT EXISTS agenda_events (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
@@ -914,8 +927,8 @@ def _init_postgres_tables():
             updated_at TEXT DEFAULT (now()::text)
         );
         CREATE INDEX IF NOT EXISTS idx_agenda_next_alert ON agenda_events(next_alert_at, status);
-    """)
-    cur.execute("""
+    """, "agenda_events")
+    _safe_exec("""
         CREATE TABLE IF NOT EXISTS category_budgets (
             id SERIAL PRIMARY KEY,
             user_id TEXT NOT NULL,
@@ -924,8 +937,8 @@ def _init_postgres_tables():
             created_at TEXT DEFAULT (now()::text),
             UNIQUE(user_id, category)
         );
-    """)
-    cur.execute("""
+    """, "category_budgets")
+    _safe_exec("""
         CREATE TABLE IF NOT EXISTS mentor_dialog_state (
             user_phone TEXT PRIMARY KEY,
             mode TEXT NOT NULL DEFAULT 'inactive',
@@ -939,9 +952,9 @@ def _init_postgres_tables():
             created_at TEXT DEFAULT (now()::text),
             updated_at TEXT DEFAULT (now()::text)
         );
-    """)
+    """, "mentor_dialog_state")
     # Migração: normaliza type para UPPER (LLM pode ter salvo lowercase)
-    cur.execute("UPDATE transactions SET type = UPPER(type) WHERE type != UPPER(type)")
+    _safe_exec("UPDATE transactions SET type = UPPER(type) WHERE type != UPPER(type)", "normalize_type_upper")
     conn.commit()
     cur.close()
     conn.close()
