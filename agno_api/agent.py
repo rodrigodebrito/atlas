@@ -3069,7 +3069,7 @@ def get_transactions(user_phone: str, date: str = "", month: str = "") -> str:
 
 
 @tool
-def get_category_breakdown(user_phone: str, category: str, month: str = "") -> str:
+def get_category_breakdown(user_phone: str, category: str, month: str = "", period: str = "month") -> str:
     """
     Mostra gastos de uma categoria no mês com visão executiva.
     """
@@ -3086,12 +3086,13 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
         return f"Nenhuma transação em {category}."
     user_id, user_name = row[0], row[1]
 
+    _date_sql, _date_params, _period_label = _period_filter_sql(period, month)
     cur.execute(
-        """SELECT merchant, merchant_canonical, amount_cents, occurred_at
+        f"""SELECT merchant, merchant_canonical, amount_cents, occurred_at
            FROM transactions
-           WHERE user_id = ? AND type = 'EXPENSE' AND category = ? AND occurred_at LIKE ?
+           WHERE user_id = ? AND type = 'EXPENSE' AND category = ? {_date_sql}
            ORDER BY occurred_at DESC""",
-        (user_id, category, f"{month}%"),
+        (user_id, category, *_date_params),
     )
     rows = cur.fetchall() or []
 
@@ -3105,11 +3106,14 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
 
     months_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
                  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
-    try:
-        y, m_num = map(int, month.split("-"))
-        month_label = f"{months_pt[m_num]}/{y}"
-    except Exception:
-        month_label = month
+    if (period or "month").strip().lower() == "month":
+        try:
+            y, m_num = map(int, month.split("-"))
+            month_label = f"{months_pt[m_num]}/{y}"
+        except Exception:
+            month_label = month
+    else:
+        month_label = _period_label
 
     # Agrupamento inteligente de variações de estabelecimento (ex.: "compra supermercado deville")
     merchants_by_key: dict[str, int] = {}
@@ -3131,23 +3135,24 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
     compare_count = 0
     compare_label = ""
     try:
-        curr_y, curr_m = map(int, month.split("-"))
-        prev_m = curr_m - 1
-        prev_y = curr_y
-        if prev_m == 0:
-            prev_m = 12
-            prev_y -= 1
-        prev_month = f"{prev_y}-{prev_m:02d}"
-        cur.execute(
-            """SELECT COALESCE(SUM(amount_cents), 0), COUNT(*)
-               FROM transactions
-               WHERE user_id = ? AND type = 'EXPENSE' AND category = ? AND occurred_at LIKE ?""",
-            (user_id, category, f"{prev_month}%"),
-        )
-        prev_row = cur.fetchone() or (0, 0)
-        compare_total = int(prev_row[0] or 0)
-        compare_count = int(prev_row[1] or 0)
-        compare_label = f"{months_pt[prev_m]}/{prev_y}"
+        if (period or "month").strip().lower() == "month":
+            curr_y, curr_m = map(int, month.split("-"))
+            prev_m = curr_m - 1
+            prev_y = curr_y
+            if prev_m == 0:
+                prev_m = 12
+                prev_y -= 1
+            prev_month = f"{prev_y}-{prev_m:02d}"
+            cur.execute(
+                """SELECT COALESCE(SUM(amount_cents), 0), COUNT(*)
+                   FROM transactions
+                   WHERE user_id = ? AND type = 'EXPENSE' AND category = ? AND occurred_at LIKE ?""",
+                (user_id, category, f"{prev_month}%"),
+            )
+            prev_row = cur.fetchone() or (0, 0)
+            compare_total = int(prev_row[0] or 0)
+            compare_count = int(prev_row[1] or 0)
+            compare_label = f"{months_pt[prev_m]}/{prev_y}"
     except Exception:
         compare_total = 0
         compare_count = 0
@@ -3404,6 +3409,7 @@ def get_transactions_by_merchant(
     user_phone: str,
     merchant_query: str,
     month: str = "",
+    period: str = "month",
 ) -> str:
     """Filtra transações por nome de estabelecimento (busca parcial, case-insensitive)."""
     conn = _get_conn()
@@ -3419,8 +3425,11 @@ def get_transactions_by_merchant(
     query_like = f"%{merchant_query.lower()}%"
     query_key = _merchant_key(merchant_query)
     query_key_like = f"%{query_key}%" if query_key else query_like
+    period_key = (period or "month").strip().lower()
+    date_sql, date_params, period_label = _period_filter_sql(period_key, month or _current_month())
 
-    if month:
+    if period_key == "month":
+        month_ref = month or _current_month()
         cur.execute(
             """SELECT type, category, amount_cents, merchant, occurred_at
                FROM transactions
@@ -3432,11 +3441,11 @@ def get_transactions_by_merchant(
                  )
                  AND occurred_at LIKE ?
                ORDER BY occurred_at DESC""",
-            (user_id, query_like, query_like, query_key_like, f"{month}%"),
+            (user_id, query_like, query_like, query_key_like, f"{month_ref}%"),
         )
     else:
         cur.execute(
-            """SELECT type, category, amount_cents, merchant, occurred_at
+            f"""SELECT type, category, amount_cents, merchant, occurred_at
                FROM transactions
                WHERE user_id = ?
                  AND (
@@ -3444,9 +3453,9 @@ def get_transactions_by_merchant(
                     OR LOWER(COALESCE(merchant_raw, '')) LIKE ?
                     OR LOWER(COALESCE(merchant_canonical, '')) LIKE ?
                  )
-               ORDER BY occurred_at DESC
-               LIMIT 20""",
-            (user_id, query_like, query_like, query_key_like),
+                 {date_sql}
+               ORDER BY occurred_at DESC""",
+            (user_id, query_like, query_like, query_key_like, *date_params),
         )
     rows = cur.fetchall()
     conn.close()
@@ -3454,15 +3463,16 @@ def get_transactions_by_merchant(
     months_pt = ["", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
                  "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
-    if month:
+    if period_key == "month":
+        month_ref = month or _current_month()
         try:
-            m_num = int(month[5:7])
-            year = month[:4]
+            m_num = int(month_ref[5:7])
+            year = month_ref[:4]
             period = f" — {months_pt[m_num]}/{year}"
         except Exception:
-            period = f" — {month}"
+            period = f" — {month_ref}"
     else:
-        period = ""
+        period = f" — {period_label}" if period_label else ""
 
     if not rows:
         return f"Nenhuma transação encontrada para \"{merchant_query}\"{period}."
@@ -12198,6 +12208,64 @@ def _extract_period_for_type_query(text: str) -> tuple[str, str]:
     return "month", _extract_month_from_text_or_current(text)
 
 
+def _period_filter_sql(period: str, month: str = "") -> tuple[str, list[str], str]:
+    """
+    Retorna (sql, params, label) para filtros por período.
+    period: today|yesterday|last7|week|month
+    """
+    now = _now_br()
+    period_key = (period or "month").strip().lower()
+    if period_key == "today":
+        d = now.strftime("%Y-%m-%d")
+        return "AND occurred_at LIKE ?", [f"{d}%"], f"hoje ({now.strftime('%d/%m/%Y')})"
+    if period_key == "yesterday":
+        y = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        return "AND occurred_at LIKE ?", [f"{y}%"], f"ontem ({(now - timedelta(days=1)).strftime('%d/%m/%Y')})"
+    if period_key == "last7":
+        start = (now - timedelta(days=6)).strftime("%Y-%m-%d")
+        end = now.strftime("%Y-%m-%d")
+        return (
+            "AND occurred_at >= ? AND occurred_at <= ? || 'T23:59:59'",
+            [start, end],
+            f"últimos 7 dias ({(now - timedelta(days=6)).strftime('%d/%m')} a {now.strftime('%d/%m')})",
+        )
+    if period_key == "week":
+        start_dt = now - timedelta(days=now.weekday())
+        start = start_dt.strftime("%Y-%m-%d")
+        end = now.strftime("%Y-%m-%d")
+        return (
+            "AND occurred_at >= ? AND occurred_at <= ? || 'T23:59:59'",
+            [start, end],
+            f"semana ({start_dt.strftime('%d/%m')} a {now.strftime('%d/%m')})",
+        )
+
+    month_ref = month or _extract_month_from_text_or_current("")
+    try:
+        m_num = int(month_ref[5:7])
+        y = month_ref[:4]
+        label = f"{['', 'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'][m_num]}/{y}"
+    except Exception:
+        label = month_ref
+    return "AND occurred_at LIKE ?", [f"{month_ref}%"], label
+
+
+def _is_explicit_spend_query(text: str) -> bool:
+    body = _normalize_pt_text(text or "")
+    if not body:
+        return False
+    patterns = (
+        "quanto gastei",
+        "quanto foi",
+        "gastos de",
+        "gastos com",
+        "gastei com",
+        "gastei de",
+        "gastei no",
+        "gastei na",
+    )
+    return any(p in body for p in patterns)
+
+
 def _extract_merchant_query_from_text(text: str) -> str:
     body_raw = (text or "").strip()
     body = _normalize_pt_text(body_raw)
@@ -12276,6 +12344,145 @@ def _parse_recategorize_command(text: str) -> dict | None:
         "from_category": from_category,
         "month": month,
     }
+
+
+def _resolve_spend_query_with_context(user_phone: str, text: str) -> str | None:
+    """
+    Resolve perguntas de gasto com continuidade de contexto por sessão.
+    Exemplos:
+    - "quanto gastei de mercado esse mês?"
+    - "e na semana?"
+    - "e ontem?"
+    """
+    body = _normalize_pt_text(text or "")
+    if not body:
+        return None
+
+    explicit_spend_query = _is_explicit_spend_query(text)
+    has_amount = _has_explicit_amount(body)
+    tx_verbs = ("gastei", "comprei", "recebi", "ganhei", "paguei", "almocei", "jantei", "pix")
+    if has_amount and any(v in body for v in tx_verbs) and not explicit_spend_query:
+        return None
+
+    state = _load_query_state(user_phone)
+    is_followup = bool(state and _looks_like_period_followup(text))
+    if not explicit_spend_query and not is_followup:
+        return None
+
+    period_ref, period_month_ref = _extract_period_for_type_query(text or "")
+    resolved_period = period_ref or "month"
+    resolved_month = period_month_ref or _extract_month_from_text_or_current(text or "")
+
+    merchant_query_ref = _extract_merchant_query_from_text(text or "")
+    merchant_type_ref = _extract_merchant_type_from_text(text or "")
+    category_ref = _extract_category_from_text(text or "")
+
+    type_markers = {
+        "mercado": ("mercado", "supermercado", "hortifruti", "atacadao"),
+        "restaurante": ("restaurante", "ifood", "delivery", "lanchonete", "almoco", "janta"),
+        "farmacia": ("farmacia", "drogaria", "remedio"),
+        "transporte": ("transporte", "uber", "99", "taxi", "gasolina", "combustivel"),
+        "vestuario": ("vestuario", "roupa", "tenis", "calcado"),
+        "ecommerce": ("ecommerce", "e-commerce", "compra online", "mercado livre", "amazon", "shopee"),
+    }
+    mentions_type_marker = bool(
+        merchant_type_ref and any(tok in body for tok in type_markers.get(merchant_type_ref, ()))
+    )
+
+    if merchant_query_ref and explicit_spend_query:
+        resp = _call(
+            get_transactions_by_merchant,
+            user_phone,
+            merchant_query_ref,
+            resolved_month if resolved_period == "month" else "",
+            resolved_period,
+        )
+        _save_query_state(
+            user_phone,
+            last_scope="merchant",
+            last_value=merchant_query_ref,
+            last_period=resolved_period,
+            last_month_ref=resolved_month,
+        )
+        return resp
+
+    if MERCHANT_INTEL_ENABLED and merchant_type_ref and (explicit_spend_query and mentions_type_marker):
+        resp = _call(
+            get_spend_by_merchant_type,
+            user_phone,
+            merchant_type_ref,
+            resolved_period,
+            resolved_month,
+        )
+        _save_query_state(
+            user_phone,
+            last_scope="merchant_type",
+            last_value=merchant_type_ref,
+            last_period=resolved_period,
+            last_month_ref=resolved_month,
+        )
+        return resp
+
+    if category_ref and explicit_spend_query:
+        resp = _call(
+            get_category_breakdown,
+            user_phone,
+            category_ref,
+            resolved_month,
+            resolved_period,
+        )
+        _save_query_state(
+            user_phone,
+            last_scope="category",
+            last_value=category_ref,
+            last_period=resolved_period,
+            last_month_ref=resolved_month,
+        )
+        return resp
+
+    if is_followup and state:
+        scope = (state.get("last_scope") or "").strip().lower()
+        value = (state.get("last_value") or "").strip()
+        if not scope or not value:
+            return None
+
+        if scope == "merchant":
+            resp = _call(
+                get_transactions_by_merchant,
+                user_phone,
+                value,
+                resolved_month if resolved_period == "month" else "",
+                resolved_period,
+            )
+        elif scope == "merchant_type":
+            resp = _call(
+                get_spend_by_merchant_type,
+                user_phone,
+                value,
+                resolved_period,
+                resolved_month,
+            )
+        elif scope == "category":
+            resp = _call(
+                get_category_breakdown,
+                user_phone,
+                value,
+                resolved_month,
+                resolved_period,
+            )
+        else:
+            return None
+
+        _save_query_state(
+            user_phone,
+            last_scope=scope,
+            last_value=value,
+            last_period=resolved_period,
+            last_month_ref=resolved_month,
+        )
+        return resp
+
+    return None
 
 
 async def _mini_route(body: str, user_phone: str, in_mentor: bool) -> dict:
@@ -12593,6 +12800,22 @@ async def _execute_intent(result: dict, user_phone: str, body: str, full_message
         try:
             resp = _QUERY_DISPATCH[action](user_phone, params)
             if resp:
+                if action == "merchant_filter" and (params.get("merchant") or "").strip():
+                    _save_query_state(
+                        user_phone,
+                        last_scope="merchant",
+                        last_value=(params.get("merchant") or "").strip(),
+                        last_period="month",
+                        last_month_ref=(params.get("month") or _current_month()),
+                    )
+                elif action == "category_filter" and (params.get("category") or "").strip():
+                    _save_query_state(
+                        user_phone,
+                        last_scope="category",
+                        last_value=(params.get("category") or "").strip(),
+                        last_period="month",
+                        last_month_ref=(params.get("month") or _current_month()),
+                    )
                 return {"response": resp}
         except Exception:
             pass
@@ -13085,6 +13308,139 @@ def _strip_trailing_questions(text: str) -> str:
 
 _MENTOR_SESSION_TTL = 600  # 10 minutos de inatividade encerra a sessão
 _MENTOR_MEMORY_TURNS = 6
+_QUERY_SESSION_TTL = 1800  # 30 minutos para continuidade de consultas
+
+
+def _query_expiry_iso() -> str:
+    return (_now_br() + timedelta(seconds=_QUERY_SESSION_TTL)).isoformat()
+
+
+def _ensure_query_dialog_state_table(cur) -> None:
+    try:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS query_dialog_state (
+                user_phone TEXT PRIMARY KEY,
+                last_scope TEXT DEFAULT '',
+                last_value TEXT DEFAULT '',
+                last_period TEXT DEFAULT 'month',
+                last_month_ref TEXT DEFAULT '',
+                expires_at TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    except Exception:
+        pass
+
+
+def _load_query_state(user_phone: str) -> dict | None:
+    if not user_phone:
+        return None
+    try:
+        with _db() as (conn, cur):
+            _ensure_query_dialog_state_table(cur)
+            conn.commit()
+            cur.execute(
+                """
+                SELECT last_scope, last_value, last_period, last_month_ref, expires_at
+                FROM query_dialog_state
+                WHERE user_phone = ?
+                """,
+                (user_phone,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            last_scope, last_value, last_period, last_month_ref, expires_at = row
+            now_iso = _now_br().isoformat()
+            if not expires_at or expires_at <= now_iso:
+                try:
+                    cur.execute("DELETE FROM query_dialog_state WHERE user_phone = ?", (user_phone,))
+                    conn.commit()
+                except Exception:
+                    pass
+                return None
+            return {
+                "last_scope": (last_scope or "").strip(),
+                "last_value": (last_value or "").strip(),
+                "last_period": (last_period or "month").strip().lower(),
+                "last_month_ref": (last_month_ref or _current_month()).strip(),
+                "expires_at": expires_at,
+            }
+    except Exception:
+        return None
+
+
+def _save_query_state(
+    user_phone: str,
+    *,
+    last_scope: str,
+    last_value: str,
+    last_period: str = "month",
+    last_month_ref: str = "",
+) -> None:
+    if not user_phone or not last_scope or not last_value:
+        return
+    now_iso = _now_br().isoformat()
+    expires = _query_expiry_iso()
+    month_ref = (last_month_ref or _current_month()).strip()
+    period = (last_period or "month").strip().lower()
+    try:
+        with _db() as (conn, cur):
+            _ensure_query_dialog_state_table(cur)
+            conn.commit()
+            cur.execute("SELECT user_phone FROM query_dialog_state WHERE user_phone = ?", (user_phone,))
+            exists = cur.fetchone()
+            if exists:
+                cur.execute(
+                    """
+                    UPDATE query_dialog_state
+                    SET last_scope = ?, last_value = ?, last_period = ?, last_month_ref = ?,
+                        expires_at = ?, updated_at = ?
+                    WHERE user_phone = ?
+                    """,
+                    (last_scope, last_value, period, month_ref, expires, now_iso, user_phone),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO query_dialog_state (
+                        user_phone, last_scope, last_value, last_period, last_month_ref, expires_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (user_phone, last_scope, last_value, period, month_ref, expires, now_iso, now_iso),
+                )
+            conn.commit()
+    except Exception:
+        pass
+
+
+def _looks_like_period_followup(text: str) -> bool:
+    body = _normalize_pt_text(text or "")
+    if not body:
+        return False
+    direct_tokens = (
+        "hoje",
+        "ontem",
+        "semana",
+        "semana passada",
+        "ultima semana",
+        "ultimos 7 dias",
+        "ultimos sete dias",
+        "7 dias",
+        "esse mes",
+        "este mes",
+        "mes passado",
+        "no mes",
+        "no mês",
+        "nesse mes",
+    )
+    if any(tok in body for tok in direct_tokens):
+        return True
+    compact = body.strip(" .!?")
+    return compact in {"e na semana", "e no mes", "e no mês", "e hoje", "e ontem", "na semana", "no mes", "no mês"}
 
 
 def _ensure_mentor_dialog_state_table(cur) -> None:
@@ -13669,6 +14025,13 @@ async def chat_endpoint(
             _touch_mentor_state(user_phone)
         return {"content": _strip_whatsapp_bold(_multi["response"]), "routed": True}
 
+    # 4c.1 Camada unificada de consultas de gasto + continuidade contextual.
+    _spend_ctx_resp = _resolve_spend_query_with_context(user_phone, body)
+    if _spend_ctx_resp:
+        if _in_mentor_session:
+            _touch_mentor_state(user_phone)
+        return {"content": _strip_whatsapp_bold(_spend_ctx_resp), "routed": True}
+
     # 4d. Detalhe de mês/categoria deve ser resolvido ANTES do mini-router.
     # Evita cair em "resumo" quando o pedido é explicitamente "detalhar mês".
     _body_norm = _normalize_pt_text(body or "")
@@ -13686,7 +14049,14 @@ async def chat_endpoint(
         if "mes" in _body_norm or "mês" in (body or "").lower():
             if _in_mentor_session:
                 _touch_mentor_state(user_phone)
-            _resp = _call(get_category_breakdown, user_phone, _category_ref, _month_ref)
+            _resp = _call(get_category_breakdown, user_phone, _category_ref, _month_ref, "month")
+            _save_query_state(
+                user_phone,
+                last_scope="category",
+                last_value=_category_ref,
+                last_period="month",
+                last_month_ref=_month_ref,
+            )
             return {"content": _strip_whatsapp_bold(_resp), "routed": True}
 
     # 4e. Consulta direta por tipo de estabelecimento (mercado/restaurante etc.)
@@ -13701,6 +14071,13 @@ async def chat_endpoint(
             _period_ref,
             _period_month_ref,
         )
+        _save_query_state(
+            user_phone,
+            last_scope="merchant_type",
+            last_value=_merchant_type_ref,
+            last_period=_period_ref or "month",
+            last_month_ref=_period_month_ref or _month_ref,
+        )
         return {"content": _strip_whatsapp_bold(_resp), "routed": True}
 
     # 4f. Consulta por estabelecimento específico (ex.: "quanto gastei no talentos")
@@ -13708,7 +14085,14 @@ async def chat_endpoint(
     if _merchant_query_ref:
         if _in_mentor_session:
             _touch_mentor_state(user_phone)
-        _resp = _call(get_transactions_by_merchant, user_phone, _merchant_query_ref, _month_ref)
+        _resp = _call(get_transactions_by_merchant, user_phone, _merchant_query_ref, _month_ref, "month")
+        _save_query_state(
+            user_phone,
+            last_scope="merchant",
+            last_value=_merchant_query_ref,
+            last_period="month",
+            last_month_ref=_month_ref,
+        )
         return {"content": _strip_whatsapp_bold(_resp), "routed": True}
 
     # 4g. Comandos explícitos de aprendizado manual (alias/tipo), sem passar no LLM.
