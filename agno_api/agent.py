@@ -12375,8 +12375,11 @@ def get_period_overview(
     # Agrupamento por categoria para leitura premium
     from collections import defaultdict as _dd
     exp_cat_totals = _dd(int)
+    exp_rows_by_cat = _dd(list)
     for r in expense_rows:
-        exp_cat_totals[(r[2] or "Sem categoria")] += int(r[1] or 0)
+        ckey = (r[2] or "Sem categoria")
+        exp_cat_totals[ckey] += int(r[1] or 0)
+        exp_rows_by_cat[ckey].append(r)
     exp_cat_sorted = sorted(exp_cat_totals.items(), key=lambda x: -x[1])
 
     # Janela de dias para média diária
@@ -12415,16 +12418,29 @@ def get_period_overview(
             return base
         return "à vista • pago"
 
-    def _line_tx(row) -> str:
+    def _line_tx(row, include_category: bool = True) -> str:
         _type, amount_cents, category, merchant, occurred_at = row[:5]
         dt_lbl = occurred_at[:10] if occurred_at else ""
         try:
             dt_lbl = f"{dt_lbl[8:10]}/{dt_lbl[5:7]}"
         except Exception:
             pass
-        merchant_str = f" • {merchant}" if merchant else ""
+        merchant_str = (merchant or "sem descrição").strip()
         pay_str = _payment_label(row) if _type == "EXPENSE" else "recebido"
-        return f"• {dt_lbl} {_fmt_brl(int(amount_cents or 0))} — {category or 'Sem categoria'}{merchant_str} • {pay_str}"
+        if include_category:
+            return f"• {dt_lbl} {_fmt_brl(int(amount_cents or 0))} — {category or 'Sem categoria'} • {merchant_str} • {pay_str}"
+        return f"• {dt_lbl} {_fmt_brl(int(amount_cents or 0))} — {merchant_str} • {pay_str}"
+
+    def _append_expense_grouped(lines: list[str], title: str = "📂 *Gastos por categoria*") -> None:
+        if not exp_cat_sorted:
+            return
+        lines.extend(["", title])
+        for c_name, c_total in exp_cat_sorted:
+            pct = round((c_total / total_expense) * 100) if total_expense else 0
+            lines.append("")
+            lines.append(f"{_category_icon(c_name)} *{c_name}* — {_fmt_brl(c_total)} ({pct}%)")
+            for r in exp_rows_by_cat.get(c_name, []):
+                lines.append(_line_tx(r, include_category=False))
 
     def _build_insight() -> str:
         if focus_key == "income":
@@ -12468,7 +12484,9 @@ def get_period_overview(
         if focus_key == "all":
             lines.append(f"{'✅' if balance >= 0 else '⚠️'} *Saldo:* {_fmt_brl(balance)}")
 
-        if focus_key in {"all", "expense"} and exp_cat_sorted:
+        if focus_key == "expense":
+            _append_expense_grouped(lines, "📂 *Gastos por categoria*")
+        elif focus_key == "all" and exp_cat_sorted:
             lines.extend(["", "📂 *Gastos por categoria*"])
             for c_name, c_total in exp_cat_sorted:
                 pct = round((c_total / total_expense) * 100) if total_expense else 0
@@ -12477,7 +12495,7 @@ def get_period_overview(
         if focus_key in {"all", "income"} and income_rows:
             lines.extend(["", "📥 *ENTRADAS*"])
             lines.extend([_line_tx(r) for r in income_rows])
-        if focus_key in {"all", "expense"} and expense_rows:
+        if focus_key == "all" and expense_rows:
             lines.extend(["", "📤 *SAÍDAS*"])
             lines.extend([_line_tx(r) for r in expense_rows])
         lines.extend(["", _build_insight()])
@@ -12500,14 +12518,7 @@ def get_period_overview(
                 f"🧾 *Compras no dia:* {len(expense_rows)}",
                 f"🎟️ *Ticket médio:* {_fmt_brl(avg)}",
             ]
-            if exp_cat_sorted:
-                lines.extend(["", "📂 *Gastos por categoria (dia)*"])
-                for c_name, c_total in exp_cat_sorted:
-                    pct = round((c_total / total_expense) * 100) if total_expense else 0
-                    lines.append(f"• {c_name}: {_fmt_brl(c_total)} ({pct}%)")
-            if expense_rows:
-                lines.extend(["", "🧾 *Compras do dia*"])
-                lines.extend([_line_tx(r) for r in expense_rows[:20]])
+            _append_expense_grouped(lines, "📂 *Gastos por categoria (dia)*")
         else:
             lines = [
                 f"📊 *{user_name}, resumo de gastos em {period_label}*",
@@ -12519,11 +12530,7 @@ def get_period_overview(
             ]
             if show_daily_avg:
                 lines.append(f"📆 *Média por dia:* {_fmt_brl(avg_day_expense)}")
-            if exp_cat_sorted:
-                lines.extend(["", "📂 *Categorias no período*"])
-                for c_name, c_total in exp_cat_sorted:
-                    pct = round((c_total / total_expense) * 100) if total_expense else 0
-                    lines.append(f"• {c_name}: {_fmt_brl(c_total)} ({pct}%)")
+            _append_expense_grouped(lines, "📂 *Categorias no período*")
     elif focus_key == "income":
         avg = int(total_income / max(len(income_rows), 1))
         lines = [

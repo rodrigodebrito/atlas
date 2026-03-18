@@ -1983,7 +1983,6 @@ async def test_period_overview_today_expense_includes_categories_payment_mode_in
     assert "fechamento do dia" in content
     assert "gastos por categoria (dia)" in content
     assert "alimentacao" in content
-    assert "compras do dia" in content
     assert "cartao caixa" in content
     assert "a vista" in content
     assert "impacto no caixa hoje" in content
@@ -2037,6 +2036,56 @@ async def test_period_overview_mostra_gastos_de_hoje_does_not_fall_back_to_month
     assert "hoje" in content
     assert "r$88,00" in content
     assert "r$9.999,99" not in content
+
+
+@pytest.mark.asyncio
+async def test_period_overview_detalhar_gastos_semana_grouped_by_category_with_lines(atlas, monkeypatch):
+    phone = "+5511911115601"
+    user_id = f"user_{uuid.uuid4().hex}"
+    today = atlas._now_br().strftime("%Y-%m-%d")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at, payment_method)
+               VALUES (?, ?, 'EXPENSE', 3500, 'Alimentação', 'Padaria', ?, 'CASH')""",
+            (str(uuid.uuid4()), user_id, f"{today}T10:00:00"),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at, payment_method)
+               VALUES (?, ?, 'EXPENSE', 2400, 'Saúde', 'Farmácia', ?, 'CASH')""",
+            (str(uuid.uuid4()), user_id, f"{today}T12:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+
+    async def _fake_mini_route(*_args, **_kwargs):
+        return {"intent": "unknown", "action": "unknown", "params": {}}
+
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", _StubAtlasAgent([]))
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="detalhar gastos da semana")
+    content = atlas._normalize_pt_text(result["content"])
+
+    assert "detalhamento de gastos (semana" in content
+    assert "gastos por categoria" in content
+    assert "alimentacao" in content
+    assert "saude" in content
+    assert "padaria" in content
+    assert "farmacia" in content
+    assert "— alimentacao • padaria" not in content
 def test_pr5_category_breakdown_shows_safe_compare_without_previous_base(atlas):
     phone = "+5511911119991"
     user_id = f"user_{uuid.uuid4().hex}"
