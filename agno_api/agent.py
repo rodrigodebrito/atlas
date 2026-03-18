@@ -16535,11 +16535,8 @@ app.middleware_stack = None
 app.build_middleware_stack()
 
 if __name__ == "__main__":
-    _port = int(os.getenv("PORT", "7777"))
+    import uvicorn
+
+    _port = int(os.getenv("PORT", "10000"))
     _reload = os.getenv("AGNO_RELOAD", "false").strip().lower() in {"1", "true", "yes", "on"}
-    agent_os.serve(
-        app="agno_api.agent:app",
-        host="0.0.0.0",
-        port=_port,
-        reload=_reload,
-    )
+    uvicorn.run("agno_api.agent:app", host="0.0.0.0", port=_port, reload=_reload)
