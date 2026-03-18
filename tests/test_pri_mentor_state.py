@@ -2213,6 +2213,53 @@ async def test_chat_endpoint_hard_routes_specific_merchant_query_before_mini_rou
 
 
 @pytest.mark.asyncio
+async def test_transaction_intent_recebi_uber_is_saved_as_income(atlas, monkeypatch):
+    phone = "+5511911118896"
+    user_id = f"user_{uuid.uuid4().hex}"
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    async def _fake_mini_route(*_args, **_kwargs):
+        return {"intent": "transaction", "action": "save_transaction", "params": {}}
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", _StubAtlasAgent([]))
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="Recebi 35.16 uber")
+    content = atlas._normalize_pt_text(result["content"])
+    assert "resumo da entrada" in content
+    assert "categoria: freelance" in content
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT type, category, amount_cents, occurred_at FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        assert row is not None
+        assert row[0] == "INCOME"
+        assert row[1] == "Freelance"
+        assert row[2] == 3516
+        assert (row[3] or "").startswith(month)
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
 async def test_pr6_chat_endpoint_hard_routes_alias_command_before_mini_router(atlas, monkeypatch):
     phone = "+5511911118891"
     user_id = f"user_{uuid.uuid4().hex}"

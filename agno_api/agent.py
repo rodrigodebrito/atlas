@@ -11581,6 +11581,66 @@ _NOISE_WORDS = frozenset({
 }) | _EXPENSE_VERBS
 
 
+def _smart_income_extract(user_phone: str, msg: str) -> dict | None:
+    """
+    Extrator direto de receitas para evitar falso-positivo de gasto em frases como:
+    "recebi 35.16 uber".
+    """
+    import re as _re
+
+    msg_clean = (msg or "").strip()
+    if not msg_clean:
+        return None
+    msg_lower = msg_clean.lower()
+    tokens = set(_re.findall(r'[a-záéíóúàâêôãõç]+', msg_lower))
+
+    has_income_verb = bool(tokens & _INCOME_VERBS)
+    if not has_income_verb:
+        return None
+
+    val_m = (_re.search(r'r\$\s?(\d+(?:[.,]\d{1,2})?)', msg_lower) or
+             _re.search(r'\b(\d+(?:[.,]\d{1,2})?)\s*(?:reais?|conto|pila|real)\b', msg_lower) or
+             _re.search(r'(?:^|\s)(\d+(?:[.,]\d{1,2})?)(?=\s|[.!?]*$)', msg_lower))
+    if not val_m:
+        return None
+
+    value = float(val_m.group(1).replace(",", "."))
+    if value <= 0 or value > 999999:
+        return None
+
+    text = msg_clean
+    text = text[:val_m.start()] + " " + text[val_m.end():]
+    income_noise = set(_NOISE_WORDS) | set(_INCOME_VERBS) | {"receita", "renda", "pix", "transferencia", "transferência"}
+    text = _re.sub(
+        r'\b(?:' + '|'.join(_re.escape(w) for w in income_noise) + r')\b',
+        ' ', text, flags=_re.IGNORECASE
+    )
+    text = _re.sub(r'r\$', ' ', text, flags=_re.IGNORECASE)
+    text = _re.sub(r'[.,!?\-]+', ' ', text)
+    text = _re.sub(r'\b\d+(?:[.,]\d{1,2})?\b', ' ', text)
+    text = _re.sub(r'\s+', ' ', text).strip()
+    merchant = text.strip()
+
+    category = "Outros"
+    m_lower = _normalize_pt_text(merchant)
+    if any(k in m_lower for k in ("salario", "salário", "empresa", "folha")):
+        category = "Salario"
+    elif any(k in m_lower for k in ("uber", "99", "freela", "freelance", "corrida", "passageiro", "motorista", "app")):
+        category = "Freelance"
+    elif any(k in m_lower for k in ("aluguel", "inquilino")):
+        category = "Aluguel Recebido"
+
+    try:
+        fn = getattr(save_transaction, 'entrypoint', None) or save_transaction
+        result = fn(user_phone, "INCOME", value, category, merchant, "", "", 1, 0, "", "")
+        if isinstance(result, str):
+            result = "\n".join(l for l in result.split("\n") if not l.startswith("__"))
+    except Exception:
+        return None
+
+    return {"response": result}
+
+
 def _smart_expense_extract(user_phone: str, msg: str) -> dict | None:
     """
     Extrator inteligente de gastos — independente de ordem das palavras.
@@ -12200,6 +12260,9 @@ async def _execute_intent(result: dict, user_phone: str, body: str, full_message
         if multi:
             return multi
         msg = _extract_body(full_message)
+        income = _smart_income_extract(user_phone, msg)
+        if income:
+            return income
         parsed = _smart_expense_extract(user_phone, msg)
         if parsed:
             return parsed
