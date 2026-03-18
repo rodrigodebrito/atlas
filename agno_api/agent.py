@@ -12055,6 +12055,7 @@ def _smart_expense_extract(user_phone: str, msg: str) -> dict | None:
 # Cache de contexto recente por usuário (para continuações tipo "e no Talentos?")
 # Guarda: {phone: {"month": "2026-03", "ts": timestamp}}
 _user_last_context: dict = {}
+_period_overview_context: dict[str, dict] = {}
 
 
 # ═══ ROTEADOR LLM-MINI — substitui pre-router regex ═══
@@ -12297,6 +12298,8 @@ def get_period_overview(
     focus: str = "all",
     days: int = 7,
     detailed: bool = False,
+    max_lines_per_category: int = 5,
+    expand_category: str = "",
 ) -> str:
     conn = _get_conn()
     cur = conn.cursor()
@@ -12404,6 +12407,7 @@ def get_period_overview(
         except Exception:
             days_window = 30
     avg_day_expense = int(total_expense / max(days_window, 1))
+    expand_norm = _normalize_pt_text(expand_category or "")
 
     def _payment_label(row) -> str:
         payment_method = (row[5] or "").strip().upper()
@@ -12435,26 +12439,36 @@ def get_period_overview(
         if not exp_cat_sorted:
             return
         lines.extend(["", title])
+        cap = max(1, int(max_lines_per_category or 5))
         for c_name, c_total in exp_cat_sorted:
             pct = round((c_total / total_expense) * 100) if total_expense else 0
             lines.append("")
             lines.append(f"{_category_icon(c_name)} *{c_name}* — {_fmt_brl(c_total)} ({pct}%)")
-            for r in exp_rows_by_cat.get(c_name, []):
+            cat_rows = exp_rows_by_cat.get(c_name, [])
+            c_norm = _normalize_pt_text(c_name)
+            is_expanded = bool(expand_norm) and (expand_norm in c_norm)
+            show_rows = cat_rows if is_expanded else cat_rows[:cap]
+            for r in show_rows:
                 lines.append(_line_tx(r, include_category=False))
+            hidden = len(cat_rows) - len(show_rows)
+            if hidden > 0:
+                lines.append(f"… +{hidden} lançamento(s). Digite: *ver mais {c_name.lower()}*")
 
     def _build_insight() -> str:
         if focus_key == "income":
             if total_income == 0:
-                return "💡 Insight: período sem entradas. Se isso se repetir, vale planejar um colchão de caixa."
-            return f"💡 Insight: você entrou com {_fmt_brl(total_income)} no período. Mantenha previsibilidade de entradas."
+                return "💡 Sem entradas nesse período. Se repetir, vale proteger caixa antes de assumir novos compromissos."
+            return f"💡 Entrou {_fmt_brl(total_income)} no período. Boa base; mantendo consistência, seu mês fica previsível."
         if total_expense == 0:
             return "💡 Insight: sem gastos no período. Caixa protegido."
         top_cat_name, top_cat_value = exp_cat_sorted[0] if exp_cat_sorted else ("Outros", 0)
         top_pct = round((top_cat_value / total_expense) * 100) if total_expense else 0
         risk = "⚠️" if balance < 0 else "✅"
         if top_pct >= 40:
-            return f"{risk} Insight: {top_cat_name} está concentrando {top_pct}% dos gastos. É o primeiro ponto para ajuste."
-        return f"{risk} Insight: ritmo médio de {_fmt_brl(avg_day_expense)}/dia em gastos. Mantendo esse passo, o mês fecha mais previsível."
+            if balance < 0:
+                return f"{risk} Alerta direto: {top_cat_name} está com {top_pct}% dos gastos e já pressiona seu saldo. Começa por aqui hoje."
+            return f"{risk} Ponto de atenção: {top_cat_name} está com {top_pct}% dos gastos. Ajustando essa categoria, o resto do mês respira."
+        return f"{risk} Ritmo de gasto sob controle, mas ainda dá para ganhar eficiência cortando desperdícios repetidos."
 
     def _append_panel(lines: list[str]) -> None:
         try:
@@ -12577,6 +12591,25 @@ def _resolve_period_overview_query(user_phone: str, text: str) -> str | None:
     if not body:
         return None
 
+    # Continuação inteligente: "ver mais" (usa o último contexto de relatório por período)
+    vm = _re_router.search(r"^(ver mais|mostrar mais)(?:\s+(.+))?$", body)
+    if vm:
+        ctx = _period_overview_context.get(user_phone) or {}
+        if not ctx:
+            return "Me diz o período primeiro (ex.: *quanto gastei esta semana*) e eu abro os detalhes por categoria."
+        category_hint = (vm.group(2) or "").strip()
+        return _call(
+            get_period_overview,
+            user_phone,
+            (ctx.get("period") or "month"),
+            (ctx.get("month_ref") or ""),
+            (ctx.get("focus") or "expense"),
+            int(ctx.get("days") or 7),
+            bool(ctx.get("detailed", True)),
+            5,
+            category_hint,
+        )
+
     # Não sequestrar consultas já tratadas por merchant/categoria/cartão/compromissos
     if _extract_merchant_query_from_text(text):
         return None
@@ -12613,7 +12646,7 @@ def _resolve_period_overview_query(user_phone: str, text: str) -> str | None:
     if asks_income and any(k in body for k in ("detalhar", "detalhe", "detalhado")):
         detailed = True
 
-    return _call(
+    response = _call(
         get_period_overview,
         user_phone,
         period,
@@ -12621,7 +12654,17 @@ def _resolve_period_overview_query(user_phone: str, text: str) -> str | None:
         focus,
         days,
         detailed,
+        5,
+        "",
     )
+    _period_overview_context[user_phone] = {
+        "period": period,
+        "month_ref": month_ref,
+        "focus": focus,
+        "days": days,
+        "detailed": detailed,
+    }
+    return response
 
 
 def _is_explicit_spend_query(text: str) -> bool:

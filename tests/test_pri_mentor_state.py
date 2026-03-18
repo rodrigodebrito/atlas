@@ -1989,7 +1989,7 @@ async def test_period_overview_today_expense_includes_categories_payment_mode_in
     assert "vai para proximas faturas" in content
     assert "r$35,00" in content
     assert "media por dia" not in content
-    assert "insight" in content
+    assert ("alerta direto" in content) or ("ponto de atencao" in content) or ("ritmo de gasto" in content)
     assert "render.exemplo/painel" in content
 
 
@@ -2086,6 +2086,50 @@ async def test_period_overview_detalhar_gastos_semana_grouped_by_category_with_l
     assert "padaria" in content
     assert "farmacia" in content
     assert "— alimentacao • padaria" not in content
+
+
+@pytest.mark.asyncio
+async def test_period_overview_ver_mais_expands_specific_category(atlas, monkeypatch):
+    phone = "+5511911115602"
+    user_id = f"user_{uuid.uuid4().hex}"
+    now = atlas._now_br()
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        for i in range(6):
+            d = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+            cur.execute(
+                """INSERT INTO transactions
+                   (id, user_id, type, amount_cents, category, merchant, occurred_at, payment_method)
+                   VALUES (?, ?, 'EXPENSE', ?, 'Alimentação', ?, ?, 'CASH')""",
+                (str(uuid.uuid4()), user_id, 1000 + i, f"Mercado {i+1}", f"{d}T10:00:00"),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+
+    async def _fake_mini_route(*_args, **_kwargs):
+        return {"intent": "unknown", "action": "unknown", "params": {}}
+
+    monkeypatch.setattr(atlas, "_mini_route", _fake_mini_route)
+    monkeypatch.setattr(atlas, "atlas_agent", _StubAtlasAgent([]))
+
+    base = await atlas.chat_endpoint(user_phone=phone, message="quanto gastei nos últimos 7 dias")
+    base_content = atlas._normalize_pt_text(base["content"])
+    assert "ver mais alimentacao" in base_content
+    assert "mercado 6" not in base_content
+
+    expanded = await atlas.chat_endpoint(user_phone=phone, message="ver mais alimentacao")
+    expanded_content = atlas._normalize_pt_text(expanded["content"])
+    assert "mercado 6" in expanded_content
 def test_pr5_category_breakdown_shows_safe_compare_without_previous_base(atlas):
     phone = "+5511911119991"
     user_id = f"user_{uuid.uuid4().hex}"
