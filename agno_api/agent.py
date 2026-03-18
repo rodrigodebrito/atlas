@@ -2909,11 +2909,20 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
     except Exception:
         month_label = month
 
-    merchants: dict[str, int] = {}
+    # Agrupamento inteligente de variações de estabelecimento (ex.: "compra supermercado deville")
+    merchants_by_key: dict[str, int] = {}
+    merchant_labels: dict[str, str] = {}
     for merchant, canonical, amount, _ in rows:
-        key = (canonical or merchant or "Sem nome").strip() or "Sem nome"
-        merchants[key] = merchants.get(key, 0) + (amount or 0)
-    top_merchants = sorted(merchants.items(), key=lambda x: -x[1])[:6]
+        raw_label = (canonical or merchant or "Sem nome").strip() or "Sem nome"
+        norm_key = _merchant_key(raw_label) or _normalize_pt_text(raw_label) or "sem_nome"
+        merchants_by_key[norm_key] = merchants_by_key.get(norm_key, 0) + (amount or 0)
+        prev_label = merchant_labels.get(norm_key)
+        if not prev_label or len(raw_label) < len(prev_label):
+            merchant_labels[norm_key] = raw_label
+    merchant_ranking = sorted(
+        [(merchant_labels.get(k, k), v) for k, v in merchants_by_key.items()],
+        key=lambda x: -x[1],
+    )
 
     # comparação segura com mês anterior
     compare_total = 0
@@ -2961,13 +2970,13 @@ def get_category_breakdown(user_phone: str, category: str, month: str = "") -> s
         lines.append(f"📎 *Sem base suficiente para comparar com {compare_label}*")
 
     lines.append("")
-    lines.append("🔎 *Onde mais pesou:*")
-    for name, amt in top_merchants:
+    lines.append("🔎 *Onde mais pesou (todos):*")
+    for name, amt in merchant_ranking:
         pct = (amt / total * 100.0) if total else 0
         lines.append(f"• {name}: {_fmt_brl(amt)} ({pct:.0f}%)")
 
-    if top_merchants:
-        top_name, top_amt = top_merchants[0]
+    if merchant_ranking:
+        top_name, top_amt = merchant_ranking[0]
         conc = (top_amt / total * 100.0) if total else 0
         lines.append("")
         if conc >= 45:

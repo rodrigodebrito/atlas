@@ -1905,6 +1905,44 @@ def test_pr5_category_breakdown_compares_when_previous_month_exists(atlas):
     assert "vs" in normalized
 
 
+def test_pr5_category_breakdown_groups_merchant_variations_and_lists_all(atlas):
+    phone = "+5511911119993"
+    user_id = f"user_{uuid.uuid4().hex}"
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        variants = [
+            ("Supermercado Deville", "supermercado deville", 5000),
+            ("compra supermercado deville", "compra supermercado deville", 7000),
+            ("Mercado Deville", "mercado deville", 3000),
+            ("Restaurante Talentos", "restaurante talentos", 2000),
+        ]
+        for merchant, canonical, amount in variants:
+            cur.execute(
+                """INSERT INTO transactions
+                   (id, user_id, type, amount_cents, category, merchant, merchant_raw, merchant_canonical, occurred_at)
+                   VALUES (?, ?, 'EXPENSE', ?, 'Alimentação', ?, ?, ?, ?)""",
+                (str(uuid.uuid4()), user_id, amount, merchant, merchant, canonical, f"{month}-11T12:00:00"),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = atlas._call(atlas.get_category_breakdown, phone, "Alimentação", month)
+    normalized = atlas._normalize_pt_text(result)
+    assert "onde mais pesou (todos)" in normalized
+    assert "deville" in normalized
+    assert "supermercado deville" not in normalized
+    assert "compra supermercado deville" not in normalized
+    assert "restaurante talentos" in normalized
+
+
 def test_pr3_get_spend_by_merchant_type_month(atlas):
     phone = "+5511911116666"
     user_id = f"user_{uuid.uuid4().hex}"
