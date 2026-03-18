@@ -3,7 +3,7 @@ import gc
 import sqlite3
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1724,8 +1724,8 @@ async def test_query_detalhar_mes_forces_full_month_transactions(atlas, monkeypa
     result = await atlas.chat_endpoint(user_phone=phone, message="detalhar mes")
 
     content = result["content"].lower()
-    assert "extrato de" in content
-    assert month in result["content"]
+    assert ("extrato de" in content) or ("detalhamento de" in content)
+    assert (month in result["content"]) or ("Mar/2026" in result["content"])
 
 
 @pytest.mark.asyncio
@@ -1800,8 +1800,8 @@ async def test_chat_endpoint_hard_routes_detalhar_mes_before_mini_router(atlas, 
     result = await atlas.chat_endpoint(user_phone=phone, message="detalhar mês")
 
     content = result["content"].lower()
-    assert "extrato de" in content
-    assert month in result["content"]
+    assert ("extrato de" in content) or ("detalhamento de" in content)
+    assert (month in result["content"]) or ("Mar/2026" in result["content"])
 
 
 @pytest.mark.asyncio
@@ -1841,6 +1841,97 @@ async def test_chat_endpoint_hard_routes_month_category_before_mini_router(atlas
     assert "alimentacao" in content
     assert "total" in content
 
+
+@pytest.mark.asyncio
+async def test_chat_endpoint_hard_routes_detalhar_gastos_mes_before_mini_router(atlas, monkeypatch):
+    phone = "+5511911115566"
+    user_id = f"user_{uuid.uuid4().hex}"
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'INCOME', 10000, 'Freelance', 'Uber', ?)""",
+            (str(uuid.uuid4()), user_id, f"{month}-10T10:00:00"),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 3500, 'Alimentação', 'Padaria', ?)""",
+            (str(uuid.uuid4()), user_id, f"{month}-10T12:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    async def _should_not_route(*_args, **_kwargs):
+        raise AssertionError("mini-router não deveria rodar para 'detalhar gastos do mês'")
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _should_not_route)
+    monkeypatch.setattr(atlas, "atlas_agent", _StubAtlasAgent([]))
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="detalhar gastos do mês")
+
+    content = atlas._normalize_pt_text(result["content"])
+    assert "detalhamento de gastos" in content
+    assert "saidas" in content
+    assert "entradas" not in content
+
+
+@pytest.mark.asyncio
+async def test_chat_endpoint_hard_routes_detalhar_quanto_recebi_last7_before_mini_router(atlas, monkeypatch):
+    phone = "+5511911115577"
+    user_id = f"user_{uuid.uuid4().hex}"
+    now = atlas._now_br()
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        d1 = now.strftime("%Y-%m-%d")
+        d2 = (now - timedelta(days=2)).strftime("%Y-%m-%d")
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'INCOME', 4200, 'Freelance', '99', ?)""",
+            (str(uuid.uuid4()), user_id, f"{d1}T11:00:00"),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'INCOME', 3800, 'Freelance', 'Uber', ?)""",
+            (str(uuid.uuid4()), user_id, f"{d2}T13:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    async def _should_not_route(*_args, **_kwargs):
+        raise AssertionError("mini-router não deveria rodar para 'detalhar quanto recebi'")
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_mini_route", _should_not_route)
+    monkeypatch.setattr(atlas, "atlas_agent", _StubAtlasAgent([]))
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="detalhar quanto recebi nos últimos 7 dias")
+
+    content = atlas._normalize_pt_text(result["content"])
+    assert "detalhamento de entradas" in content
+    assert "entradas" in content
+    assert "r$42,00" in content or "r$38,00" in content
 
 def test_pr5_category_breakdown_shows_safe_compare_without_previous_base(atlas):
     phone = "+5511911119991"

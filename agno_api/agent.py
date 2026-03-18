@@ -12208,10 +12208,10 @@ def _extract_period_for_type_query(text: str) -> tuple[str, str]:
     return "month", _extract_month_from_text_or_current(text)
 
 
-def _period_filter_sql(period: str, month: str = "") -> tuple[str, list[str], str]:
+def _period_filter_sql(period: str, month: str = "", days: int = 7) -> tuple[str, list[str], str]:
     """
     Retorna (sql, params, label) para filtros por período.
-    period: today|yesterday|last7|week|month
+    period: today|yesterday|last7|last_week|week|lastx|month
     """
     now = _now_br()
     period_key = (period or "month").strip().lower()
@@ -12229,6 +12229,15 @@ def _period_filter_sql(period: str, month: str = "") -> tuple[str, list[str], st
             [start, end],
             f"últimos 7 dias ({(now - timedelta(days=6)).strftime('%d/%m')} a {now.strftime('%d/%m')})",
         )
+    if period_key == "lastx":
+        safe_days = max(1, min(int(days or 7), 365))
+        start = (now - timedelta(days=safe_days - 1)).strftime("%Y-%m-%d")
+        end = now.strftime("%Y-%m-%d")
+        return (
+            "AND occurred_at >= ? AND occurred_at <= ? || 'T23:59:59'",
+            [start, end],
+            f"últimos {safe_days} dias ({(now - timedelta(days=safe_days - 1)).strftime('%d/%m')} a {now.strftime('%d/%m')})",
+        )
     if period_key == "week":
         start_dt = now - timedelta(days=now.weekday())
         start = start_dt.strftime("%Y-%m-%d")
@@ -12237,6 +12246,15 @@ def _period_filter_sql(period: str, month: str = "") -> tuple[str, list[str], st
             "AND occurred_at >= ? AND occurred_at <= ? || 'T23:59:59'",
             [start, end],
             f"semana ({start_dt.strftime('%d/%m')} a {now.strftime('%d/%m')})",
+        )
+    if period_key == "last_week":
+        this_monday = now - timedelta(days=now.weekday())
+        start_dt = this_monday - timedelta(days=7)
+        end_dt = this_monday - timedelta(days=1)
+        return (
+            "AND occurred_at >= ? AND occurred_at <= ? || 'T23:59:59'",
+            [start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")],
+            f"semana passada ({start_dt.strftime('%d/%m')} a {end_dt.strftime('%d/%m')})",
         )
 
     month_ref = month or _extract_month_from_text_or_current("")
@@ -12247,6 +12265,207 @@ def _period_filter_sql(period: str, month: str = "") -> tuple[str, list[str], st
     except Exception:
         label = month_ref
     return "AND occurred_at LIKE ?", [f"{month_ref}%"], label
+
+
+def _extract_period_for_overview_query(text: str) -> tuple[str, str, int]:
+    """Retorna (period, month_ref, days) para consultas gerais de fluxo."""
+    body = _normalize_pt_text(text or "")
+
+    m_days = _re_router.search(r"ultimos?\s+(\d{1,3})\s+dias", body)
+    if m_days:
+        return "lastx", "", max(1, min(int(m_days.group(1)), 365))
+
+    if "semana passada" in body or "ultima semana" in body:
+        return "last_week", "", 7
+    if "ontem" in body:
+        return "yesterday", "", 1
+    if any(k in body for k in ("hoje", "dia de hoje")):
+        return "today", "", 1
+    if any(k in body for k in ("ultimos 7 dias", "ultimos sete dias", "7 dias")):
+        return "last7", "", 7
+    if "semana" in body:
+        return "week", "", 7
+
+    return "month", _extract_month_from_text_or_current(text or ""), 30
+
+
+@tool(description="Resumo ou detalhamento de entradas/saídas por período. period=today|yesterday|last7|last_week|week|lastx|month; focus=all|expense|income; detailed=True para listar lançamentos.")
+def get_period_overview(
+    user_phone: str,
+    period: str = "month",
+    month: str = "",
+    focus: str = "all",
+    days: int = 7,
+    detailed: bool = False,
+) -> str:
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id, name FROM users WHERE phone = ?", (user_phone,))
+    user = cur.fetchone()
+    if not user:
+        conn.close()
+        return "Nenhuma movimentação encontrada."
+    user_id, user_name = user[0], user[1]
+
+    period_sql, period_params, period_label = _period_filter_sql(period, month, days)
+    focus_key = (focus or "all").strip().lower()
+    if focus_key not in {"all", "expense", "income"}:
+        focus_key = "all"
+
+    type_sql = ""
+    type_params: list[str] = []
+    if focus_key == "expense":
+        type_sql = "AND type = 'EXPENSE'"
+    elif focus_key == "income":
+        type_sql = "AND type = 'INCOME'"
+
+    cur.execute(
+        f"""SELECT type, amount_cents, category, merchant, occurred_at
+            FROM transactions
+            WHERE user_id = ?
+              {period_sql}
+              {type_sql}
+            ORDER BY occurred_at DESC""",
+        tuple([user_id] + period_params + type_params),
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        return f"Nenhuma movimentação em {period_label}."
+
+    income_rows = [r for r in rows if r[0] == "INCOME"]
+    expense_rows = [r for r in rows if r[0] == "EXPENSE"]
+    expense_cash_rows = [r for r in expense_rows if (r[2] or "") not in {"Pagamento Fatura", "Pagamento Conta"}]
+
+    total_income = sum(int(r[1] or 0) for r in income_rows)
+    total_expense = sum(int(r[1] or 0) for r in expense_rows)
+    total_expense_cash = sum(int(r[1] or 0) for r in expense_cash_rows)
+    balance = total_income - total_expense
+
+    def _line_tx(row) -> str:
+        _type, amount_cents, category, merchant, occurred_at = row
+        dt_lbl = occurred_at[:10] if occurred_at else ""
+        try:
+            dt_lbl = f"{dt_lbl[8:10]}/{dt_lbl[5:7]}"
+        except Exception:
+            pass
+        merchant_str = f" • {merchant}" if merchant else ""
+        return f"• {dt_lbl} {_fmt_brl(int(amount_cents or 0))} — {category or 'Sem categoria'}{merchant_str}"
+
+    if detailed:
+        title = {
+            "all": f"📋 *{user_name}, detalhamento de {period_label}*",
+            "expense": f"📋 *{user_name}, detalhamento de gastos ({period_label})*",
+            "income": f"📋 *{user_name}, detalhamento de entradas ({period_label})*",
+        }[focus_key]
+        lines = [title, ""]
+        if focus_key in {"all", "income"}:
+            lines.append(f"💰 *Entradas:* {_fmt_brl(total_income)} ({len(income_rows)} lanç.)")
+        if focus_key in {"all", "expense"}:
+            lines.append(f"🛍️ *Saídas:* {_fmt_brl(total_expense)} ({len(expense_rows)} lanç.)")
+            lines.append(f"🗓️ *Peso no caixa:* {_fmt_brl(total_expense_cash)}")
+        if focus_key == "all":
+            lines.append(f"{'✅' if balance >= 0 else '⚠️'} *Saldo:* {_fmt_brl(balance)}")
+
+        if focus_key in {"all", "income"} and income_rows:
+            lines.extend(["", "📥 *ENTRADAS*"])
+            lines.extend([_line_tx(r) for r in income_rows])
+        if focus_key in {"all", "expense"} and expense_rows:
+            lines.extend(["", "📤 *SAÍDAS*"])
+            lines.extend([_line_tx(r) for r in expense_rows])
+        return "\n".join(lines)
+
+    lines = []
+    if focus_key == "expense":
+        avg = int(total_expense / max(len(expense_rows), 1))
+        lines = [
+            f"📊 *{user_name}, resumo de gastos em {period_label}*",
+            "",
+            f"🛍️ *Total gasto:* {_fmt_brl(total_expense)}",
+            f"🧾 *Compras:* {len(expense_rows)}",
+            f"🎟️ *Ticket médio:* {_fmt_brl(avg)}",
+            f"🗓️ *Peso no caixa:* {_fmt_brl(total_expense_cash)}",
+        ]
+    elif focus_key == "income":
+        avg = int(total_income / max(len(income_rows), 1))
+        lines = [
+            f"📊 *{user_name}, resumo de entradas em {period_label}*",
+            "",
+            f"💰 *Total recebido:* {_fmt_brl(total_income)}",
+            f"🧾 *Entradas:* {len(income_rows)}",
+            f"🎟️ *Ticket médio:* {_fmt_brl(avg)}",
+        ]
+    else:
+        lines = [
+            f"📊 *{user_name}, resumo de {period_label}*",
+            "",
+            f"💰 *Entradas:* {_fmt_brl(total_income)}",
+            f"🛍️ *Saídas:* {_fmt_brl(total_expense)}",
+            f"🗓️ *Peso no caixa:* {_fmt_brl(total_expense_cash)}",
+            f"{'✅' if balance >= 0 else '⚠️'} *Saldo:* {_fmt_brl(balance)}",
+        ]
+    return "\n".join(lines)
+
+
+def _resolve_period_overview_query(user_phone: str, text: str) -> str | None:
+    """
+    Resolve consultas gerais de período:
+    - detalhar mês / detalhar gastos do mês / detalhar quanto recebi
+    - quanto gastei / quanto entrou / resumo de quanto gastei
+    para mês/semana/hoje/ontem/últimos X dias.
+    """
+    body_raw = (text or "").strip()
+    body = _normalize_pt_text(body_raw)
+    if not body:
+        return None
+
+    # Não sequestrar consultas já tratadas por merchant/categoria/cartão/compromissos
+    if _extract_merchant_query_from_text(text):
+        return None
+    if any(k in body for k in ("cartao", "fatura", "compromiss", "painel", "agenda")):
+        return None
+
+    wants_detail = any(k in body for k in ("detalhar", "detalhe", "detalhado", "me de o mes detalhado", "me mostra detalhado"))
+    wants_summary = "resumo" in body
+    asks_spent = any(k in body for k in ("quanto gastei", "gastos", "quanto foi de saida", "quanto saiu"))
+    asks_income = any(k in body for k in ("quanto recebi", "quanto entrou", "entradas", "receitas", "me fale quanto entrou"))
+    generic_period_ask = any(k in body for k in ("me mostra meu mes", "mostra meu mes", "resumo do mes", "resumo da semana", "resumo de hoje", "resumo de ontem"))
+
+    query_like = wants_detail or wants_summary or asks_spent or asks_income or generic_period_ask
+    if not query_like:
+        return None
+
+    # Evita capturar lançamento ("gastei 35 na padaria") como consulta.
+    if _has_explicit_amount(body) and any(v in body for v in ("gastei", "comprei", "paguei", "recebi", "ganhei")):
+        if not any(k in body for k in ("quanto", "resumo", "detalh", "ultimos", "semana", "mes", "hoje", "ontem")):
+            return None
+
+    period, month_ref, days = _extract_period_for_overview_query(text)
+    focus = "all"
+    if asks_spent and not asks_income:
+        focus = "expense"
+    elif asks_income and not asks_spent:
+        focus = "income"
+
+    detailed = wants_detail
+    if wants_summary and not wants_detail:
+        detailed = False
+    if asks_spent and any(k in body for k in ("detalhar", "detalhe", "detalhado")):
+        detailed = True
+    if asks_income and any(k in body for k in ("detalhar", "detalhe", "detalhado")):
+        detailed = True
+
+    return _call(
+        get_period_overview,
+        user_phone,
+        period,
+        month_ref,
+        focus,
+        days,
+        detailed,
+    )
 
 
 def _is_explicit_spend_query(text: str) -> bool:
@@ -12786,6 +13005,10 @@ async def _execute_intent(result: dict, user_phone: str, body: str, full_message
         body_norm = _normalize_pt_text(body or "")
         month_ref = _extract_month_from_text_or_current(body or "")
         category_ref = _extract_category_from_text(body or "")
+
+        _period_overview_resp = _resolve_period_overview_query(user_phone, body or "")
+        if _period_overview_resp:
+            return {"response": _period_overview_resp}
 
         # "detalhar mês" deve mostrar o mês completo (não resumo compacto)
         if any(k in body_norm for k in ("detalhar mes", "mes detalhado", "detalhe do mes", "detalhar o mes")):
@@ -14031,6 +14254,13 @@ async def chat_endpoint(
         if _in_mentor_session:
             _touch_mentor_state(user_phone)
         return {"content": _strip_whatsapp_bold(_spend_ctx_resp), "routed": True}
+
+    # 4c.2 Consultas gerais de período (resumo/detalhar de entradas/saídas).
+    _period_overview_resp = _resolve_period_overview_query(user_phone, body)
+    if _period_overview_resp:
+        if _in_mentor_session:
+            _touch_mentor_state(user_phone)
+        return {"content": _strip_whatsapp_bold(_period_overview_resp), "routed": True}
 
     # 4d. Detalhe de mês/categoria deve ser resolvido ANTES do mini-router.
     # Evita cair em "resumo" quando o pedido é explicitamente "detalhar mês".
