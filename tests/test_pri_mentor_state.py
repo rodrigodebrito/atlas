@@ -1971,6 +1971,42 @@ def test_pr3_get_spend_by_merchant_type_lists_all_merchants(atlas):
     assert "hortifruti bairro" in normalized
 
 
+def test_pr3_get_spend_by_merchant_type_groups_name_variations(atlas):
+    phone = "+5511911116671"
+    user_id = f"user_{uuid.uuid4().hex}"
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        variants = [
+            ("Supermercado Deville", "supermercado deville", 5000),
+            ("compra supermercado deville", "compra supermercado deville", 7000),
+            ("Mercado Deville", "mercado deville", 3000),
+        ]
+        for merchant, canonical, amount in variants:
+            cur.execute(
+                """INSERT INTO transactions
+                   (id, user_id, type, amount_cents, category, merchant, merchant_raw, merchant_canonical, merchant_type, occurred_at)
+                   VALUES (?, ?, 'EXPENSE', ?, 'Alimentação', ?, ?, ?, 'mercado', ?)""",
+                (str(uuid.uuid4()), user_id, amount, merchant, merchant, canonical, f"{month}-10T12:00:00"),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = atlas._call(atlas.get_spend_by_merchant_type, phone, "mercado", "month", month)
+    normalized = atlas._normalize_pt_text(result)
+    # as variações devem virar um único agrupamento "deville"
+    assert "deville" in normalized
+    assert "supermercado deville" not in normalized
+    assert "compra supermercado deville" not in normalized
+
+
 def test_pr3_get_spend_by_merchant_type_uses_fallback_when_type_missing(atlas):
     phone = "+5511911116667"
     user_id = f"user_{uuid.uuid4().hex}"

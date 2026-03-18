@@ -5161,12 +5161,22 @@ def get_spend_by_merchant_type(
     count = len(rows)
     avg = total / count if count else 0
 
+    # Agrupa variações do mesmo estabelecimento para evitar fragmentação visual
     by_merchant = {}
+    by_merchant_label = {}
     for merchant, canonical, amount, _ in rows:
-        key = (canonical or merchant or "Sem nome").strip()
-        by_merchant[key] = by_merchant.get(key, 0) + (amount or 0)
+        raw_label = (canonical or merchant or "Sem nome").strip() or "Sem nome"
+        norm_key = _merchant_key(raw_label) or _normalize_pt_text(raw_label) or "sem_nome"
+        by_merchant[norm_key] = by_merchant.get(norm_key, 0) + (amount or 0)
+        # mantém o rótulo "mais limpo" (menor) para exibição
+        prev = by_merchant_label.get(norm_key)
+        if not prev or len(raw_label) < len(prev):
+            by_merchant_label[norm_key] = raw_label
 
-    merchant_ranking = sorted(by_merchant.items(), key=lambda x: -x[1])
+    merchant_ranking = sorted(
+        [(by_merchant_label.get(k, k), v) for k, v in by_merchant.items()],
+        key=lambda x: -x[1],
+    )
     top_merchant = merchant_ranking[:3]
 
     type_label, type_icon = _merchant_type_label(m_type)
