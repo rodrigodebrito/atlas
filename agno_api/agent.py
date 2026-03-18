@@ -5166,7 +5166,8 @@ def get_spend_by_merchant_type(
         key = (canonical or merchant or "Sem nome").strip()
         by_merchant[key] = by_merchant.get(key, 0) + (amount or 0)
 
-    top_merchant = sorted(by_merchant.items(), key=lambda x: -x[1])[:3]
+    merchant_ranking = sorted(by_merchant.items(), key=lambda x: -x[1])
+    top_merchant = merchant_ranking[:3]
 
     type_label, type_icon = _merchant_type_label(m_type)
     lines = [
@@ -5240,10 +5241,10 @@ def get_spend_by_merchant_type(
     elif compare_label:
         lines.append(f"📎 *Sem base suficiente para comparar com {compare_label}*")
 
-    if top_merchant:
+    if merchant_ranking:
         lines.append("")
-        lines.append("🔎 *Onde mais pesou:*")
-        for name, amt in top_merchant:
+        lines.append("🔎 *Onde mais pesou (todos):*")
+        for name, amt in merchant_ranking:
             lines.append(f"• {name}: {_fmt_brl(amt)}")
     insight = _build_type_query_insight(total, count, top_merchant, m_type)
     if insight:

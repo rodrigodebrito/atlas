@@ -1933,6 +1933,44 @@ def test_pr3_get_spend_by_merchant_type_month(atlas):
     assert "total" in normalized
 
 
+def test_pr3_get_spend_by_merchant_type_lists_all_merchants(atlas):
+    phone = "+5511911116670"
+    user_id = f"user_{uuid.uuid4().hex}"
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        merchants = [
+            ("Supermercado Deville", 5000),
+            ("Mercado de Ville", 4000),
+            ("Atacadão Centro", 3000),
+            ("Hortifruti Bairro", 2000),
+        ]
+        for merchant, amount in merchants:
+            cur.execute(
+                """INSERT INTO transactions
+                   (id, user_id, type, amount_cents, category, merchant, merchant_raw, merchant_canonical, merchant_type, occurred_at)
+                   VALUES (?, ?, 'EXPENSE', ?, 'Alimentação', ?, ?, ?, 'mercado', ?)""",
+                (str(uuid.uuid4()), user_id, amount, merchant, merchant, merchant.lower(), f"{month}-10T12:00:00"),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = atlas._call(atlas.get_spend_by_merchant_type, phone, "mercado", "month", month)
+    normalized = atlas._normalize_pt_text(result)
+    assert "onde mais pesou (todos)" in normalized
+    assert "supermercado deville" in normalized
+    assert "mercado de ville" in normalized
+    assert "atacadao centro" in normalized
+    assert "hortifruti bairro" in normalized
+
+
 def test_pr3_get_spend_by_merchant_type_uses_fallback_when_type_missing(atlas):
     phone = "+5511911116667"
     user_id = f"user_{uuid.uuid4().hex}"
