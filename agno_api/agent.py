@@ -12321,7 +12321,8 @@ def get_period_overview(
         type_sql = "AND type = 'INCOME'"
 
     cur.execute(
-        f"""SELECT type, amount_cents, category, merchant, occurred_at
+        f"""SELECT type, amount_cents, category, merchant, occurred_at, payment_method, card_id,
+                   installments, installment_number
             FROM transactions
             WHERE user_id = ?
               {period_sql}
@@ -12330,9 +12331,15 @@ def get_period_overview(
         tuple([user_id] + period_params + type_params),
     )
     rows = cur.fetchall()
-    conn.close()
 
     if not rows:
+        try:
+            panel_url = get_panel_url(user_phone)
+        except Exception:
+            panel_url = ""
+        conn.close()
+        if panel_url:
+            return f"Nenhuma movimentação em {period_label}.\n\n📊 Para mais detalhes: {panel_url}"
         return f"Nenhuma movimentação em {period_label}."
 
     income_rows = [r for r in rows if r[0] == "INCOME"]
@@ -12344,15 +12351,92 @@ def get_period_overview(
     total_expense_cash = sum(int(r[1] or 0) for r in expense_cash_rows)
     balance = total_income - total_expense
 
+    # Mapa de cartões para exibir "cartão X" no detalhamento
+    card_name_by_id = {}
+    try:
+        cur.execute("SELECT id, name FROM credit_cards WHERE user_id = ?", (user_id,))
+        for _cid, _cname in (cur.fetchall() or []):
+            if _cid:
+                card_name_by_id[_cid] = (_cname or "").strip()
+    except Exception:
+        pass
+
+    # Agrupamento por categoria para leitura premium
+    from collections import defaultdict as _dd
+    exp_cat_totals = _dd(int)
+    for r in expense_rows:
+        exp_cat_totals[(r[2] or "Sem categoria")] += int(r[1] or 0)
+    exp_cat_sorted = sorted(exp_cat_totals.items(), key=lambda x: -x[1])
+
+    # Janela de dias para média diária
+    period_key = (period or "month").strip().lower()
+    now = _now_br()
+    if period_key in {"today", "yesterday"}:
+        days_window = 1
+    elif period_key in {"last7", "week", "last_week"}:
+        days_window = 7
+    elif period_key == "lastx":
+        days_window = max(1, min(int(days or 7), 365))
+    else:
+        month_ref = month or _extract_month_from_text_or_current("")
+        try:
+            y = int(month_ref[:4])
+            m = int(month_ref[5:7])
+            days_in_month = _cal_bp.monthrange(y, m)[1]
+            if y == now.year and m == now.month:
+                days_window = max(now.day, 1)
+            else:
+                days_window = days_in_month
+        except Exception:
+            days_window = 30
+    avg_day_expense = int(total_expense / max(days_window, 1))
+
+    def _payment_label(row) -> str:
+        payment_method = (row[5] or "").strip().upper()
+        card_id = row[6]
+        inst_total = int(row[7] or 1)
+        inst_idx = int(row[8] or 1)
+        if payment_method == "CREDIT" or card_id:
+            cname = card_name_by_id.get(card_id, "")
+            base = f"cartão {cname}" if cname else "cartão"
+            if inst_total > 1:
+                base = f"{base} • {inst_idx}x/{inst_total}x"
+            return base
+        return "à vista • pago"
+
     def _line_tx(row) -> str:
-        _type, amount_cents, category, merchant, occurred_at = row
+        _type, amount_cents, category, merchant, occurred_at = row[:5]
         dt_lbl = occurred_at[:10] if occurred_at else ""
         try:
             dt_lbl = f"{dt_lbl[8:10]}/{dt_lbl[5:7]}"
         except Exception:
             pass
         merchant_str = f" • {merchant}" if merchant else ""
-        return f"• {dt_lbl} {_fmt_brl(int(amount_cents or 0))} — {category or 'Sem categoria'}{merchant_str}"
+        pay_str = _payment_label(row) if _type == "EXPENSE" else "recebido"
+        return f"• {dt_lbl} {_fmt_brl(int(amount_cents or 0))} — {category or 'Sem categoria'}{merchant_str} • {pay_str}"
+
+    def _build_insight() -> str:
+        if focus_key == "income":
+            if total_income == 0:
+                return "💡 Insight: período sem entradas. Se isso se repetir, vale planejar um colchão de caixa."
+            return f"💡 Insight: você entrou com {_fmt_brl(total_income)} no período. Mantenha previsibilidade de entradas."
+        if total_expense == 0:
+            return "💡 Insight: sem gastos no período. Caixa protegido."
+        top_cat_name, top_cat_value = exp_cat_sorted[0] if exp_cat_sorted else ("Outros", 0)
+        top_pct = round((top_cat_value / total_expense) * 100) if total_expense else 0
+        risk = "⚠️" if balance < 0 else "✅"
+        if top_pct >= 40:
+            return f"{risk} Insight: {top_cat_name} está concentrando {top_pct}% dos gastos. É o primeiro ponto para ajuste."
+        return f"{risk} Insight: ritmo médio de {_fmt_brl(avg_day_expense)}/dia em gastos. Mantendo esse passo, o mês fecha mais previsível."
+
+    def _append_panel(lines: list[str]) -> None:
+        try:
+            panel_url = get_panel_url(user_phone)
+            if panel_url:
+                lines.append("")
+                lines.append(f"📊 Para mais detalhes e gráficos: {panel_url}")
+        except Exception:
+            pass
 
     if detailed:
         title = {
@@ -12366,8 +12450,15 @@ def get_period_overview(
         if focus_key in {"all", "expense"}:
             lines.append(f"🛍️ *Saídas:* {_fmt_brl(total_expense)} ({len(expense_rows)} lanç.)")
             lines.append(f"🗓️ *Peso no caixa:* {_fmt_brl(total_expense_cash)}")
+            lines.append(f"📆 *Média por dia:* {_fmt_brl(avg_day_expense)}")
         if focus_key == "all":
             lines.append(f"{'✅' if balance >= 0 else '⚠️'} *Saldo:* {_fmt_brl(balance)}")
+
+        if focus_key in {"all", "expense"} and exp_cat_sorted:
+            lines.extend(["", "📂 *Gastos por categoria*"])
+            for c_name, c_total in exp_cat_sorted:
+                pct = round((c_total / total_expense) * 100) if total_expense else 0
+                lines.append(f"• {c_name}: {_fmt_brl(c_total)} ({pct}%)")
 
         if focus_key in {"all", "income"} and income_rows:
             lines.extend(["", "📥 *ENTRADAS*"])
@@ -12375,6 +12466,9 @@ def get_period_overview(
         if focus_key in {"all", "expense"} and expense_rows:
             lines.extend(["", "📤 *SAÍDAS*"])
             lines.extend([_line_tx(r) for r in expense_rows])
+        lines.extend(["", _build_insight()])
+        _append_panel(lines)
+        conn.close()
         return "\n".join(lines)
 
     lines = []
@@ -12387,7 +12481,16 @@ def get_period_overview(
             f"🧾 *Compras:* {len(expense_rows)}",
             f"🎟️ *Ticket médio:* {_fmt_brl(avg)}",
             f"🗓️ *Peso no caixa:* {_fmt_brl(total_expense_cash)}",
+            f"📆 *Média por dia:* {_fmt_brl(avg_day_expense)}",
         ]
+        if exp_cat_sorted:
+            lines.extend(["", "📂 *Categorias no período*"])
+            for c_name, c_total in exp_cat_sorted:
+                pct = round((c_total / total_expense) * 100) if total_expense else 0
+                lines.append(f"• {c_name}: {_fmt_brl(c_total)} ({pct}%)")
+        if period_key in {"today", "yesterday"} and expense_rows:
+            lines.extend(["", "🧾 *Compras do período*"])
+            lines.extend([_line_tx(r) for r in expense_rows[:20]])
     elif focus_key == "income":
         avg = int(total_income / max(len(income_rows), 1))
         lines = [
@@ -12397,6 +12500,9 @@ def get_period_overview(
             f"🧾 *Entradas:* {len(income_rows)}",
             f"🎟️ *Ticket médio:* {_fmt_brl(avg)}",
         ]
+        if period_key in {"today", "yesterday"} and income_rows:
+            lines.extend(["", "🧾 *Entradas do período*"])
+            lines.extend([_line_tx(r) for r in income_rows[:20]])
     else:
         lines = [
             f"📊 *{user_name}, resumo de {period_label}*",
@@ -12404,8 +12510,17 @@ def get_period_overview(
             f"💰 *Entradas:* {_fmt_brl(total_income)}",
             f"🛍️ *Saídas:* {_fmt_brl(total_expense)}",
             f"🗓️ *Peso no caixa:* {_fmt_brl(total_expense_cash)}",
+            f"📆 *Média por dia (gastos):* {_fmt_brl(avg_day_expense)}",
             f"{'✅' if balance >= 0 else '⚠️'} *Saldo:* {_fmt_brl(balance)}",
         ]
+        if exp_cat_sorted:
+            lines.extend(["", "📂 *Categorias no período*"])
+            for c_name, c_total in exp_cat_sorted:
+                pct = round((c_total / total_expense) * 100) if total_expense else 0
+                lines.append(f"• {c_name}: {_fmt_brl(c_total)} ({pct}%)")
+    lines.extend(["", _build_insight()])
+    _append_panel(lines)
+    conn.close()
     return "\n".join(lines)
 
 
