@@ -1980,12 +1980,14 @@ async def test_period_overview_today_expense_includes_categories_payment_mode_in
     content = atlas._normalize_pt_text(result["content"])
 
     assert "resumo de gastos em hoje" in content
-    assert "categorias no periodo" in content
+    assert "fechamento do dia" in content
+    assert "gastos por categoria (dia)" in content
     assert "alimentacao" in content
-    assert "compras do periodo" in content
+    assert "compras do dia" in content
     assert "cartao caixa" in content
     assert "a vista" in content
-    assert "peso no caixa" in content
+    assert "impacto no caixa hoje" in content
+    assert "vai para proximas faturas" in content
     assert "r$35,00" in content
     assert "media por dia" not in content
     assert "insight" in content

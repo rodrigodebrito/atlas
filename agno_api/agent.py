@@ -12488,24 +12488,42 @@ def get_period_overview(
     lines = []
     if focus_key == "expense":
         avg = int(total_expense / max(len(expense_rows), 1))
-        lines = [
-            f"📊 *{user_name}, resumo de gastos em {period_label}*",
-            "",
-            f"🛍️ *Total gasto:* {_fmt_brl(total_expense)}",
-            f"🧾 *Compras:* {len(expense_rows)}",
-            f"🎟️ *Ticket médio:* {_fmt_brl(avg)}",
-            f"🗓️ *Peso no caixa:* {_fmt_brl(total_expense_cash)}",
-        ]
-        if show_daily_avg:
-            lines.append(f"📆 *Média por dia:* {_fmt_brl(avg_day_expense)}")
-        if exp_cat_sorted:
-            lines.extend(["", "📂 *Categorias no período*"])
-            for c_name, c_total in exp_cat_sorted:
-                pct = round((c_total / total_expense) * 100) if total_expense else 0
-                lines.append(f"• {c_name}: {_fmt_brl(c_total)} ({pct}%)")
-        if period_key in {"today", "yesterday"} and expense_rows:
-            lines.extend(["", "🧾 *Compras do período*"])
-            lines.extend([_line_tx(r) for r in expense_rows[:20]])
+        if period_key in {"today", "yesterday"}:
+            deferred_credit = max(total_expense - total_expense_cash, 0)
+            lines = [
+                f"📊 *{user_name}, resumo de gastos em {period_label}*",
+                "",
+                "🎯 *Fechamento do dia*",
+                f"🛍️ *Total gasto no dia:* {_fmt_brl(total_expense)}",
+                f"💸 *Impacto no caixa hoje:* {_fmt_brl(total_expense_cash)}",
+                f"💳 *Vai para próximas faturas:* {_fmt_brl(deferred_credit)}",
+                f"🧾 *Compras no dia:* {len(expense_rows)}",
+                f"🎟️ *Ticket médio:* {_fmt_brl(avg)}",
+            ]
+            if exp_cat_sorted:
+                lines.extend(["", "📂 *Gastos por categoria (dia)*"])
+                for c_name, c_total in exp_cat_sorted:
+                    pct = round((c_total / total_expense) * 100) if total_expense else 0
+                    lines.append(f"• {c_name}: {_fmt_brl(c_total)} ({pct}%)")
+            if expense_rows:
+                lines.extend(["", "🧾 *Compras do dia*"])
+                lines.extend([_line_tx(r) for r in expense_rows[:20]])
+        else:
+            lines = [
+                f"📊 *{user_name}, resumo de gastos em {period_label}*",
+                "",
+                f"🛍️ *Total gasto:* {_fmt_brl(total_expense)}",
+                f"🧾 *Compras:* {len(expense_rows)}",
+                f"🎟️ *Ticket médio:* {_fmt_brl(avg)}",
+                f"🗓️ *Peso no caixa:* {_fmt_brl(total_expense_cash)}",
+            ]
+            if show_daily_avg:
+                lines.append(f"📆 *Média por dia:* {_fmt_brl(avg_day_expense)}")
+            if exp_cat_sorted:
+                lines.extend(["", "📂 *Categorias no período*"])
+                for c_name, c_total in exp_cat_sorted:
+                    pct = round((c_total / total_expense) * 100) if total_expense else 0
+                    lines.append(f"• {c_name}: {_fmt_brl(c_total)} ({pct}%)")
     elif focus_key == "income":
         avg = int(total_income / max(len(income_rows), 1))
         lines = [
