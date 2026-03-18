@@ -1985,6 +1985,9 @@ async def test_period_overview_today_expense_includes_categories_payment_mode_in
     assert "compras do periodo" in content
     assert "cartao caixa" in content
     assert "a vista" in content
+    assert "peso no caixa" in content
+    assert "r$35,00" in content
+    assert "media por dia" not in content
     assert "insight" in content
     assert "render.exemplo/painel" in content
 

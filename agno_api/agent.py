@@ -12344,7 +12344,18 @@ def get_period_overview(
 
     income_rows = [r for r in rows if r[0] == "INCOME"]
     expense_rows = [r for r in rows if r[0] == "EXPENSE"]
-    expense_cash_rows = [r for r in expense_rows if (r[2] or "") not in {"Pagamento Fatura", "Pagamento Conta"}]
+
+    def _is_credit_expense_row(row) -> bool:
+        payment_method = (row[5] or "").strip().upper()
+        card_id = row[6]
+        return payment_method == "CREDIT" or bool(card_id)
+
+    expense_cash_rows = [
+        r
+        for r in expense_rows
+        if (r[2] or "") not in {"Pagamento Fatura", "Pagamento Conta"}
+        and not _is_credit_expense_row(r)
+    ]
 
     total_income = sum(int(r[1] or 0) for r in income_rows)
     total_expense = sum(int(r[1] or 0) for r in expense_rows)
@@ -12438,6 +12449,8 @@ def get_period_overview(
         except Exception:
             pass
 
+    show_daily_avg = period_key not in {"today", "yesterday"}
+
     if detailed:
         title = {
             "all": f"📋 *{user_name}, detalhamento de {period_label}*",
@@ -12450,7 +12463,8 @@ def get_period_overview(
         if focus_key in {"all", "expense"}:
             lines.append(f"🛍️ *Saídas:* {_fmt_brl(total_expense)} ({len(expense_rows)} lanç.)")
             lines.append(f"🗓️ *Peso no caixa:* {_fmt_brl(total_expense_cash)}")
-            lines.append(f"📆 *Média por dia:* {_fmt_brl(avg_day_expense)}")
+            if show_daily_avg:
+                lines.append(f"📆 *Média por dia:* {_fmt_brl(avg_day_expense)}")
         if focus_key == "all":
             lines.append(f"{'✅' if balance >= 0 else '⚠️'} *Saldo:* {_fmt_brl(balance)}")
 
@@ -12481,8 +12495,9 @@ def get_period_overview(
             f"🧾 *Compras:* {len(expense_rows)}",
             f"🎟️ *Ticket médio:* {_fmt_brl(avg)}",
             f"🗓️ *Peso no caixa:* {_fmt_brl(total_expense_cash)}",
-            f"📆 *Média por dia:* {_fmt_brl(avg_day_expense)}",
         ]
+        if show_daily_avg:
+            lines.append(f"📆 *Média por dia:* {_fmt_brl(avg_day_expense)}")
         if exp_cat_sorted:
             lines.extend(["", "📂 *Categorias no período*"])
             for c_name, c_total in exp_cat_sorted:
@@ -12510,9 +12525,10 @@ def get_period_overview(
             f"💰 *Entradas:* {_fmt_brl(total_income)}",
             f"🛍️ *Saídas:* {_fmt_brl(total_expense)}",
             f"🗓️ *Peso no caixa:* {_fmt_brl(total_expense_cash)}",
-            f"📆 *Média por dia (gastos):* {_fmt_brl(avg_day_expense)}",
             f"{'✅' if balance >= 0 else '⚠️'} *Saldo:* {_fmt_brl(balance)}",
         ]
+        if show_daily_avg:
+            lines.append(f"📆 *Média por dia (gastos):* {_fmt_brl(avg_day_expense)}")
         if exp_cat_sorted:
             lines.extend(["", "📂 *Categorias no período*"])
             for c_name, c_total in exp_cat_sorted:
