@@ -700,7 +700,7 @@ if DB_TYPE == "sqlite":
 def _init_postgres_tables():
     """Cria as tabelas financeiras no PostgreSQL se não existirem."""
     import psycopg2
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=8)
     cur = conn.cursor()
 
     def _safe_exec(sql: str, label: str = "") -> None:
@@ -961,7 +961,13 @@ def _init_postgres_tables():
 
 
 if DB_TYPE == "postgres":
-    _init_postgres_tables()
+    try:
+        _init_postgres_tables()
+    except Exception as e:
+        try:
+            logger.error(f"[PG_INIT] bootstrap falhou (seguindo sem bloquear startup): {e}")
+        except Exception:
+            pass
 
 # ============================================================
 # MODELOS
@@ -1048,7 +1054,7 @@ def _get_conn():
     if DB_TYPE == "sqlite":
         return sqlite3.connect("data/atlas.db")
     import psycopg2
-    return _PGConn(psycopg2.connect(DATABASE_URL))
+    return _PGConn(psycopg2.connect(DATABASE_URL, connect_timeout=8))
 
 
 from contextlib import contextmanager
