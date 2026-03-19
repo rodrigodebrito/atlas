@@ -145,6 +145,30 @@ def test_structured_followup_closes_with_practical_solution_on_third_turn(atlas)
     assert "Plano direto de hoje" in result["content"]
 
 
+def test_structured_followup_third_turn_personalizes_housing_builder_pause_plan(atlas):
+    result = atlas.build_structured_pri_followup(
+        user_message=(
+            "estou pensando em pedir uma pausa na entrada junto a construtora "
+            "ate o apto ser entregue vai ser 900"
+        ),
+        question_key="open_text_followup",
+        expected_answer_type="open_text",
+        case_summary={
+            "main_issue_hypothesis": "cashflow_pressure",
+        },
+        stage="action_plan",
+        last_open_question="Tem algo que voce ja pode tentar reduzir ou postergar nesse meio tempo?",
+        mentor_turn_count=2,
+        max_turns=3,
+    )
+
+    content = result["content"].lower()
+    assert "construtora" in content
+    assert "pausa" in content or "revisao" in content
+    assert "r$900" in content or "900" in content
+    assert "proximos 5 meses" in content or "5 meses" in content
+
+
 def test_structured_question_key_recognizes_short_continuation_reply(atlas):
     state = {
         "open_question_key": "income_extra_origin",

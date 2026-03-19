@@ -616,16 +616,25 @@ def build_structured_pri_followup(
 
     # Regra de conversa curta: no terceiro passo da Pri, fecha com plano pratico.
     if mentor_turn_count >= max(1, max_turns - 1):
-        plan = build_consultant_plan(merged_summary, stage or "action_plan")
-        first_move = plan.get("first_move") or "organizar primeiro o principal vazamento do mes"
-        next_priority = plan.get("next_priority") or "executar um ajuste simples ainda nesta semana"
+        close_plan = _build_personalized_practical_close(
+            text=text,
+            amount_cents=amount_cents,
+            summary=merged_summary,
+            stage=stage or "action_plan",
+        )
+        first_move = close_plan.get("first_move") or "organizar primeiro o principal vazamento do mes"
+        steps = close_plan.get("steps") or [
+            "Escolhe um unico corte concreto e aplica ainda hoje.",
+            "Define um teto simples pro proximo ciclo (sem tentar perfeicao).",
+            "Revisa em 7 dias pra ajustar sem drama.",
+        ]
+        next_priority = close_plan.get("next_focus") or "executar um ajuste simples ainda nesta semana"
+        step_lines = "\n".join([f"{idx+1}. {step}" for idx, step in enumerate(steps[:3])])
         content = (
             "Fechado. Vamos sair do papo e ir pra pratica.\n\n"
             f"O que eu faria agora: *{first_move}*.\n\n"
             "Plano direto de hoje:\n"
-            "1. Escolhe um unico corte concreto e aplica ainda hoje.\n"
-            "2. Define um teto simples pro proximo ciclo (sem tentar perfeicao).\n"
-            "3. Revisa em 7 dias pra ajustar sem drama.\n\n"
+            f"{step_lines}\n\n"
             f"Proximo foco: {next_priority}."
         )
         return {
@@ -1007,6 +1016,67 @@ def _extract_brl_amount_cents(text: str) -> int:
         except Exception:
             continue
     return 0
+
+
+def _build_personalized_practical_close(
+    *,
+    text: str,
+    amount_cents: int,
+    summary: dict[str, Any] | None,
+    stage: str,
+) -> dict[str, Any]:
+    normalized = (text or "").strip().lower()
+    clean_summary = normalize_case_summary(summary)
+    issue = clean_summary.get("main_issue_hypothesis") or ""
+    amount_label = _fmt_cents_brl(amount_cents) if amount_cents > 0 else ""
+
+    # Caso muito comum no produto: moradia/construtora pesando e usuário já trouxe solução de pausa.
+    if any(token in normalized for token in ("construtora", "entrada", "obra", "cartorio", "cartório", "apartamento", "apto", "moradia")):
+        monthly_relief = amount_label if amount_label else "esse alivio"
+        return {
+            "first_move": "formalizar hoje com a construtora a pausa/revisao da entrada ate a entrega do apê",
+            "steps": [
+                "Mandar hoje o pedido por escrito (WhatsApp/e-mail) com data de retorno e comprovante salvo.",
+                f"Se a pausa entrar, tratar {monthly_relief}/mes como folga de caixa planejada, nao como dinheiro livre.",
+                "Usar essa folga primeiro para reduzir o aperto do mes atual e evitar novo buraco no cartao.",
+            ],
+            "next_focus": "fechar a resposta da construtora e recalcular teu caixa para os proximos 5 meses",
+        }
+
+    if any(token in normalized for token in ("cheque especial", "especial", "rotativo", "minimo", "mínimo")) or issue == "high_interest_debt":
+        debt_label = amount_label if amount_label else "essa divida"
+        return {
+            "first_move": "parar o juro caro agora e tirar o saldo do especial/rotativo",
+            "steps": [
+                f"Hoje: negociar saida de {debt_label} para uma linha mais barata.",
+                "Bloquear novos gastos no cartao ate estabilizar o caixa.",
+                "Definir valor fixo semanal para zerar essa pendencia sem recaida.",
+            ],
+            "next_focus": "confirmar o custo novo da divida e o prazo real de quitacao",
+        }
+
+    if issue == "no_emergency_buffer" or any(token in normalized for token in ("sem reserva", "nao tenho reserva", "não tenho reserva")):
+        return {
+            "first_move": "criar teu primeiro colchao de seguranca sem esperar sobrar no fim do mes",
+            "steps": [
+                "Automatizar um valor pequeno fixo no dia da entrada (mesmo que comecando baixo).",
+                "Escolher um corte simples que financie esse valor por 30 dias.",
+                "Revisar em 7 dias se o ajuste foi realista e manter consistencia.",
+            ],
+            "next_focus": "bater a primeira meta de reserva minima e blindar o proximo imprevisto",
+        }
+
+    # Fallback melhor que genérico puro, ainda objetivo.
+    plan = build_consultant_plan(clean_summary, stage)
+    return {
+        "first_move": plan.get("first_move") or "atacar o principal vazamento do mes",
+        "steps": [
+            "Escolher um ajuste que reduz saida de caixa hoje, sem depender de motivacao.",
+            "Transformar esse ajuste em regra simples para os proximos 7 dias.",
+            "Revisar resultado em uma semana e manter so o que funcionou.",
+        ],
+        "next_focus": plan.get("next_priority") or "validar impacto real no teu caixa",
+    }
 
 
 def _extract_binary_status(text: str) -> str:
