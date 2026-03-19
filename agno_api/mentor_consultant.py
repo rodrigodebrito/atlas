@@ -603,6 +603,8 @@ def build_structured_pri_followup(
     case_summary: dict[str, Any] | None = None,
     stage: str = "",
     last_open_question: str = "",
+    mentor_turn_count: int = 0,
+    max_turns: int = 3,
 ) -> dict[str, Any]:
     text = (user_message or "").strip()
     lowered = text.lower()
@@ -611,6 +613,29 @@ def build_structured_pri_followup(
     normalized_last_question = (last_open_question or "").strip().lower()
     merged_summary = merge_case_summary(case_summary, text, normalized_key, normalized_expected)
     amount_cents = _extract_brl_amount_cents(text)
+
+    # Regra de conversa curta: no terceiro passo da Pri, fecha com plano pratico.
+    if mentor_turn_count >= max(1, max_turns - 1):
+        plan = build_consultant_plan(merged_summary, stage or "action_plan")
+        first_move = plan.get("first_move") or "organizar primeiro o principal vazamento do mes"
+        next_priority = plan.get("next_priority") or "executar um ajuste simples ainda nesta semana"
+        content = (
+            "Fechado. Vamos sair do papo e ir pra pratica.\n\n"
+            f"O que eu faria agora: *{first_move}*.\n\n"
+            "Plano direto de hoje:\n"
+            "1. Escolhe um unico corte concreto e aplica ainda hoje.\n"
+            "2. Define um teto simples pro proximo ciclo (sem tentar perfeicao).\n"
+            "3. Revisa em 7 dias pra ajustar sem drama.\n\n"
+            f"Proximo foco: {next_priority}."
+        )
+        return {
+            "content": content,
+            "question": "",
+            "open_question_key": "",
+            "expected_answer_type": "",
+            "consultant_stage": "follow_up",
+            "case_summary": merged_summary,
+        }
 
     if any(token in lowered for token in ("cheque especial", "especial", "rotativo", "emprestimo", "empréstimo", "financiamento")) and any(
         token in lowered

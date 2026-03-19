@@ -97,6 +97,7 @@ def test_save_and_load_mentor_state_persists_structured_fields(atlas):
         open_question_key="income_extra_recurrence",
         expected_answer_type="income_recurrence",
         consultant_stage="income_clarification",
+        mentor_turn_count=2,
         case_summary={
             "income_extra_origin": "plantao",
             "has_emergency_reserve": "unknown",
@@ -116,8 +117,32 @@ def test_save_and_load_mentor_state_persists_structured_fields(atlas):
     assert state["open_question_key"] == "income_extra_recurrence"
     assert state["expected_answer_type"] == "income_recurrence"
     assert state["consultant_stage"] == "income_clarification"
+    assert state["mentor_turn_count"] == 2
     assert state["case_summary"]["income_extra_origin"] == "plantao"
     assert len(state["memory_turns"]) == 2
+
+
+def test_structured_followup_closes_with_practical_solution_on_third_turn(atlas):
+    result = atlas.build_structured_pri_followup(
+        user_message="ta bom, e agora?",
+        question_key="open_text_followup",
+        expected_answer_type="open_text",
+        case_summary={
+            "main_issue_hypothesis": "cashflow_pressure",
+            "has_emergency_reserve": "no",
+        },
+        stage="action_plan",
+        last_open_question="Me diz o que mais te derruba hoje?",
+        mentor_turn_count=2,
+        max_turns=3,
+    )
+
+    assert result
+    assert result["consultant_stage"] == "follow_up"
+    assert result["question"] == ""
+    assert result["open_question_key"] == ""
+    assert result["expected_answer_type"] == ""
+    assert "Plano direto de hoje" in result["content"]
 
 
 def test_structured_question_key_recognizes_short_continuation_reply(atlas):
@@ -1335,10 +1360,28 @@ async def test_llm_repeated_question_is_recovered_by_pri_loop_guard(atlas, monke
     monkeypatch.setattr(atlas, "atlas_agent", stub_agent)
     real_followup = atlas.build_structured_pri_followup
 
-    def _fake_followup(user_message, question_key="", expected_answer_type="", case_summary=None, stage="", last_open_question=""):
+    def _fake_followup(
+        user_message,
+        question_key="",
+        expected_answer_type="",
+        case_summary=None,
+        stage="",
+        last_open_question="",
+        mentor_turn_count=0,
+        max_turns=3,
+    ):
         if user_message:
             return {}
-        return real_followup(user_message, question_key, expected_answer_type, case_summary, stage, last_open_question)
+        return real_followup(
+            user_message,
+            question_key,
+            expected_answer_type,
+            case_summary,
+            stage,
+            last_open_question,
+            mentor_turn_count,
+            max_turns,
+        )
 
     monkeypatch.setattr(atlas, "build_structured_pri_followup", _fake_followup)
 
