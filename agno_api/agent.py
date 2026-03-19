@@ -611,7 +611,7 @@ def _init_sqlite_tables():
         );
     """)
     # Log de mensagens não roteadas (caíram no LLM)
-    conn.execute("""
+    conn.executescript("""
         CREATE TABLE IF NOT EXISTS unrouted_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             message TEXT NOT NULL,
