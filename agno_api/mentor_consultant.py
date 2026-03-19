@@ -1182,6 +1182,42 @@ def _build_personalized_practical_close(
     clean_summary = normalize_case_summary(summary)
     issue = clean_summary.get("main_issue_hypothesis") or ""
     amount_label = _fmt_cents_brl(amount_cents) if amount_cents > 0 else ""
+    normalized_plain = _normalize_text_for_match(text)
+
+    asks_recommendation = any(
+        token in normalized_plain
+        for token in (
+            "qual vc indica",
+            "qual voce indica",
+            "quanto vc indica",
+            "quanto voce indica",
+            "quanto sugere",
+            "qual valor",
+            "quanto fica bom",
+        )
+    )
+    mentions_household_size = any(
+        token in normalized_plain
+        for token in (
+            "2 pessoas",
+            "duas pessoas",
+            "1 crianca",
+            "uma crianca",
+            "filho",
+            "filha",
+            "casal",
+            "familia",
+        )
+    )
+
+    if asks_recommendation or mentions_household_size:
+        return {
+            "first_move": "travar um teto semanal separado entre mercado/casa e comer fora para ganhar controle ja nesta semana",
+            "today_action": "Definir agora o teto de 7 dias: mercado/casa ate R$700 e delivery/comer fora ate R$250.",
+            "week_action": "Aplicar regra de corte: bateu 80% do teto de delivery, pausa novos pedidos ate virar a semana.",
+            "month_action": "Revisar por 4 semanas e ajustar em blocos de R$50 sem perder o controle.",
+            "next_focus": "confirmar em 7 dias quanto sobrou de cada teto e se o plano ficou realista",
+        }
 
     # Caso muito comum no produto: moradia/construtora pesando e usuário já trouxe solução de pausa.
     if any(token in normalized for token in ("construtora", "entrada", "obra", "cartorio", "cartório", "apartamento", "apto", "moradia")):

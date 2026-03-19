@@ -172,6 +172,26 @@ def test_structured_followup_third_turn_personalizes_housing_builder_pause_plan(
     assert "mensagem pronta" in content
 
 
+def test_structured_followup_third_turn_household_budget_question_closes_with_concrete_caps(atlas):
+    result = atlas.build_structured_pri_followup(
+        user_message="Qual vc indica pr 2 pessoas e uma criança?",
+        question_key="open_text_followup",
+        expected_answer_type="open_text",
+        case_summary={"main_issue_hypothesis": "cashflow_pressure"},
+        stage="action_plan",
+        last_open_question="Me diz um teto simples pra testar por 7 dias: quanto voce quer limitar em delivery/comer fora?",
+        mentor_turn_count=2,
+        max_turns=3,
+    )
+
+    content = result["content"].lower()
+    assert "r$700" in content
+    assert "r$250" in content
+    assert "hoje:" in content
+    assert "proximos 7 dias:" in content
+    assert result["consultant_stage"] == "follow_up"
+
+
 def test_structured_followup_weekly_mix_keeps_context_without_template_drift(atlas):
     result = atlas.build_structured_pri_followup(
         user_message="foi uma mistura de tudo mercado e coisa da casa tipo sabao em po",
