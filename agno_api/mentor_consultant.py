@@ -617,6 +617,65 @@ def build_structured_pri_followup(
     merged_summary = merge_case_summary(case_summary, text, normalized_key, normalized_expected)
     amount_cents = _extract_brl_amount_cents(text)
 
+    # Atalho de intenção explícita: pergunta objetiva de teto para família.
+    # Deve ganhar de qualquer fechamento automático para não cair em template.
+    if normalized_key == "open_text_followup":
+        asking_weekly_limit = any(
+            token in normalized_last_question_plain
+            for token in (
+                "teto simples",
+                "quanto voce quer limitar",
+                "delivery/comer fora",
+                "delivery ou comer fora",
+                "limitar em delivery",
+                "limitar em comer fora",
+            )
+        )
+        asks_recommendation = any(
+            token in lowered_plain
+            for token in (
+                "qual vc indica",
+                "qual voce indica",
+                "quanto vc indica",
+                "quanto voce indica",
+                "quanto sugere",
+                "qual valor",
+                "quanto fica bom",
+            )
+        )
+        mentions_household_size = any(
+            token in lowered_plain
+            for token in (
+                "2 pessoas",
+                "duas pessoas",
+                "1 crianca",
+                "uma crianca",
+                "filho",
+                "filha",
+                "casal",
+                "familia",
+            )
+        )
+        if asking_weekly_limit and (asks_recommendation or mentions_household_size):
+            question = "Topa testar esse teto por 7 dias e me mandar o resultado?"
+            content = (
+                "Perfeito. Vamos fechar com número prático.\n\n"
+                "Para *2 adultos e 1 criança*, começaria com esse teste de 7 dias:\n"
+                "1. *Mercado/casa:* até *R$700* na semana.\n"
+                "2. *Comer fora/delivery:* até *R$250* na semana.\n"
+                "3. *Regra de controle:* bateu 80% do teto de delivery, pausa novos pedidos até virar a semana.\n\n"
+                "Se passar, a gente ajusta em blocos de R$50 na próxima rodada.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "open_text_followup",
+                "expected_answer_type": "open_text",
+                "consultant_stage": "action_plan",
+                "case_summary": merged_summary,
+            }
+
     # Regra de conversa curta: no terceiro passo da Pri, fecha com plano pratico.
     if mentor_turn_count >= max(1, max_turns - 1):
         close_plan = _build_personalized_practical_close(
