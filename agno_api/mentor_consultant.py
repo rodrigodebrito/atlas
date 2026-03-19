@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import unicodedata
 
 
 CONSULTANT_STAGES = {
@@ -611,6 +612,8 @@ def build_structured_pri_followup(
     normalized_key = (question_key or "").strip().lower()
     normalized_expected = (expected_answer_type or "").strip().lower()
     normalized_last_question = (last_open_question or "").strip().lower()
+    lowered_plain = _normalize_text_for_match(text)
+    normalized_last_question_plain = _normalize_text_for_match(last_open_question or "")
     merged_summary = merge_case_summary(case_summary, text, normalized_key, normalized_expected)
     amount_cents = _extract_brl_amount_cents(text)
 
@@ -933,7 +936,7 @@ def build_structured_pri_followup(
         mentions_market = any(token in lowered for token in ("mercado", "supermercado", "sabao", "sabão", "casa"))
         mentions_delivery = any(token in lowered for token in ("delivery", "ifood", "restaurante", "comer fora"))
         asking_weekly_limit = any(
-            token in normalized_last_question
+            token in normalized_last_question_plain
             for token in (
                 "teto simples",
                 "quanto voce quer limitar",
@@ -944,7 +947,7 @@ def build_structured_pri_followup(
             )
         )
         asks_recommendation = any(
-            token in lowered
+            token in lowered_plain
             for token in (
                 "qual vc indica",
                 "qual voce indica",
@@ -956,7 +959,7 @@ def build_structured_pri_followup(
             )
         )
         mentions_household_size = any(
-            token in lowered
+            token in lowered_plain
             for token in (
                 "2 pessoas",
                 "duas pessoas",
@@ -966,7 +969,6 @@ def build_structured_pri_followup(
                 "filha",
                 "casal",
                 "familia",
-                "famÃ­lia",
             )
         )
 
@@ -1127,6 +1129,15 @@ def _normalize_binary(value: Any) -> str:
     if text in {"yes", "no", "unknown"}:
         return text
     return "unknown"
+
+
+def _normalize_text_for_match(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    normalized = unicodedata.normalize("NFD", text)
+    without_marks = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    return " ".join(without_marks.split())
 
 
 def _fmt_cents_brl(value_cents: int | float | None) -> str:

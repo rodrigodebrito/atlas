@@ -214,6 +214,25 @@ def test_structured_followup_weekly_limit_recommendation_for_family_returns_conc
     assert result["open_question_key"] == "open_text_followup"
 
 
+def test_structured_followup_weekly_limit_recommendation_handles_accents_and_pr_abbrev(atlas):
+    result = atlas.build_structured_pri_followup(
+        user_message="Qual vc indica pr 2 pessoas e uma criança?",
+        question_key="open_text_followup",
+        expected_answer_type="open_text",
+        case_summary={"main_issue_hypothesis": "cashflow_pressure"},
+        stage="diagnosis_clarification",
+        last_open_question="Me diz um teto simples pra testar por 7 dias: quanto você quer limitar em delivery/comer fora?",
+        mentor_turn_count=1,
+        max_turns=3,
+    )
+
+    content = result["content"].lower()
+    assert "r$700" in content
+    assert "r$250" in content
+    assert "7 dias" in content
+    assert result["consultant_stage"] == "action_plan"
+
+
 def test_structured_question_key_recognizes_short_continuation_reply(atlas):
     state = {
         "open_question_key": "income_extra_origin",
