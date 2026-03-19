@@ -142,7 +142,9 @@ def test_structured_followup_closes_with_practical_solution_on_third_turn(atlas)
     assert result["question"] == ""
     assert result["open_question_key"] == ""
     assert result["expected_answer_type"] == ""
-    assert "Plano direto de hoje" in result["content"]
+    assert "Hoje:" in result["content"]
+    assert "Proximos 7 dias:" in result["content"]
+    assert "Proximos 30 dias:" in result["content"]
 
 
 def test_structured_followup_third_turn_personalizes_housing_builder_pause_plan(atlas):
@@ -167,6 +169,7 @@ def test_structured_followup_third_turn_personalizes_housing_builder_pause_plan(
     assert "pausa" in content or "revisao" in content
     assert "r$900" in content or "900" in content
     assert "proximos 5 meses" in content or "5 meses" in content
+    assert "mensagem pronta" in content
 
 
 def test_structured_question_key_recognizes_short_continuation_reply(atlas):
