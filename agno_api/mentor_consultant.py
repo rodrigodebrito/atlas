@@ -45,6 +45,8 @@ def normalize_case_summary(summary: Any) -> dict[str, Any]:
         "main_issue_hypothesis": str(data.get("main_issue_hypothesis") or "").strip().lower(),
         "last_user_signal": str(data.get("last_user_signal") or "").strip()[:240],
         "notes": clean_notes[-5:],
+        "active_intent": str(data.get("active_intent") or "").strip().lower(),
+        "intent_step": int(data.get("intent_step") or 0),
     }
 
 
@@ -616,6 +618,27 @@ def build_structured_pri_followup(
     normalized_last_question_plain = _normalize_text_for_match(last_open_question or "")
     merged_summary = merge_case_summary(case_summary, text, normalized_key, normalized_expected)
     amount_cents = _extract_brl_amount_cents(text)
+    active_intent = str(merged_summary.get("active_intent") or "").strip().lower()
+
+    explicit_intent = _detect_explicit_intent(
+        lowered_plain=lowered_plain,
+        last_question_plain=normalized_last_question_plain,
+        active_intent=active_intent,
+    )
+    if explicit_intent:
+        active_intent = explicit_intent
+        merged_summary["active_intent"] = explicit_intent
+        merged_summary["intent_step"] = int(merged_summary.get("intent_step") or 0) + 1
+
+    if active_intent:
+        intent_result = _handle_active_intent(
+            intent=active_intent,
+            text=text,
+            lowered_plain=lowered_plain,
+            summary=merged_summary,
+        )
+        if intent_result:
+            return intent_result
 
     # Atalho de intenção explícita: pergunta objetiva de teto para família.
     # Deve ganhar de qualquer fechamento automático para não cair em template.
@@ -1192,6 +1215,196 @@ def _normalize_binary(value: Any) -> str:
     if text in {"yes", "no", "unknown"}:
         return text
     return "unknown"
+
+
+def _detect_explicit_intent(*, lowered_plain: str, last_question_plain: str, active_intent: str) -> str:
+    asks_recommendation = any(
+        token in lowered_plain
+        for token in (
+            "qual vc indica",
+            "qual voce indica",
+            "quanto vc indica",
+            "quanto voce indica",
+            "quanto sugere",
+            "qual valor",
+            "quanto fica bom",
+        )
+    )
+    mentions_household_size = any(
+        token in lowered_plain
+        for token in (
+            "2 pessoas",
+            "duas pessoas",
+            "1 crianca",
+            "uma crianca",
+            "filho",
+            "filha",
+            "casal",
+            "familia",
+        )
+    )
+    asks_weekly_limit = any(
+        token in last_question_plain
+        for token in (
+            "teto simples",
+            "quanto voce quer limitar",
+            "delivery/comer fora",
+            "delivery ou comer fora",
+            "limitar em delivery",
+            "limitar em comer fora",
+        )
+    )
+    monthly_challenge = any(
+        token in lowered_plain
+        for token in (
+            "isso bate",
+            "quase 3600",
+            "por mes",
+            "por mês",
+            "ta alto",
+            "está alto",
+            "ficou alto",
+        )
+    )
+    if asks_recommendation and mentions_household_size:
+        return "weekly_budget_cap"
+    if asks_weekly_limit and (asks_recommendation or mentions_household_size):
+        return "weekly_budget_cap"
+    if active_intent == "weekly_budget_cap" and monthly_challenge:
+        return "weekly_budget_cap"
+    if active_intent:
+        return active_intent
+    return ""
+
+
+def _handle_active_intent(
+    *,
+    intent: str,
+    text: str,
+    lowered_plain: str,
+    summary: dict[str, Any],
+) -> dict[str, Any] | None:
+    if intent != "weekly_budget_cap":
+        return None
+
+    asks_recommendation = any(
+        token in lowered_plain
+        for token in (
+            "qual vc indica",
+            "qual voce indica",
+            "quanto vc indica",
+            "quanto voce indica",
+            "quanto sugere",
+            "qual valor",
+            "quanto fica bom",
+        )
+    )
+    mentions_household_size = any(
+        token in lowered_plain
+        for token in (
+            "2 pessoas",
+            "duas pessoas",
+            "1 crianca",
+            "uma crianca",
+            "filho",
+            "filha",
+            "casal",
+            "familia",
+        )
+    )
+    monthly_challenge = any(
+        token in lowered_plain
+        for token in (
+            "isso bate",
+            "por mes",
+            "por mês",
+            "ta alto",
+            "está alto",
+            "ficou alto",
+            "quase 3600",
+        )
+    )
+    has_numeric_hint = _extract_brl_amount_cents(text) > 0 or any(ch.isdigit() for ch in lowered_plain)
+
+    if asks_recommendation or mentions_household_size:
+        question = "Topa testar esse teto por 7 dias e me mandar o resultado?"
+        content = (
+            "Perfeito. Vamos fechar com número prático.\n\n"
+            "Para *2 adultos e 1 criança*, começaria com esse teste de 7 dias:\n"
+            "1. *Mercado/casa:* até *R$700* na semana.\n"
+            "2. *Comer fora/delivery:* até *R$250* na semana.\n"
+            "3. *Regra de controle:* bateu 80% do teto de delivery, pausa novos pedidos até virar a semana.\n\n"
+            "Se passar, a gente ajusta em blocos de R$50 na próxima rodada.\n\n"
+            f"{question}"
+        )
+        summary["active_intent"] = "weekly_budget_cap"
+        summary["intent_step"] = int(summary.get("intent_step") or 0) + 1
+        return {
+            "content": content,
+            "question": question,
+            "open_question_key": "open_text_followup",
+            "expected_answer_type": "open_text",
+            "consultant_stage": "action_plan",
+            "case_summary": summary,
+        }
+
+    if monthly_challenge:
+        question = "Qual teto mensal final você quer validar: R$2.800, R$3.000 ou R$3.200?"
+        content = (
+            "Boa leitura. Você está certo em questionar.\n\n"
+            "No desenho anterior, mercado/casa (R$700/semana) + comer fora (R$250/semana) pode sim encostar em ~R$3.800/mês, "
+            "dependendo da semana. Pra ficar realista pro teu bolso, eu ajustaria assim:\n"
+            "1. Mercado/casa: *R$550 por semana* (~R$2.200/mês)\n"
+            "2. Comer fora/delivery: *R$180 por semana* (~R$720/mês)\n"
+            "3. Total alvo: ~*R$2.920/mês*\n\n"
+            "Esse número é mais pé no chão e ainda cria espaço de caixa.\n\n"
+            f"{question}"
+        )
+        summary["active_intent"] = "weekly_budget_cap"
+        summary["intent_step"] = int(summary.get("intent_step") or 0) + 1
+        return {
+            "content": content,
+            "question": question,
+            "open_question_key": "open_text_followup",
+            "expected_answer_type": "open_text",
+            "consultant_stage": "action_plan",
+            "case_summary": summary,
+        }
+
+    if has_numeric_hint and any(token in lowered_plain for token in ("sim", "fechado", "ok", "topo", "vamos", "pode", "3.000", "3000", "2.800", "2800", "3.200", "3200")):
+        content = (
+            "Fechou. Plano prático então:\n\n"
+            "1. Esta semana: trava mercado/casa em R$550 e delivery em R$180.\n"
+            "2. Regra: bateu 80% de qualquer teto, pausa categoria até virar semana.\n"
+            "3. Revisão: em 7 dias você me manda quanto sobrou de cada teto.\n\n"
+            "Com isso a gente ajusta fino sem chute."
+        )
+        summary["active_intent"] = ""
+        summary["intent_step"] = 0
+        return {
+            "content": content,
+            "question": "",
+            "open_question_key": "",
+            "expected_answer_type": "",
+            "consultant_stage": "follow_up",
+            "case_summary": summary,
+        }
+
+    # fallback do intent lock: mantém o tópico em vez de sair para template genérico
+    question = "Você quer que eu te proponha um teto mais conservador (~R$2.900/mês) ou mais confortável (~R$3.200/mês)?"
+    content = (
+        "Seguimos no mesmo ponto: calibrar um teto que caiba no teu mês sem te sufocar.\n\n"
+        f"{question}"
+    )
+    summary["active_intent"] = "weekly_budget_cap"
+    return {
+        "content": content,
+        "question": question,
+        "open_question_key": "open_text_followup",
+        "expected_answer_type": "open_text",
+        "consultant_stage": "action_plan",
+        "case_summary": summary,
+    }
 
 
 def _normalize_text_for_match(value: str) -> str:

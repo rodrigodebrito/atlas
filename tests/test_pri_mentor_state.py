@@ -291,6 +291,32 @@ def test_structured_followup_household_budget_question_works_without_last_questi
     assert result["consultant_stage"] == "action_plan"
 
 
+def test_structured_followup_intent_lock_handles_monthly_challenge_without_generic_close(atlas):
+    result = atlas.build_structured_pri_followup(
+        user_message="isso bate quase 3600 por mes",
+        question_key="open_text_followup",
+        expected_answer_type="open_text",
+        case_summary={
+            "main_issue_hypothesis": "cashflow_pressure",
+            "active_intent": "weekly_budget_cap",
+            "intent_step": 1,
+        },
+        stage="action_plan",
+        last_open_question="Topa testar esse teto por 7 dias e me mandar o resultado?",
+        mentor_turn_count=2,
+        max_turns=3,
+    )
+
+    content = result["content"].lower()
+    assert "você está certo" in content or "voce esta certo" in content
+    assert "r$550" in content
+    assert "r$180" in content
+    assert "r$2.920" in result["content"] or "r$2.920" in content
+    assert "bora pro jogo real" not in content
+    assert result["consultant_stage"] == "action_plan"
+    assert result["open_question_key"] == "open_text_followup"
+
+
 def test_structured_question_key_recognizes_short_continuation_reply(atlas):
     state = {
         "open_question_key": "income_extra_origin",
