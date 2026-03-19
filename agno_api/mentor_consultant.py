@@ -677,41 +677,7 @@ def build_structured_pri_followup(
                 "case_summary": merged_summary,
             }
 
-    # Regra de conversa curta: no terceiro passo da Pri, fecha com plano pratico.
-    if mentor_turn_count >= max(1, max_turns - 1):
-        close_plan = _build_personalized_practical_close(
-            text=text,
-            amount_cents=amount_cents,
-            summary=merged_summary,
-            stage=stage or "action_plan",
-        )
-        first_move = close_plan.get("first_move") or "organizar primeiro o principal vazamento do mes"
-        today_action = close_plan.get("today_action") or "Escolhe um unico corte concreto e aplica ainda hoje."
-        week_action = close_plan.get("week_action") or "Define um teto simples pro proximo ciclo (sem tentar perfeicao)."
-        month_action = close_plan.get("month_action") or "Revisa em 30 dias e mantem so o que realmente funcionou."
-        next_priority = close_plan.get("next_focus") or "executar um ajuste simples ainda nesta semana"
-        ready_message = close_plan.get("ready_message") or ""
-        content = (
-            "Fechado. Bora pro jogo real.\n\n"
-            f"O que eu faria agora: *{first_move}*.\n\n"
-            "Hoje:\n"
-            f"1. {today_action}\n\n"
-            "Proximos 7 dias:\n"
-            f"2. {week_action}\n\n"
-            "Proximos 30 dias:\n"
-            f"3. {month_action}\n\n"
-            f"Proximo foco: {next_priority}."
-        )
-        if ready_message:
-            content += f"\n\nMensagem pronta:\n{ready_message}"
-        return {
-            "content": content,
-            "question": "",
-            "open_question_key": "",
-            "expected_answer_type": "",
-            "consultant_stage": "follow_up",
-            "case_summary": merged_summary,
-        }
+    close_requested = mentor_turn_count >= max(1, max_turns - 1)
 
     if any(token in lowered for token in ("cheque especial", "especial", "rotativo", "emprestimo", "empréstimo", "financiamento")) and any(
         token in lowered
@@ -1164,7 +1130,8 @@ def build_structured_pri_followup(
             }
 
         # Fallback curto para evitar cair no LLM template e perder contexto.
-        if text:
+        # Em fechamento solicitado, deixa passar para o fechamento personalizado no fim.
+        if text and not close_requested:
             question = "Me confirma so a prioridade de ataque agora: mercado/casa ou refeicao fora?"
             content = (
                 "Peguei teu ponto.\n\n"
@@ -1180,6 +1147,42 @@ def build_structured_pri_followup(
                 "consultant_stage": "diagnosis_clarification",
                 "case_summary": merged_summary,
             }
+
+    # Regra de conversa curta aplicada por ultimo: so fecha se nenhum fluxo especifico tratou a mensagem.
+    if close_requested:
+        close_plan = _build_personalized_practical_close(
+            text=text,
+            amount_cents=amount_cents,
+            summary=merged_summary,
+            stage=stage or "action_plan",
+        )
+        first_move = close_plan.get("first_move") or "organizar primeiro o principal vazamento do mes"
+        today_action = close_plan.get("today_action") or "Escolhe um unico corte concreto e aplica ainda hoje."
+        week_action = close_plan.get("week_action") or "Define um teto simples pro proximo ciclo (sem tentar perfeicao)."
+        month_action = close_plan.get("month_action") or "Revisa em 30 dias e mantem so o que realmente funcionou."
+        next_priority = close_plan.get("next_focus") or "executar um ajuste simples ainda nesta semana"
+        ready_message = close_plan.get("ready_message") or ""
+        content = (
+            "Fechado. Bora pro jogo real.\n\n"
+            f"O que eu faria agora: *{first_move}*.\n\n"
+            "Hoje:\n"
+            f"1. {today_action}\n\n"
+            "Proximos 7 dias:\n"
+            f"2. {week_action}\n\n"
+            "Proximos 30 dias:\n"
+            f"3. {month_action}\n\n"
+            f"Proximo foco: {next_priority}."
+        )
+        if ready_message:
+            content += f"\n\nMensagem pronta:\n{ready_message}"
+        return {
+            "content": content,
+            "question": "",
+            "open_question_key": "",
+            "expected_answer_type": "",
+            "consultant_stage": "follow_up",
+            "case_summary": merged_summary,
+        }
 
     return {}
 
