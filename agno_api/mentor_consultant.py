@@ -619,7 +619,7 @@ def build_structured_pri_followup(
 
     # Atalho de intenção explícita: pergunta objetiva de teto para família.
     # Deve ganhar de qualquer fechamento automático para não cair em template.
-    if normalized_key == "open_text_followup":
+    if text:
         asking_weekly_limit = any(
             token in normalized_last_question_plain
             for token in (
