@@ -916,6 +916,68 @@ def build_structured_pri_followup(
             }
 
     if normalized_key == "open_text_followup":
+        # Continuidade de analises de periodo (dia/semana) com pergunta sobre composicao
+        # Exemplo: "foi mais mercado, delivery ou comer fora?"
+        asking_mix_breakdown = any(
+            token in normalized_last_question
+            for token in (
+                "mais mercado",
+                "delivery",
+                "comer fora",
+                "nesse recorte",
+                "neste recorte",
+                "nessa semana",
+                "nesta semana",
+            )
+        )
+        mentions_market = any(token in lowered for token in ("mercado", "supermercado", "sabao", "sabão", "casa"))
+        mentions_delivery = any(token in lowered for token in ("delivery", "ifood", "restaurante", "comer fora"))
+        if asking_mix_breakdown and (mentions_market or mentions_delivery):
+            if mentions_market and mentions_delivery:
+                diagnosis = (
+                    "Perfeito. Entao nao e so alimentacao. Tem compra de mercado com itens de casa misturada com refeicao fora."
+                )
+                action = (
+                    "Pra nao virar um bloco sem controle, eu separaria em dois trilhos ja nessa semana: "
+                    "*mercado/casa* de um lado e *comer fora/delivery* do outro."
+                )
+                question = (
+                    "Me diz um teto simples pra testar por 7 dias: quanto voce quer limitar em delivery/comer fora?"
+                )
+            elif mentions_market:
+                diagnosis = (
+                    "Boa leitura. Entao o peso maior desse recorte foi mercado misturado com itens de casa."
+                )
+                action = (
+                    "Aqui o ajuste bom e lista fechada + 1 dia fixo de compra na semana. "
+                    "Isso corta vazamento sem mexer no essencial."
+                )
+                question = (
+                    "Qual teto voce quer testar por semana pra mercado/casa sem te apertar demais?"
+                )
+            else:
+                diagnosis = (
+                    "Fechado. Entao o peso veio mais de refeicao fora/delivery do que de compra de casa."
+                )
+                action = (
+                    "Eu atacaria frequencia: reduzir 2 pedidos na semana ja costuma abrir espaco rapido no caixa."
+                )
+                question = "Voce topa começar cortando quantos pedidos por semana?"
+
+            content = (
+                f"{diagnosis}\n\n"
+                f"{action}\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "open_text_followup",
+                "expected_answer_type": "open_text",
+                "consultant_stage": "diagnosis_clarification",
+                "case_summary": merged_summary,
+            }
+
         asking_for_invoice_breakdown = (
             any(token in normalized_last_question for token in ("fatura", "maiores gastos", "listar"))
             or any(token in " ".join(merged_summary.get("notes", [])) for token in ("fatura", "cartao", "caixa"))
@@ -970,6 +1032,24 @@ def build_structured_pri_followup(
             content = (
                 "Fechado. Nao precisa me trazer tudo de uma vez.\n\n"
                 "Se voce lembrar de um gasto so, a gente ja comeca a desmontar esse bolo sem chute.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "open_text_followup",
+                "expected_answer_type": "open_text",
+                "consultant_stage": "diagnosis_clarification",
+                "case_summary": merged_summary,
+            }
+
+        # Fallback curto para evitar cair no LLM template e perder contexto.
+        if text:
+            question = "Me confirma so a prioridade de ataque agora: mercado/casa ou refeicao fora?"
+            content = (
+                "Peguei teu ponto.\n\n"
+                "Pra gente nao perder foco, eu vou manter o plano em cima desse bloco que voce trouxe agora, "
+                "sem abrir outro assunto.\n\n"
                 f"{question}"
             )
             return {
