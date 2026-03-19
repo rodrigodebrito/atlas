@@ -317,6 +317,86 @@ def test_structured_followup_intent_lock_handles_monthly_challenge_without_gener
     assert result["open_question_key"] == "open_text_followup"
 
 
+def test_structured_followup_weekly_budget_plan_sets_followup_pending_state(atlas):
+    result = atlas.build_structured_pri_followup(
+        user_message="2.800",
+        question_key="open_text_followup",
+        expected_answer_type="open_text",
+        case_summary={
+            "main_issue_hypothesis": "cashflow_pressure",
+            "active_intent": "weekly_budget_cap",
+            "intent_step": 2,
+        },
+        stage="action_plan",
+        last_open_question="Qual teto mensal final você quer validar: R$2.800, R$3.000 ou R$3.200?",
+        mentor_turn_count=2,
+        max_turns=3,
+    )
+
+    content = result["content"].lower()
+    summary = result["case_summary"]
+    assert "revisão: em 7 dias" in content
+    assert "combinado. daqui 7 dias" in result["question"].lower()
+    assert summary["followup_pending"] is True
+    assert summary["followup_days"] == 7
+    assert summary["active_intent"] == "weekly_budget_cap"
+
+
+def test_structured_followup_weekly_budget_accepts_more_time_15_days(atlas):
+    result = atlas.build_structured_pri_followup(
+        user_message="pode ser com mais tempo, 15 dias?",
+        question_key="open_text_followup",
+        expected_answer_type="open_text",
+        case_summary={
+            "main_issue_hypothesis": "cashflow_pressure",
+            "active_intent": "weekly_budget_cap",
+            "intent_step": 3,
+            "followup_pending": True,
+            "followup_days": 7,
+        },
+        stage="follow_up",
+        last_open_question="Combinado. Daqui 7 dias eu continuo daqui com você.",
+        mentor_turn_count=1,
+        max_turns=3,
+    )
+
+    content = result["content"].lower()
+    summary = result["case_summary"]
+    assert "prazo do teste atualizado para *15 dias*" in content
+    assert "revisão em 15 dias" in content
+    assert summary["followup_pending"] is True
+    assert summary["followup_days"] == 15
+    assert result["consultant_stage"] == "follow_up"
+    assert "bora pro jogo real" not in content
+
+
+def test_structured_followup_weekly_budget_checkin_after_window_avoids_generic_template(atlas):
+    result = atlas.build_structured_pri_followup(
+        user_message="fechei o teste, gastei 520 no mercado e 170 no delivery",
+        question_key="open_text_followup",
+        expected_answer_type="open_text",
+        case_summary={
+            "main_issue_hypothesis": "cashflow_pressure",
+            "active_intent": "weekly_budget_cap",
+            "intent_step": 4,
+            "followup_pending": True,
+            "followup_days": 15,
+        },
+        stage="follow_up",
+        last_open_question="Fechado. Entao seguimos com revisão em 15 dias.",
+        mentor_turn_count=1,
+        max_turns=3,
+    )
+
+    content = result["content"].lower()
+    summary = result["case_summary"]
+    assert "não volta pro zero" in content or "nao volta pro zero" in content
+    assert "ajuste agora em modo conservador" in content
+    assert summary["followup_pending"] is False
+    assert result["consultant_stage"] == "action_plan"
+    assert "bora pro jogo real" not in content
+
+
 def test_structured_question_key_recognizes_short_continuation_reply(atlas):
     state = {
         "open_question_key": "income_extra_origin",

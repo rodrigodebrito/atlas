@@ -47,6 +47,8 @@ def normalize_case_summary(summary: Any) -> dict[str, Any]:
         "notes": clean_notes[-5:],
         "active_intent": str(data.get("active_intent") or "").strip().lower(),
         "intent_step": int(data.get("intent_step") or 0),
+        "followup_pending": bool(data.get("followup_pending") or False),
+        "followup_days": int(data.get("followup_days") or 0),
     }
 
 
@@ -1324,6 +1326,23 @@ def _handle_active_intent(
             "quase 3600",
         )
     )
+    asks_more_time = any(
+        token in lowered_plain
+        for token in (
+            "mais tempo",
+            "pode ser em",
+            "vamos em",
+            "melhor em",
+            "adiar",
+            "deixa pra",
+            "em 10 dias",
+            "em 14 dias",
+            "em 15 dias",
+            "em 30 dias",
+        )
+    )
+    followup_days = _extract_followup_days(lowered_plain) or int(summary.get("followup_days") or 0) or 7
+    followup_pending = bool(summary.get("followup_pending") or False)
     has_numeric_hint = _extract_brl_amount_cents(text) > 0 or any(ch.isdigit() for ch in lowered_plain)
 
     if asks_recommendation or mentions_household_size:
@@ -1371,22 +1390,85 @@ def _handle_active_intent(
             "case_summary": summary,
         }
 
+    if followup_pending and asks_more_time:
+        new_days = _extract_followup_days(lowered_plain) or followup_days
+        summary["followup_pending"] = True
+        summary["followup_days"] = new_days
+        summary["active_intent"] = "weekly_budget_cap"
+        summary["intent_step"] = int(summary.get("intent_step") or 0) + 1
+        question = f"Fechado. Entao seguimos com revisão em {new_days} dias. Me manda o resultado nesse prazo que eu recalibro contigo."
+        content = (
+            "Perfeito, ajuste aceito.\n\n"
+            f"Prazo do teste atualizado para *{new_days} dias* (sem duplicar plano).\n"
+            "Mantém os mesmos tetos por enquanto e foca só em executar.\n\n"
+            f"{question}"
+        )
+        return {
+            "content": content,
+            "question": question,
+            "open_question_key": "open_text_followup",
+            "expected_answer_type": "open_text",
+            "consultant_stage": "follow_up",
+            "case_summary": summary,
+        }
+
     if has_numeric_hint and any(token in lowered_plain for token in ("sim", "fechado", "ok", "topo", "vamos", "pode", "3.000", "3000", "2.800", "2800", "3.200", "3200")):
+        followup_days = _extract_followup_days(lowered_plain) or 7
         content = (
             "Fechou. Plano prático então:\n\n"
             "1. Esta semana: trava mercado/casa em R$550 e delivery em R$180.\n"
             "2. Regra: bateu 80% de qualquer teto, pausa categoria até virar semana.\n"
-            "3. Revisão: em 7 dias você me manda quanto sobrou de cada teto.\n\n"
+            f"3. Revisão: em {followup_days} dias você me manda quanto sobrou de cada teto.\n\n"
             "Com isso a gente ajusta fino sem chute."
         )
-        summary["active_intent"] = ""
-        summary["intent_step"] = 0
+        summary["active_intent"] = "weekly_budget_cap"
+        summary["intent_step"] = int(summary.get("intent_step") or 0) + 1
+        summary["followup_pending"] = True
+        summary["followup_days"] = followup_days
         return {
             "content": content,
-            "question": "",
-            "open_question_key": "",
-            "expected_answer_type": "",
+            "question": f"Combinado. Daqui {followup_days} dias eu continuo daqui com você.",
+            "open_question_key": "open_text_followup",
+            "expected_answer_type": "open_text",
             "consultant_stage": "follow_up",
+            "case_summary": summary,
+        }
+
+    has_checkin_signal = any(
+        token in lowered_plain
+        for token in (
+            "resultado",
+            "sobrou",
+            "sobrei",
+            "gastei",
+            "deu certo",
+            "nao deu",
+            "não deu",
+            "nao deu certo",
+            "não deu certo",
+            "deu ruim",
+            "fiquei em",
+            "fechei",
+            "voltei",
+        )
+    )
+    if followup_pending and has_checkin_signal:
+        summary["followup_pending"] = False
+        summary["active_intent"] = "weekly_budget_cap"
+        summary["intent_step"] = int(summary.get("intent_step") or 0) + 1
+        question = "Quer que eu ajuste agora em modo conservador (menos risco) ou agressivo (corte mais forte)?"
+        content = (
+            "Excelente, esse era exatamente o retorno que eu precisava.\n\n"
+            "Com teu resultado na mesa, a gente não volta pro zero: a gente ajusta o mesmo plano por mais um ciclo curto.\n"
+            "Regra prática: funcionou -> mantém; apertou -> reduz teto em bloco de R$50; sobrou bem -> reserva parte da folga.\n\n"
+            f"{question}"
+        )
+        return {
+            "content": content,
+            "question": question,
+            "open_question_key": "open_text_followup",
+            "expected_answer_type": "open_text",
+            "consultant_stage": "action_plan",
             "case_summary": summary,
         }
 
@@ -1444,6 +1526,40 @@ def _extract_brl_amount_cents(text: str) -> int:
             return int(round(value * 100))
         except Exception:
             continue
+    return 0
+
+
+def _extract_followup_days(text: str) -> int:
+    import re
+
+    raw = _normalize_text_for_match(text)
+    if not raw:
+        return 0
+
+    m_days = re.search(r"\b(\d{1,2})\s*dias?\b", raw)
+    if m_days:
+        try:
+            value = int(m_days.group(1))
+            if 1 <= value <= 60:
+                return value
+        except Exception:
+            return 0
+
+    m_weeks = re.search(r"\b(\d{1,2})\s*semanas?\b", raw)
+    if m_weeks:
+        try:
+            value = int(m_weeks.group(1))
+            if 1 <= value <= 8:
+                return value * 7
+        except Exception:
+            return 0
+
+    if "quinze dias" in raw:
+        return 15
+    if "duas semanas" in raw:
+        return 14
+    if "uma semana" in raw:
+        return 7
     return 0
 
 
