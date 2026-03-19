@@ -932,6 +932,64 @@ def build_structured_pri_followup(
         )
         mentions_market = any(token in lowered for token in ("mercado", "supermercado", "sabao", "sabão", "casa"))
         mentions_delivery = any(token in lowered for token in ("delivery", "ifood", "restaurante", "comer fora"))
+        asking_weekly_limit = any(
+            token in normalized_last_question
+            for token in (
+                "teto simples",
+                "quanto voce quer limitar",
+                "delivery/comer fora",
+                "delivery ou comer fora",
+                "limitar em delivery",
+                "limitar em comer fora",
+            )
+        )
+        asks_recommendation = any(
+            token in lowered
+            for token in (
+                "qual vc indica",
+                "qual voce indica",
+                "quanto vc indica",
+                "quanto voce indica",
+                "quanto sugere",
+                "qual valor",
+                "quanto fica bom",
+            )
+        )
+        mentions_household_size = any(
+            token in lowered
+            for token in (
+                "2 pessoas",
+                "duas pessoas",
+                "1 crianca",
+                "uma crianca",
+                "filho",
+                "filha",
+                "casal",
+                "familia",
+                "famÃ­lia",
+            )
+        )
+
+        if asking_weekly_limit and (asks_recommendation or mentions_household_size):
+            question = "Topa rodar esse teto por 7 dias e me voltar com o resultado?"
+            content = (
+                "Perfeito. Vamos deixar isso objetivo pra funcionar na vida real.\n\n"
+                "Pra *2 adultos e 1 crianca*, eu testaria por 7 dias:\n"
+                "1. *Mercado/casa:* ate *R$700* na semana.\n"
+                "2. *Comer fora/delivery:* ate *R$250* na semana.\n"
+                "3. *Regra de controle:* bateu 80% do teto de delivery, trava novos pedidos ate virar a semana.\n\n"
+                "Isso te da um limite pratico sem cortar no escuro.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "open_text_followup",
+                "expected_answer_type": "open_text",
+                "consultant_stage": "action_plan",
+                "case_summary": merged_summary,
+            }
+
         if asking_mix_breakdown and (mentions_market or mentions_delivery):
             if mentions_market and mentions_delivery:
                 diagnosis = (
