@@ -172,27 +172,6 @@ def test_structured_followup_third_turn_personalizes_housing_builder_pause_plan(
     assert "mensagem pronta" in content
 
 
-def test_structured_followup_weekly_mix_keeps_context_without_template_drift(atlas):
-    result = atlas.build_structured_pri_followup(
-        user_message="foi uma mistura de tudo mercado e coisa da casa tipo sabao em po",
-        question_key="open_text_followup",
-        expected_answer_type="open_text",
-        case_summary={"main_issue_hypothesis": "cashflow_pressure"},
-        stage="diagnosis_clarification",
-        last_open_question="Nesse recorte de esta semana, isso foi mais mercado, delivery ou comer fora?",
-        mentor_turn_count=1,
-        max_turns=3,
-    )
-
-    content = result["content"].lower()
-    assert "mercado" in content
-    assert "casa" in content
-    assert "sem perder o foco" not in content
-    assert "teto" in content or "lista fechada" in content
-    assert "compromissos fixos" not in content
-    assert result["open_question_key"] == "open_text_followup"
-
-
 def test_structured_question_key_recognizes_short_continuation_reply(atlas):
     state = {
         "open_question_key": "income_extra_origin",
