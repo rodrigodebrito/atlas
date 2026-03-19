@@ -12542,31 +12542,23 @@ def get_period_overview(
     lines = []
     if focus_key == "expense":
         avg = int(total_expense / max(len(expense_rows), 1))
+        deferred_credit = max(total_expense - total_expense_cash, 0)
+        header_title = "🎯 *Fechamento do dia*" if period_key in {"today", "yesterday"} else "🎯 *Fechamento do período*"
+        lines = [
+            f"📊 *{user_name}, resumo de gastos em {period_label}*",
+            "",
+            header_title,
+            f"🛍️ *Total gasto:* {_fmt_brl(total_expense)}",
+            f"🧾 *Compras:* {len(expense_rows)}",
+            f"🎟️ *Ticket médio:* {_fmt_brl(avg)}",
+            f"💸 *Peso no caixa:* {_fmt_brl(total_expense_cash)}",
+        ]
         if period_key in {"today", "yesterday"}:
-            deferred_credit = max(total_expense - total_expense_cash, 0)
-            lines = [
-                f"📊 *{user_name}, resumo de gastos em {period_label}*",
-                "",
-                "🎯 *Fechamento do dia*",
-                f"🛍️ *Total gasto no dia:* {_fmt_brl(total_expense)}",
-                f"💸 *Impacto no caixa hoje:* {_fmt_brl(total_expense_cash)}",
-                f"💳 *Vai para próximas faturas:* {_fmt_brl(deferred_credit)}",
-                f"🧾 *Compras no dia:* {len(expense_rows)}",
-                f"🎟️ *Ticket médio:* {_fmt_brl(avg)}",
-            ]
-            _append_expense_grouped(lines, "📂 *Gastos por categoria (dia)*")
-        else:
-            lines = [
-                f"📊 *{user_name}, resumo de gastos em {period_label}*",
-                "",
-                f"🛍️ *Total gasto:* {_fmt_brl(total_expense)}",
-                f"🧾 *Compras:* {len(expense_rows)}",
-                f"🎟️ *Ticket médio:* {_fmt_brl(avg)}",
-                f"🗓️ *Peso no caixa:* {_fmt_brl(total_expense_cash)}",
-            ]
-            if show_daily_avg:
-                lines.append(f"📆 *Média por dia:* {_fmt_brl(avg_day_expense)}")
-            _append_expense_grouped(lines, "📂 *Categorias no período*")
+            lines.append(f"💳 *Vai para próximas faturas:* {_fmt_brl(deferred_credit)}")
+        elif show_daily_avg:
+            lines.append(f"📆 *Média por dia:* {_fmt_brl(avg_day_expense)}")
+            lines.append(f"💳 *Comprado no crédito (fora do caixa agora):* {_fmt_brl(deferred_credit)}")
+        _append_expense_grouped(lines, "📂 *Gastos por categoria*")
     elif focus_key == "income":
         avg = int(total_income / max(len(income_rows), 1))
         lines = [
