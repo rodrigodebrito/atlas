@@ -960,14 +960,7 @@ def _init_postgres_tables():
     conn.close()
 
 
-if DB_TYPE == "postgres":
-    try:
-        _init_postgres_tables()
-    except Exception as e:
-        try:
-            logger.error(f"[PG_INIT] bootstrap falhou (seguindo sem bloquear startup): {e}")
-        except Exception:
-            pass
+_pg_init_done = False
 
 # ============================================================
 # MODELOS
@@ -9584,6 +9577,29 @@ agent_os = AgentOS(
 )
 
 app = agent_os.get_app()
+
+# ============================================================
+# STARTUP (não bloqueante) — migração PG sem travar bind de porta
+# ============================================================
+import threading as _threading
+
+
+def _run_pg_init_background() -> None:
+    global _pg_init_done
+    if DB_TYPE != "postgres" or _pg_init_done:
+        return
+    try:
+        _init_postgres_tables()
+        _pg_init_done = True
+        logger.info("[PG_INIT] bootstrap concluído")
+    except Exception as e:
+        logger.error(f"[PG_INIT] bootstrap falhou (background): {e}")
+
+
+@app.on_event("startup")
+async def _startup_background_pg_init() -> None:
+    if DB_TYPE == "postgres" and not _pg_init_done:
+        _threading.Thread(target=_run_pg_init_background, daemon=True).start()
 
 # ============================================================
 # CORS — AgentOS define allow_credentials=True que bloqueia "*"
