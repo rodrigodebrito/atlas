@@ -272,6 +272,25 @@ def test_structured_followup_weekly_limit_recommendation_works_even_with_non_ope
     assert result["consultant_stage"] == "action_plan"
 
 
+def test_structured_followup_household_budget_question_works_without_last_question_context(atlas):
+    result = atlas.build_structured_pri_followup(
+        user_message="Qual vc indica pr 2 pessoas e uma criança?",
+        question_key="amount_followup",
+        expected_answer_type="number_amount",
+        case_summary={"main_issue_hypothesis": "cashflow_pressure"},
+        stage="action_plan",
+        last_open_question="",
+        mentor_turn_count=2,
+        max_turns=3,
+    )
+
+    content = result["content"].lower()
+    assert "r$700" in content
+    assert "r$250" in content
+    assert "bora pro jogo real" not in content
+    assert result["consultant_stage"] == "action_plan"
+
+
 def test_structured_question_key_recognizes_short_continuation_reply(atlas):
     state = {
         "open_question_key": "income_extra_origin",

@@ -656,7 +656,8 @@ def build_structured_pri_followup(
                 "familia",
             )
         )
-        if asking_weekly_limit and (asks_recommendation or mentions_household_size):
+        has_explicit_household_budget_question = asks_recommendation and mentions_household_size
+        if has_explicit_household_budget_question or (asking_weekly_limit and (asks_recommendation or mentions_household_size)):
             question = "Topa testar esse teto por 7 dias e me mandar o resultado?"
             content = (
                 "Perfeito. Vamos fechar com número prático.\n\n"
