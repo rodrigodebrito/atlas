@@ -1395,7 +1395,15 @@ def _handle_active_intent(
     )
     followup_days = _extract_followup_days(lowered_plain) or int(summary.get("followup_days") or 0) or 7
     followup_pending = bool(summary.get("followup_pending") or False)
-    has_numeric_hint = _extract_brl_amount_cents(text) > 0 or any(ch.isdigit() for ch in lowered_plain)
+    amount_cents = _extract_brl_amount_cents(text)
+    has_numeric_hint = amount_cents > 0 or any(ch.isdigit() for ch in lowered_plain)
+    target_profile = ""
+    if any(token in lowered_plain for token in ("agressivo", "agressiva", "apertado", "enxuto", "forte")):
+        target_profile = "agressivo"
+    elif any(token in lowered_plain for token in ("conservador", "conservadora", "seguro", "prudente")):
+        target_profile = "conservador"
+    elif any(token in lowered_plain for token in ("confortavel", "confortável", "leve", "folgado")):
+        target_profile = "confortavel"
 
     if asks_recommendation or mentions_household_size:
         question = "Topa testar esse teto por 7 dias e me mandar o resultado?"
@@ -1407,6 +1415,33 @@ def _handle_active_intent(
             "3. *Regra de controle:* bateu 80% do teto de delivery, pausa novos pedidos até virar a semana.\n\n"
             "Se passar, a gente ajusta em blocos de R$50 na próxima rodada.\n\n"
             f"{question}"
+        )
+        summary["active_intent"] = "weekly_budget_cap"
+        summary["intent_step"] = int(summary.get("intent_step") or 0) + 1
+        return {
+            "content": content,
+            "question": question,
+            "open_question_key": "open_text_followup",
+            "expected_answer_type": "open_text",
+            "consultant_stage": "action_plan",
+            "case_summary": summary,
+        }
+
+    if target_profile:
+        monthly_target = {
+            "agressivo": 260000,
+            "conservador": 300000,
+            "confortavel": 320000,
+        }.get(target_profile, 300000)
+        summary["monthly_target_cents"] = int(monthly_target)
+        question = (
+            f"Fechamos em ~R${int(monthly_target / 100)}/mes "
+            "ou voce prefere me passar o valor exato?"
+        )
+        content = (
+            f"Perfeito, peguei teu perfil *{target_profile}*.\n\n"
+            f"Base sugerida agora: ~*R${int(monthly_target / 100)}/mes*.\n"
+            "Se quiser, me manda o valor exato (ex.: 2000) que eu ja fecho o plano da semana."
         )
         summary["active_intent"] = "weekly_budget_cap"
         summary["intent_step"] = int(summary.get("intent_step") or 0) + 1
@@ -1464,19 +1499,44 @@ def _handle_active_intent(
             "case_summary": summary,
         }
 
-    if has_numeric_hint and any(token in lowered_plain for token in ("sim", "fechado", "ok", "topo", "vamos", "pode", "3.000", "3000", "2.800", "2800", "3.200", "3200")):
-        followup_days = _extract_followup_days(lowered_plain) or 7
+    if has_numeric_hint or any(token in lowered_plain for token in ("sim", "fechado", "ok", "topo", "vamos", "pode", "3.000", "3000", "2.800", "2800", "3.200", "3200")):
+        monthly_target_cents = amount_cents if amount_cents > 0 else int(summary.get("monthly_target_cents") or 0)
+        digits_only = "".join(ch for ch in lowered_plain if ch.isdigit())
+        if digits_only and len(digits_only) >= 4:
+            try:
+                explicit_cents = int(digits_only) * 100
+                if explicit_cents > monthly_target_cents:
+                    monthly_target_cents = explicit_cents
+            except Exception:
+                pass
+        if monthly_target_cents <= 0:
+            if digits_only:
+                try:
+                    monthly_target_cents = int(digits_only) * 100
+                except Exception:
+                    monthly_target_cents = 292000
+            else:
+                monthly_target_cents = 292000
+        monthly_target_reais = max(1, int(round(monthly_target_cents / 100.0)))
+        market_month = int(round(monthly_target_reais * 0.75))
+        delivery_month = max(0, monthly_target_reais - market_month)
+        market_week = max(50, int(round(market_month / 4 / 10.0) * 10))
+        delivery_week = max(20, int(round(delivery_month / 4 / 10.0) * 10))
+        followup_days = _extract_followup_days(lowered_plain) or followup_days or 7
         content = (
             "Fechou. Plano prático então:\n\n"
-            "1. Esta semana: trava mercado/casa em R$550 e delivery em R$180.\n"
+            f"1. Esta semana: trava mercado/casa em R${market_week} e delivery em R${delivery_week}.\n"
             "2. Regra: bateu 80% de qualquer teto, pausa categoria até virar semana.\n"
             f"3. Revisão: em {followup_days} dias você me manda quanto sobrou de cada teto.\n\n"
-            "Com isso a gente ajusta fino sem chute."
+            f"Alvo mensal validado: ~R${monthly_target_reais}."
         )
         summary["active_intent"] = "weekly_budget_cap"
         summary["intent_step"] = int(summary.get("intent_step") or 0) + 1
         summary["followup_pending"] = True
         summary["followup_days"] = followup_days
+        summary["monthly_target_cents"] = int(monthly_target_cents)
+        summary["weekly_market_cap_reais"] = int(market_week)
+        summary["weekly_delivery_cap_reais"] = int(delivery_week)
         return {
             "content": content,
             "question": f"Combinado. Daqui {followup_days} dias eu continuo daqui com você.",

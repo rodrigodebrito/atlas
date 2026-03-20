@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from agno_api.mentor_consultant import (
+    _handle_active_intent,
     enforce_dialogue_contract,
     has_template_drift,
     normalize_case_summary,
@@ -133,3 +134,33 @@ def test_contract_follow_up_state_clears_open_question_fields():
     assert repaired["question"] == ""
     assert repaired["open_question_key"] == ""
     assert repaired["expected_answer_type"] == ""
+
+
+def test_active_intent_weekly_budget_accepts_profile_choice():
+    summary = normalize_case_summary({"active_intent": "weekly_budget_cap"})
+    result = _handle_active_intent(
+        intent="weekly_budget_cap",
+        text="agressivo",
+        lowered_plain="agressivo",
+        summary=summary,
+    )
+    assert result is not None
+    assert result["consultant_stage"] == "action_plan"
+    assert "perfil *agressivo*" in result["content"]
+    assert "R$2600/mes" in result["content"]
+    assert summary.get("monthly_target_cents") == 260000
+
+
+def test_active_intent_weekly_budget_accepts_numeric_only_target():
+    summary = normalize_case_summary({"active_intent": "weekly_budget_cap", "monthly_target_cents": 260000})
+    result = _handle_active_intent(
+        intent="weekly_budget_cap",
+        text="2000",
+        lowered_plain="2000",
+        summary=summary,
+    )
+    assert result is not None
+    assert result["consultant_stage"] == "follow_up"
+    assert "Alvo mensal validado: ~R$2000." in result["content"]
+    assert summary.get("monthly_target_cents") == 200000
+    assert summary.get("followup_pending") is True
