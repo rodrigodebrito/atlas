@@ -12879,7 +12879,29 @@ def _resolve_period_overview_query(user_phone: str, text: str) -> str | None:
     wants_summary = "resumo" in body
     asks_spent = any(k in body for k in ("quanto gastei", "gastos", "quanto foi de saida", "quanto saiu"))
     asks_income = any(k in body for k in ("quanto recebi", "quanto entrou", "entradas", "receitas", "me fale quanto entrou"))
-    generic_period_ask = any(k in body for k in ("me mostra meu mes", "mostra meu mes", "resumo do mes", "resumo da semana", "resumo de hoje", "resumo de ontem"))
+    generic_period_ask = any(
+        k in body
+        for k in (
+            "me mostra meu mes",
+            "mostra meu mes",
+            "resumo do mes",
+            "resumo da semana",
+            "resumo de hoje",
+            "resumo de ontem",
+            "analise do mes",
+            "analise do meu mes",
+            "analise da semana",
+            "analise da minha semana",
+            "analise de hoje",
+            "analise de ontem",
+            "faca uma analise do mes",
+            "faz uma analise do mes",
+            "raio x do mes",
+            "raio x da semana",
+            "onde meu dinheiro esta indo no mes",
+            "onde meu dinheiro esta vazando no mes",
+        )
+    )
 
     query_like = wants_detail or wants_summary or asks_spent or asks_income or generic_period_ask
     if not query_like:
