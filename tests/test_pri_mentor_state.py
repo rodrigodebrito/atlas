@@ -98,6 +98,9 @@ def test_save_and_load_mentor_state_persists_structured_fields(atlas):
         expected_answer_type="income_recurrence",
         consultant_stage="income_clarification",
         mentor_turn_count=2,
+        last_user_answer="foi por plantao",
+        decision_taken="separar entrada pontual da renda fixa",
+        next_action="validar se essa receita volta no proximo mes",
         case_summary={
             "income_extra_origin": "plantao",
             "has_emergency_reserve": "unknown",
@@ -118,13 +121,16 @@ def test_save_and_load_mentor_state_persists_structured_fields(atlas):
     assert state["expected_answer_type"] == "income_recurrence"
     assert state["consultant_stage"] == "income_clarification"
     assert state["mentor_turn_count"] == 2
+    assert state["last_user_answer"] == "foi por plantao"
+    assert state["decision_taken"] == "separar entrada pontual da renda fixa"
+    assert state["next_action"] == "validar se essa receita volta no proximo mes"
     assert state["case_summary"]["income_extra_origin"] == "plantao"
     assert len(state["memory_turns"]) == 2
 
 
-def test_structured_followup_closes_with_practical_solution_on_third_turn(atlas):
+def test_structured_followup_closes_with_practical_solution_only_on_explicit_close_signal(atlas):
     result = atlas.build_structured_pri_followup(
-        user_message="ta bom, e agora?",
+        user_message="fechado",
         question_key="open_text_followup",
         expected_answer_type="open_text",
         case_summary={
@@ -145,6 +151,27 @@ def test_structured_followup_closes_with_practical_solution_on_third_turn(atlas)
     assert "Hoje:" in result["content"]
     assert "Proximos 7 dias:" in result["content"]
     assert "Proximos 30 dias:" in result["content"]
+
+
+def test_structured_followup_does_not_close_when_user_asks_new_question_even_on_third_turn(atlas):
+    result = atlas.build_structured_pri_followup(
+        user_message="Qual vc indica pr 2 pessoas e uma crianca?",
+        question_key="open_text_followup",
+        expected_answer_type="open_text",
+        case_summary={
+            "main_issue_hypothesis": "cashflow_pressure",
+            "has_emergency_reserve": "no",
+        },
+        stage="action_plan",
+        last_open_question="Me diz um teto simples pra testar por 7 dias: quanto voce quer limitar em delivery/comer fora?",
+        mentor_turn_count=2,
+        max_turns=3,
+    )
+
+    assert result
+    assert result["consultant_stage"] != "follow_up"
+    assert "Bora pro jogo real" not in result["content"]
+    assert result["question"]
 
 
 def test_structured_followup_third_turn_personalizes_housing_builder_pause_plan(atlas):

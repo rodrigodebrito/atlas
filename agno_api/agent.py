@@ -14135,6 +14135,9 @@ def _ensure_mentor_dialog_state_table(cur) -> None:
                 expected_answer_type TEXT DEFAULT '',
                 consultant_stage TEXT DEFAULT 'diagnosis',
                 mentor_turn_count INTEGER DEFAULT 0,
+                last_user_answer TEXT DEFAULT '',
+                decision_taken TEXT DEFAULT '',
+                next_action TEXT DEFAULT '',
                 case_summary_json TEXT DEFAULT '{}',
                 memory_json TEXT DEFAULT '[]',
                 expires_at TEXT NOT NULL,
@@ -14154,6 +14157,12 @@ def _ensure_mentor_dialog_state_table(cur) -> None:
                 cur.execute("ALTER TABLE mentor_dialog_state ADD COLUMN mentor_turn_count INTEGER DEFAULT 0")
             if "case_summary_json" not in cols:
                 cur.execute("ALTER TABLE mentor_dialog_state ADD COLUMN case_summary_json TEXT DEFAULT '{}'")
+            if "last_user_answer" not in cols:
+                cur.execute("ALTER TABLE mentor_dialog_state ADD COLUMN last_user_answer TEXT DEFAULT ''")
+            if "decision_taken" not in cols:
+                cur.execute("ALTER TABLE mentor_dialog_state ADD COLUMN decision_taken TEXT DEFAULT ''")
+            if "next_action" not in cols:
+                cur.execute("ALTER TABLE mentor_dialog_state ADD COLUMN next_action TEXT DEFAULT ''")
         else:
             cur.execute(
                 "SELECT column_name FROM information_schema.columns WHERE table_name = 'mentor_dialog_state'"
@@ -14175,6 +14184,18 @@ def _ensure_mentor_dialog_state_table(cur) -> None:
                 cur.execute(
                     "ALTER TABLE mentor_dialog_state ADD COLUMN IF NOT EXISTS case_summary_json TEXT DEFAULT '{}'"
                 )
+            if "last_user_answer" not in cols:
+                cur.execute(
+                    "ALTER TABLE mentor_dialog_state ADD COLUMN IF NOT EXISTS last_user_answer TEXT DEFAULT ''"
+                )
+            if "decision_taken" not in cols:
+                cur.execute(
+                    "ALTER TABLE mentor_dialog_state ADD COLUMN IF NOT EXISTS decision_taken TEXT DEFAULT ''"
+                )
+            if "next_action" not in cols:
+                cur.execute(
+                    "ALTER TABLE mentor_dialog_state ADD COLUMN IF NOT EXISTS next_action TEXT DEFAULT ''"
+                )
     except Exception:
         pass
 
@@ -14193,7 +14214,8 @@ def _load_mentor_state(user_phone: str) -> dict | None:
             cur.execute(
                 """
                 SELECT mode, last_open_question, open_question_key, expected_answer_type,
-                       consultant_stage, mentor_turn_count, case_summary_json, memory_json, expires_at
+                       consultant_stage, mentor_turn_count, last_user_answer, decision_taken, next_action,
+                       case_summary_json, memory_json, expires_at
                 FROM mentor_dialog_state
                 WHERE user_phone = ?
                 """,
@@ -14209,6 +14231,9 @@ def _load_mentor_state(user_phone: str) -> dict | None:
                 expected_answer_type,
                 consultant_stage,
                 mentor_turn_count,
+                last_user_answer,
+                decision_taken,
+                next_action,
                 case_summary_json,
                 memory_json,
                 expires_at,
@@ -14239,6 +14264,9 @@ def _load_mentor_state(user_phone: str) -> dict | None:
                 "expected_answer_type": (expected_answer_type or "").strip(),
                 "consultant_stage": normalize_consultant_stage(consultant_stage),
                 "mentor_turn_count": int(mentor_turn_count or 0),
+                "last_user_answer": (last_user_answer or "").strip(),
+                "decision_taken": (decision_taken or "").strip(),
+                "next_action": (next_action or "").strip(),
                 "case_summary": normalize_case_summary(case_summary),
                 "memory_turns": turns[-_MENTOR_MEMORY_TURNS:],
                 "expires_at": expires_at,
@@ -14256,6 +14284,9 @@ def _save_mentor_state(
     expected_answer_type: str = "",
     consultant_stage: str = "diagnosis",
     mentor_turn_count: int = 0,
+    last_user_answer: str = "",
+    decision_taken: str = "",
+    next_action: str = "",
     case_summary: dict | None = None,
     memory_turns: list | None = None,
     expires_at: str | None = None,
@@ -14286,7 +14317,8 @@ def _save_mentor_state(
                     """
                     UPDATE mentor_dialog_state
                     SET mode = ?, last_open_question = ?, open_question_key = ?, expected_answer_type = ?,
-                        consultant_stage = ?, mentor_turn_count = ?, case_summary_json = ?, memory_json = ?, expires_at = ?, updated_at = ?
+                        consultant_stage = ?, mentor_turn_count = ?, last_user_answer = ?, decision_taken = ?, next_action = ?,
+                        case_summary_json = ?, memory_json = ?, expires_at = ?, updated_at = ?
                     WHERE user_phone = ?
                     """,
                     (
@@ -14296,6 +14328,9 @@ def _save_mentor_state(
                         expected_answer_type.strip(),
                         normalize_consultant_stage(consultant_stage),
                         int(mentor_turn_count or 0),
+                        (last_user_answer or "").strip()[:240],
+                        (decision_taken or "").strip()[:240],
+                        (next_action or "").strip()[:240],
                         case_summary_payload,
                         payload,
                         expires,
@@ -14308,8 +14343,9 @@ def _save_mentor_state(
                     """
                     INSERT INTO mentor_dialog_state (
                         user_phone, mode, last_open_question, open_question_key, expected_answer_type,
-                        consultant_stage, mentor_turn_count, case_summary_json, memory_json, expires_at, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        consultant_stage, mentor_turn_count, last_user_answer, decision_taken, next_action,
+                        case_summary_json, memory_json, expires_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         user_phone,
@@ -14319,6 +14355,9 @@ def _save_mentor_state(
                         expected_answer_type.strip(),
                         normalize_consultant_stage(consultant_stage),
                         int(mentor_turn_count or 0),
+                        (last_user_answer or "").strip()[:240],
+                        (decision_taken or "").strip()[:240],
+                        (next_action or "").strip()[:240],
                         case_summary_payload,
                         payload,
                         expires,
@@ -14356,10 +14395,96 @@ def _touch_mentor_state(user_phone: str) -> None:
         expected_answer_type=state.get("expected_answer_type", ""),
         consultant_stage=state.get("consultant_stage", "diagnosis"),
         mentor_turn_count=int(state.get("mentor_turn_count") or 0),
+        last_user_answer=state.get("last_user_answer", ""),
+        decision_taken=state.get("decision_taken", ""),
+        next_action=state.get("next_action", ""),
         case_summary=state.get("case_summary", {}),
         memory_turns=state.get("memory_turns", []),
         expires_at=_mentor_expiry_iso(),
     )
+
+
+_MENTOR_OBS: dict[str, dict[str, int]] = {}
+
+
+def _record_mentor_observability(
+    user_phone: str,
+    *,
+    previous_open_question_key: str,
+    previous_open_question: str,
+    user_message: str,
+    response_content: str,
+    next_open_question_key: str,
+) -> None:
+    key = (user_phone or "anon").strip()
+    stats = _MENTOR_OBS.setdefault(
+        key,
+        {
+            "responses": 0,
+            "off_context": 0,
+            "three_turn_total": 0,
+            "three_turn_success": 0,
+        },
+    )
+    stats["responses"] += 1
+
+    asked_question = "?" in (user_message or "")
+    contains_generic_close = "Bora pro jogo real" in (response_content or "")
+    same_open_key = bool(previous_open_question_key) and previous_open_question_key == (next_open_question_key or "")
+    likely_off_context = bool(asked_question and contains_generic_close and same_open_key)
+    if likely_off_context:
+        stats["off_context"] += 1
+
+    # 3-turn success proxy: havia pergunta aberta e a rodada fechou ou avançou de chave.
+    if previous_open_question_key:
+        stats["three_turn_total"] += 1
+        if (next_open_question_key or "") != previous_open_question_key:
+            stats["three_turn_success"] += 1
+
+    responses = max(1, stats["responses"])
+    off_context_pct = (stats["off_context"] * 100.0) / responses
+    three_total = max(1, stats["three_turn_total"])
+    three_turn_success_pct = (stats["three_turn_success"] * 100.0) / three_total
+    logger.warning(
+        "[MENTOR_OBS] phone=%s responses=%s off_context_pct=%.1f three_turn_success_pct=%.1f",
+        key,
+        stats["responses"],
+        off_context_pct,
+        three_turn_success_pct,
+    )
+
+
+def _build_locked_mentor_reply(user_message: str, state: dict | None) -> dict[str, str]:
+    open_question = ((state or {}).get("last_open_question") or "").strip()
+    open_key = ((state or {}).get("open_question_key") or "").strip()
+    expected = ((state or {}).get("expected_answer_type") or "").strip()
+    user_text = (user_message or "").strip()
+    if open_question:
+        content = (
+            "Fechado. Vou manter 100% no mesmo assunto pra nao escorregar.\n\n"
+            f"Voce respondeu: *{user_text[:140]}*.\n"
+            f"Pergunta aberta atual: *{open_question}*\n\n"
+            "Pra continuar sem perder contexto, me confirma em 1 frase objetiva."
+        )
+        return {
+            "content": content,
+            "question": open_question,
+            "open_question_key": open_key,
+            "expected_answer_type": expected,
+            "consultant_stage": ((state or {}).get("consultant_stage") or "diagnosis"),
+        }
+    question = "Me diz em 1 frase qual decisao voce quer tomar agora pra eu te entregar um plano pratico."
+    content = (
+        "Vou travar no modo consultora, sem template e sem desvio.\n\n"
+        f"{question}"
+    )
+    return {
+        "content": content,
+        "question": question,
+        "open_question_key": "open_text_followup",
+        "expected_answer_type": "open_text",
+        "consultant_stage": "diagnosis_clarification",
+    }
 
 
 def _extract_last_open_question(text: str) -> str:
@@ -14632,6 +14757,9 @@ def _append_mentor_memory(user_phone: str, role: str, content: str) -> None:
         expected_answer_type=state.get("expected_answer_type", ""),
         consultant_stage=state.get("consultant_stage", "diagnosis"),
         mentor_turn_count=int(state.get("mentor_turn_count") or 0),
+        last_user_answer=state.get("last_user_answer", ""),
+        decision_taken=state.get("decision_taken", ""),
+        next_action=state.get("next_action", ""),
         case_summary=state.get("case_summary", {}),
         memory_turns=bucket,
         expires_at=_mentor_expiry_iso(),
@@ -14863,6 +14991,9 @@ async def chat_endpoint(
             expected_answer_type=(_mentor_state or {}).get("expected_answer_type", ""),
             consultant_stage=(_mentor_state or {}).get("consultant_stage", "diagnosis"),
             mentor_turn_count=int((_mentor_state or {}).get("mentor_turn_count") or 0),
+            last_user_answer=(_mentor_state or {}).get("last_user_answer", ""),
+            decision_taken=(_mentor_state or {}).get("decision_taken", ""),
+            next_action=(_mentor_state or {}).get("next_action", ""),
             case_summary=(_mentor_state or {}).get("case_summary", {}),
             memory_turns=(_mentor_state or {}).get("memory_turns", []),
             expires_at=_mentor_expiry_iso(),
@@ -14944,6 +15075,7 @@ async def chat_endpoint(
                 expected_answer_type=_next_expected_answer,
                 consultant_stage=_next_stage,
                 mentor_turn_count=1,
+                last_user_answer=(body or "").strip()[:240],
                 case_summary=_opening_case_summary,
                 memory_turns=[],
                 expires_at=_mentor_expiry_iso(),
@@ -15181,13 +15313,16 @@ async def chat_endpoint(
             _mentor_turn_count,
             _PRI_MAX_CONSULT_TURNS,
         )
-        if _structured_followup:
-            content = (_structured_followup.get("content") or "").strip()
-            _next_open_question = (_structured_followup.get("question") or "").strip()
-            _next_open_question_key = (_structured_followup.get("open_question_key") or "").strip()
-            _next_expected_answer = (_structured_followup.get("expected_answer_type") or "").strip()
-            _updated_case_summary = normalize_case_summary(_structured_followup.get("case_summary", _mentor_case_summary))
-            _next_stage = normalize_consultant_stage(_structured_followup.get("consultant_stage") or _mentor_stage)
+        _structured_payload = _structured_followup
+        if _structured_payload:
+            content = (_structured_payload.get("content") or "").strip()
+            _next_open_question = (_structured_payload.get("question") or "").strip()
+            _next_open_question_key = (_structured_payload.get("open_question_key") or "").strip()
+            _next_expected_answer = (_structured_payload.get("expected_answer_type") or "").strip()
+            _updated_case_summary = normalize_case_summary(_structured_payload.get("case_summary", _mentor_case_summary))
+            _next_stage = normalize_consultant_stage(_structured_payload.get("consultant_stage") or _mentor_stage)
+            _decision_taken = (_structured_payload.get("decision_taken") or "").strip()
+            _next_action = (_structured_payload.get("next_action") or "").strip()
             _append_mentor_memory(user_phone, "UsuÃ¡rio", body)
             _append_mentor_memory(user_phone, "Pri", content)
             _updated_mentor_state = _load_mentor_state(user_phone) or {}
@@ -15199,9 +15334,20 @@ async def chat_endpoint(
                 expected_answer_type=_next_expected_answer,
                 consultant_stage=_next_stage,
                 mentor_turn_count=max(_mentor_turn_count + 1, 1),
+                last_user_answer=(body or "").strip()[:240],
+                decision_taken=_decision_taken,
+                next_action=_next_action,
                 case_summary=_updated_case_summary,
                 memory_turns=_updated_mentor_state.get("memory_turns", []),
                 expires_at=_mentor_expiry_iso(),
+            )
+            _record_mentor_observability(
+                user_phone,
+                previous_open_question_key=_mentor_open_question_key,
+                previous_open_question=_mentor_open_question,
+                user_message=body,
+                response_content=content,
+                next_open_question_key=_next_open_question_key,
             )
             return {"content": _strip_whatsapp_bold(content), "routed": False, "session_id": session_id}
 
@@ -15307,9 +15453,20 @@ async def chat_endpoint(
             expected_answer_type=_next_expected_answer,
             consultant_stage=_next_stage,
             mentor_turn_count=max(_mentor_turn_count + 1, 1),
+            last_user_answer=(body or "").strip()[:240],
+            decision_taken=(_updated_mentor_state.get("decision_taken") or "").strip()[:240],
+            next_action=(_updated_mentor_state.get("next_action") or "").strip()[:240],
             case_summary=_updated_case_summary,
             memory_turns=_updated_mentor_state.get("memory_turns", []),
             expires_at=_mentor_expiry_iso(),
+        )
+        _record_mentor_observability(
+            user_phone,
+            previous_open_question_key=_mentor_open_question_key,
+            previous_open_question=_mentor_open_question,
+            user_message=body,
+            response_content=content,
+            next_open_question_key=_next_open_question_key,
         )
     del response  # libera memória do response do LLM
     import gc as _gc; _gc.collect()

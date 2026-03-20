@@ -702,7 +702,14 @@ def build_structured_pri_followup(
                 "case_summary": merged_summary,
             }
 
-    close_requested = mentor_turn_count >= max(1, max_turns - 1)
+    close_requested = _is_explicit_close_request(
+        text=text,
+        lowered_plain=lowered_plain,
+        last_question_plain=normalized_last_question_plain,
+        mentor_turn_count=mentor_turn_count,
+        max_turns=max_turns,
+        active_intent=active_intent,
+    )
 
     if any(token in lowered for token in ("cheque especial", "especial", "rotativo", "emprestimo", "empréstimo", "financiamento")) and any(
         token in lowered
@@ -1043,6 +1050,42 @@ def build_structured_pri_followup(
                 "case_summary": merged_summary,
             }
 
+        mentions_housing_pause = any(
+            token in lowered_plain
+            for token in (
+                "construtora",
+                "pausa na entrada",
+                "pausar entrada",
+                "entrada do ap",
+                "entrada do apto",
+                "evolucao da obra",
+                "evolucao de obra",
+                "registro no cartorio",
+                "registro em cartorio",
+            )
+        )
+        if mentions_housing_pause:
+            amount_label = _fmt_cents_brl(amount_cents) if amount_cents > 0 else "esse alivio"
+            question = "Quer que eu ja te deixe uma mensagem pronta pra enviar pra construtora hoje?"
+            content = (
+                "Perfeito. Isso faz sentido e e uma decisao madura de caixa.\n\n"
+                "Plano pratico: formaliza hoje a pausa/revisao da entrada por escrito e guarda protocolo. "
+                f"Se entrar, trata *{amount_label}/mes* como folga planejada (nao dinheiro livre).\n\n"
+                "Com essa folga, prioridade 1 e reduzir pressao do mes atual e evitar novo buraco no cartao "
+                "nos *proximos 5 meses*.\n\n"
+                f"{question}"
+            )
+            return {
+                "content": content,
+                "question": question,
+                "open_question_key": "open_text_followup",
+                "expected_answer_type": "open_text",
+                "consultant_stage": "action_plan",
+                "decision_taken": "formalizar pausa da entrada com a construtora",
+                "next_action": "enviar pedido por escrito e confirmar protocolo",
+                "case_summary": merged_summary,
+            }
+
         if asking_mix_breakdown and (mentions_market or mentions_delivery):
             if mentions_market and mentions_delivery:
                 diagnosis = (
@@ -1188,7 +1231,7 @@ def build_structured_pri_followup(
         next_priority = close_plan.get("next_focus") or "executar um ajuste simples ainda nesta semana"
         ready_message = close_plan.get("ready_message") or ""
         content = (
-            "Fechado. Bora pro jogo real.\n\n"
+            "Fechado. Vamos pro plano pratico sem enrolacao.\n\n"
             f"O que eu faria agora: *{first_move}*.\n\n"
             "Hoje:\n"
             f"1. {today_action}\n\n"
@@ -1206,6 +1249,8 @@ def build_structured_pri_followup(
             "open_question_key": "",
             "expected_answer_type": "",
             "consultant_stage": "follow_up",
+            "decision_taken": first_move,
+            "next_action": today_action,
             "case_summary": merged_summary,
         }
 
@@ -1561,6 +1606,65 @@ def _extract_followup_days(text: str) -> int:
     if "uma semana" in raw:
         return 7
     return 0
+
+
+def _is_explicit_close_request(
+    *,
+    text: str,
+    lowered_plain: str,
+    last_question_plain: str,
+    mentor_turn_count: int,
+    max_turns: int,
+    active_intent: str,
+) -> bool:
+    # Nunca fecha automaticamente quando existe intent lock ativo.
+    if (active_intent or "").strip():
+        return False
+
+    message = (text or "").strip()
+    if not message:
+        return False
+
+    explicit_close_tokens = (
+        "pode fechar",
+        "pode encerrar",
+        "encerrar",
+        "fechar por hoje",
+        "fecha por hoje",
+        "resumo final",
+        "plano final",
+        "manda o plano final",
+        "agora me da o plano final",
+        "agora me dá o plano final",
+        "ok pode fechar",
+        "pode concluir",
+        "concluir",
+    )
+    if any(token in lowered_plain for token in explicit_close_tokens):
+        return True
+
+    # Se o usuario fez uma pergunta nova, jamais fecha.
+    if "?" in message or any(
+        token in lowered_plain
+        for token in ("qual ", "quanto ", "como ", "quando ", "onde ", "por que", "pq ", "me indica")
+    ):
+        return False
+
+    # Com conversa longa, so fecha com afirmacao curta sobre a pergunta anterior.
+    short_ack = lowered_plain in {
+        "fechado",
+        "fechou",
+        "ok",
+        "ok combinado",
+        "combinado",
+        "ta bom",
+        "tá bom",
+        "show",
+    }
+    if mentor_turn_count >= max(1, max_turns - 1) and short_ack and (last_question_plain or "").strip():
+        return True
+
+    return False
 
 
 def _build_personalized_practical_close(
