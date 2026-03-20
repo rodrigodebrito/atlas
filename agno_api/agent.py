@@ -9794,7 +9794,7 @@ def _get_panel_data_inner(conn, user_id: str, month: str) -> dict:
     # Transactions
     cur.execute(
         """SELECT id, type, amount_cents, category, merchant, occurred_at, card_id, payment_method,
-                  installments, installment_number, total_amount_cents
+                  installments, installment_number, total_amount_cents, notes
            FROM transactions WHERE user_id = ? AND occurred_at LIKE ?
            ORDER BY occurred_at DESC""",
         (user_id, f"{month}%"),
@@ -9814,7 +9814,15 @@ def _get_panel_data_inner(conn, user_id: str, month: str) -> dict:
     merchants_count: dict = {}
 
     for tx in tx_rows:
-        tx_id, tx_type, amt, cat, merchant, occurred, card_id, pay_method, inst, inst_num, total_amt = tx
+        tx_id, tx_type, amt, cat, merchant, occurred, card_id, pay_method, inst, inst_num, total_amt, notes = tx
+        note_status = ""
+        if notes:
+            note_up = str(notes).upper()
+            if "[STATUS:PENDING]" in note_up:
+                note_status = "PENDING"
+            elif "[STATUS:PAID]" in note_up:
+                note_status = "PAID"
+        derived_status = note_status or ("PENDING" if (pay_method or "").upper() == "CREDIT" or card_id else "PAID")
         transactions.append({
             "id": tx_id, "type": tx_type, "amount": amt, "category": cat or "Outros",
             "merchant": merchant or "", "date": occurred[:10] if occurred else "",
@@ -9822,6 +9830,7 @@ def _get_panel_data_inner(conn, user_id: str, month: str) -> dict:
             "payment_method": pay_method or "",
             "installments": inst or 1, "installment_number": inst_num or 1,
             "total_amount": total_amt or amt,
+            "payment_status": derived_status,
         })
         if tx_type == "EXPENSE":
             expense_total += amt
@@ -10232,6 +10241,9 @@ body{{
 .tx-meta{{font-size:11px;color:var(--text2)}}
 .inst{{background:var(--surface2);border-radius:4px;padding:1px 5px;font-size:10px;margin-left:4px}}
 .tx-card-badge{{background:var(--surface2);border-radius:4px;padding:1px 5px;font-size:9px;color:var(--yellow);margin-left:4px}}
+.tx-pay-pill{{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;font-size:9px;font-weight:600;letter-spacing:.2px}}
+.tx-pay-paid{{background:rgba(0,229,160,.14);color:var(--green);border:1px solid rgba(0,229,160,.25)}}
+.tx-pay-pending{{background:rgba(255,188,66,.12);color:var(--yellow);border:1px solid rgba(255,188,66,.25)}}
 .tx-right{{display:flex;align-items:center;gap:6px;flex-shrink:0}}
 .tx-amount{{font-size:14px;font-weight:600}}
 .tx-amount.income{{color:var(--green)}}
@@ -10489,6 +10501,29 @@ body{{
     <input type="text" id="editMerchant" placeholder="Nome do local">
     <label>Data</label>
     <input type="date" id="editDate">
+    <label>Meio de pagamento</label>
+    <select id="editPaymentMethod" onchange="onEditPaymentMethodChange()">
+      <option value="CASH">Dinheiro</option>
+      <option value="PIX">PIX</option>
+      <option value="DEBIT">Débito</option>
+      <option value="CREDIT">Crédito</option>
+    </select>
+    <div id="editCardWrap" style="display:none">
+      <label>Cartão</label>
+      <select id="editCardSelect" onchange="onEditCardChange()"></select>
+      <div id="editNewCardHint" style="display:none;font-size:.78rem;color:var(--text3);margin-top:6px">
+        Se escolher “+ Adicionar novo cartão”, eu crio e já vinculo nessa compra.
+      </div>
+      <label>Parcelas</label>
+      <input type="number" id="editInstallments" min="1" max="24" inputmode="numeric" value="1">
+    </div>
+    <div id="editStatusWrap">
+      <label>Status</label>
+      <select id="editStatus">
+        <option value="PAID">Pago</option>
+        <option value="PENDING">A pagar</option>
+      </select>
+    </div>
     <div class="modal-btns">
       <button class="btn-cancel" onclick="closeModal()">Cancelar</button>
       <button class="btn-save" onclick="saveTx()">Salvar</button>
@@ -10844,6 +10879,18 @@ function renderTxList() {{
     const merchant = tx.merchant || tx.category;
     const inst = tx.installments > 1 ? ` <span class="inst">${{tx.installment_number}}/${{tx.installments}}</span>` : '';
     const cardBadge = tx.card_name ? ` <span class="tx-card-badge">${{tx.card_name}}</span>` : '';
+    const statusNorm = (tx.payment_status || (tx.payment_method === 'CREDIT' ? 'PENDING' : 'PAID')).toUpperCase();
+    const statusLabel = statusNorm === 'PENDING' ? 'a pagar' : 'pago';
+    const statusClass = statusNorm === 'PENDING' ? 'tx-pay-pending' : 'tx-pay-paid';
+    const payRaw = (tx.payment_method || '').toUpperCase();
+    const payLabel = payRaw === 'CREDIT' ? 'cartão' : payRaw === 'PIX' ? 'pix' : payRaw === 'DEBIT' ? 'débito' : 'à vista';
+    const payMeta = payRaw === 'CREDIT'
+      ? `${{payLabel}}${{tx.card_name ? ' ' + tx.card_name : ''}}${{tx.installments > 1 ? ' • ' + tx.installments + 'x' : ''}}`
+      : payLabel;
+    const payMetaText = tx.type === 'EXPENSE' ? payMeta : 'entrada';
+    const statusBadge = tx.type === 'EXPENSE'
+      ? ` <span class="tx-pay-pill ${{statusClass}}">${{statusLabel}}</span>`
+      : '';
     const cls = tx.type === 'INCOME' ? 'income' : 'expense';
     const sign = tx.type === 'INCOME' ? '+' : '-';
     const m = merchant.replace(/'/g, "\\\\'");
@@ -10852,13 +10899,13 @@ function renderTxList() {{
         <span class="tx-emoji">${{emoji}}</span>
         <div class="tx-info">
           <span class="tx-merchant">${{merchant}}${{inst}}${{cardBadge}}</span>
-          <span class="tx-meta">${{dateLbl}} · ${{tx.category}}</span>
+          <span class="tx-meta">${{dateLbl}} · ${{tx.category}} · ${{payMetaText}}${{statusBadge}}</span>
         </div>
       </div>
       <div class="tx-right">
         <span class="tx-amount ${{cls}}">${{sign}}${{fmt(tx.amount)}}</span>
         <div class="tx-actions">
-          <button onclick="editTx('${{tx.id}}',${{tx.amount}},'${{tx.category}}','${{m}}','${{tx.date}}')">✏️</button>
+          <button onclick="editTx('${{tx.id}}')">✏️</button>
           <button onclick="deleteTx('${{tx.id}}')">🗑️</button>
         </div>
       </div>
@@ -11118,12 +11165,71 @@ async function deleteTx(id) {{
   }} catch(e) {{ showToast('Erro de conexao', true); }}
 }}
 
-function editTx(id, amount, category, merchant, date) {{
+function _populateEditCardSelect(selectedCardId) {{
+  const sel = document.getElementById('editCardSelect');
+  let options = '<option value=\"\">Selecione um cartão</option>';
+  options += ALL_CARDS.map(c => `<option value=\"${{c.id}}\">${{c.name}}</option>`).join('');
+  options += '<option value=\"__new__\">+ Adicionar novo cartão</option>';
+  sel.innerHTML = options;
+  sel.value = selectedCardId || '';
+}}
+
+function onEditPaymentMethodChange() {{
+  const method = (document.getElementById('editPaymentMethod').value || '').toUpperCase();
+  const cardWrap = document.getElementById('editCardWrap');
+  const statusWrap = document.getElementById('editStatusWrap');
+  if (method === 'CREDIT') {{
+    cardWrap.style.display = 'block';
+    statusWrap.style.display = 'none';
+    if (!document.getElementById('editInstallments').value) {{
+      document.getElementById('editInstallments').value = '1';
+    }}
+  }} else {{
+    cardWrap.style.display = 'none';
+    statusWrap.style.display = 'block';
+    document.getElementById('editCardSelect').value = '';
+    document.getElementById('editNewCardHint').style.display = 'none';
+    document.getElementById('editInstallments').value = '1';
+  }}
+}}
+
+function onEditCardChange() {{
+  const v = document.getElementById('editCardSelect').value;
+  document.getElementById('editNewCardHint').style.display = v === '__new__' ? 'block' : 'none';
+}}
+
+async function _createCardInlineFromEdit() {{
+  const name = prompt('Nome do novo cartão (ex.: Nubank, Inter, Caixa):');
+  if (!name || !name.trim()) return '';
+  const r = await fetch(API + '/v1/api/card?t=' + TOKEN, {{
+    method: 'POST',
+    headers: {{'Content-Type':'application/json'}},
+    body: JSON.stringify({{ name: name.trim() }})
+  }});
+  if (!r.ok) return '';
+  const d = await r.json().catch(() => ({{}}));
+  return d.id || '';
+}}
+
+function editTx(id) {{
+  const tx = ALL_TX.find(t => t.id === id);
+  if (!tx) {{
+    showToast('Transação não encontrada', true);
+    return;
+  }}
   document.getElementById('editId').value = id;
-  document.getElementById('editAmount').value = (amount / 100).toFixed(2);
-  document.getElementById('editCategory').value = category;
-  document.getElementById('editMerchant').value = merchant;
-  document.getElementById('editDate').value = date || '';
+  document.getElementById('editAmount').value = (tx.amount / 100).toFixed(2);
+  document.getElementById('editCategory').value = tx.category || 'Outros';
+  document.getElementById('editMerchant').value = tx.merchant || '';
+  document.getElementById('editDate').value = tx.date || '';
+  const pm = (tx.payment_method || (tx.card_id ? 'CREDIT' : 'CASH')).toUpperCase();
+  document.getElementById('editPaymentMethod').value = pm;
+  _populateEditCardSelect(tx.card_id || '');
+  document.getElementById('editInstallments').value = tx.installments || 1;
+  const status = (tx.payment_status || (pm === 'CREDIT' ? 'PENDING' : 'PAID')).toUpperCase();
+  document.getElementById('editStatus').value = status === 'PENDING' ? 'PENDING' : 'PAID';
+  onEditPaymentMethodChange();
+  onEditCardChange();
   document.getElementById('editModal').classList.add('active');
 }}
 
@@ -11133,10 +11239,33 @@ function closeModal() {{
 
 async function saveTx() {{
   const id = document.getElementById('editId').value;
+  const paymentMethod = (document.getElementById('editPaymentMethod').value || '').toUpperCase();
+  let cardId = '';
+  let installments = parseInt(document.getElementById('editInstallments').value || '1');
+  if (!Number.isFinite(installments) || installments < 1) installments = 1;
+  if (installments > 24) installments = 24;
+  if (paymentMethod === 'CREDIT') {{
+    cardId = document.getElementById('editCardSelect').value || '';
+    if (cardId === '__new__') {{
+      cardId = await _createCardInlineFromEdit();
+      if (!cardId) {{
+        showToast('Não consegui criar o cartão', true);
+        return;
+      }}
+    }}
+    if (!cardId) {{
+      showToast('Selecione um cartão para crédito', true);
+      return;
+    }}
+  }}
   const body = {{
     amount_cents: Math.round(parseFloat(document.getElementById('editAmount').value) * 100),
     category: document.getElementById('editCategory').value,
     merchant: document.getElementById('editMerchant').value,
+    payment_method: paymentMethod,
+    card_id: paymentMethod === 'CREDIT' ? cardId : '',
+    installments: paymentMethod === 'CREDIT' ? installments : 1,
+    payment_status: paymentMethod === 'CREDIT' ? 'PENDING' : document.getElementById('editStatus').value,
   }};
   const date = document.getElementById('editDate').value;
   if (date) body.occurred_at = date + 'T12:00:00';
@@ -11148,7 +11277,10 @@ async function saveTx() {{
       showToast('Transacao atualizada');
       closeModal();
       setTimeout(() => location.reload(), 800);
-    }} else {{ showToast('Erro ao salvar', true); }}
+    }} else {{
+      const d = await r.json().catch(() => ({{}}));
+      showToast(d.error || 'Erro ao salvar', true);
+    }}
   }} catch(e) {{ showToast('Erro de conexao', true); }}
 }}
 
@@ -11290,6 +11422,20 @@ async def edit_transaction_api(tx_id: str, request: _Request, t: str = ""):
         body = await request.json()
         updates = []
         params = []
+
+        def _strip_status_tag(notes_value: str) -> str:
+            raw = (notes_value or "").strip()
+            raw = _re.sub(r"\s*\[STATUS:(PAID|PENDING)\]\s*", " ", raw, flags=_re.IGNORECASE).strip()
+            return raw
+
+        def _merge_status_tag(notes_value: str, status_value: str) -> str:
+            base = _strip_status_tag(notes_value)
+            status_norm = (status_value or "").strip().upper()
+            if status_norm not in {"PAID", "PENDING"}:
+                return base
+            if base:
+                return f"{base} [STATUS:{status_norm}]"
+            return f"[STATUS:{status_norm}]"
         if "amount_cents" in body:
             updates.append("amount_cents = ?")
             params.append(int(body["amount_cents"]))
@@ -11302,8 +11448,72 @@ async def edit_transaction_api(tx_id: str, request: _Request, t: str = ""):
         if "occurred_at" in body:
             updates.append("occurred_at = ?")
             params.append(body["occurred_at"])
+        if "payment_method" in body:
+            pm = (body.get("payment_method") or "").strip().upper()
+            if pm not in {"CASH", "PIX", "DEBIT", "CREDIT"}:
+                return _JSONResponse({"error": "Meio de pagamento inválido"}, status_code=400)
+            updates.append("payment_method = ?")
+            params.append(pm)
+        if "card_id" in body:
+            incoming_card_id = (body.get("card_id") or "").strip()
+            if incoming_card_id:
+                cur_card_conn = _get_conn()
+                cur_card = cur_card_conn.cursor()
+                cur_card.execute("SELECT id FROM credit_cards WHERE id = ? AND user_id = ?", (incoming_card_id, user_id))
+                card_exists = cur_card.fetchone()
+                cur_card_conn.close()
+                if not card_exists:
+                    return _JSONResponse({"error": "Cartão não encontrado"}, status_code=404)
+                updates.append("card_id = ?")
+                params.append(incoming_card_id)
+            else:
+                updates.append("card_id = NULL")
+        if "installments" in body:
+            try:
+                inst = int(body.get("installments") or 1)
+            except Exception:
+                inst = 1
+            if inst < 1:
+                inst = 1
+            if inst > 24:
+                inst = 24
+            updates.append("installments = ?")
+            params.append(inst)
+        if "payment_status" in body:
+            status_v = (body.get("payment_status") or "").strip().upper()
+            if status_v not in {"PAID", "PENDING"}:
+                return _JSONResponse({"error": "Status inválido"}, status_code=400)
+            conn_notes = _get_conn()
+            cur_notes = conn_notes.cursor()
+            cur_notes.execute("SELECT notes FROM transactions WHERE id = ? AND user_id = ?", (tx_id, user_id))
+            notes_row = cur_notes.fetchone()
+            conn_notes.close()
+            current_notes = notes_row[0] if notes_row else ""
+            merged_notes = _merge_status_tag(current_notes or "", status_v)
+            updates.append("notes = ?")
+            params.append(merged_notes)
         if not updates:
             return _JSONResponse({"error": "Nada para atualizar"}, status_code=400)
+
+        # validação final: crédito exige cartão
+        if "payment_method" in body and (body.get("payment_method") or "").strip().upper() == "CREDIT":
+            has_card_on_payload = bool((body.get("card_id") or "").strip())
+            if not has_card_on_payload:
+                conn_card_check = _get_conn()
+                cur_card_check = conn_card_check.cursor()
+                cur_card_check.execute("SELECT card_id FROM transactions WHERE id = ? AND user_id = ?", (tx_id, user_id))
+                existing_row = cur_card_check.fetchone()
+                conn_card_check.close()
+                if not existing_row or not existing_row[0]:
+                    return _JSONResponse({"error": "Para crédito, selecione um cartão"}, status_code=400)
+
+        # se não for crédito, limpa vínculo com cartão e força 1x
+        if "payment_method" in body and (body.get("payment_method") or "").strip().upper() != "CREDIT":
+            if not any(u.startswith("card_id") for u in updates):
+                updates.append("card_id = NULL")
+            if not any(u.startswith("installments") for u in updates):
+                updates.append("installments = 1")
+
         params.extend([tx_id, user_id])
         conn = _get_conn()
         cur = conn.cursor()
