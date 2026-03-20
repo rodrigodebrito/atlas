@@ -37,6 +37,8 @@ from agno_api.mentor_consultant import (
     build_consultant_plan_context,
     build_structured_pri_followup,
     build_structured_pri_opening,
+    enforce_dialogue_contract,
+    has_template_drift,
     infer_consultant_stage,
     infer_pri_opening_frame,
     merge_case_summary,
@@ -15053,6 +15055,15 @@ async def chat_endpoint(
     if _should_attempt_structured_opening and _structured_opening_frame:
         if _opening_snapshot:
             _opening = build_structured_pri_opening(body, _opening_snapshot, _mentor_case_summary)
+            _opening = enforce_dialogue_contract(
+                payload=_opening,
+                user_message=body,
+                last_open_question="",
+                open_question_key="",
+                expected_answer_type="",
+                stage="diagnosis",
+                case_summary=_mentor_case_summary,
+            )
             content = (_opening.get("content") or "").strip()
             _next_open_question = (_opening.get("question") or "").strip()
             _next_open_question_key = (_opening.get("open_question_key") or "").strip()
@@ -15315,6 +15326,16 @@ async def chat_endpoint(
         )
         _structured_payload = _structured_followup
         if _structured_payload:
+            _structured_payload = enforce_dialogue_contract(
+                payload=_structured_payload,
+                user_message=body,
+                last_open_question=_mentor_open_question,
+                open_question_key=_mentor_open_question_key,
+                expected_answer_type=_mentor_expected_answer,
+                stage=_mentor_stage,
+                case_summary=_mentor_case_summary,
+            )
+        if _structured_payload:
             content = (_structured_payload.get("content") or "").strip()
             _next_open_question = (_structured_payload.get("question") or "").strip()
             _next_open_question_key = (_structured_payload.get("open_question_key") or "").strip()
@@ -15434,6 +15455,15 @@ async def chat_endpoint(
                 _PRI_MAX_CONSULT_TURNS,
             )
             if _loop_recovery:
+                _loop_recovery = enforce_dialogue_contract(
+                    payload=_loop_recovery,
+                    user_message=body,
+                    last_open_question=_mentor_open_question,
+                    open_question_key=_mentor_open_question_key,
+                    expected_answer_type=_mentor_expected_answer,
+                    stage=_mentor_stage,
+                    case_summary=_updated_case_summary,
+                )
                 content = _sanitize_outbound_text((_loop_recovery.get("content") or "").strip())
                 _next_open_question = (_loop_recovery.get("question") or "").strip()
                 _next_expected_answer = (_loop_recovery.get("expected_answer_type") or "").strip()
@@ -15443,6 +15473,45 @@ async def chat_endpoint(
                 )
                 _next_stage = normalize_consultant_stage(
                     _loop_recovery.get("consultant_stage") or _next_stage
+                )
+
+        # Anti-template drift forte: se o LLM escapar do tópico em resposta a pergunta explícita,
+        # substitui por resposta estruturada on-topic.
+        if has_template_drift(
+            response_content=content,
+            user_message=body,
+            last_open_question=_mentor_open_question,
+            open_question_key=_mentor_open_question_key,
+        ):
+            _recovered = build_structured_pri_followup(
+                body,
+                _mentor_open_question_key,
+                _mentor_expected_answer,
+                _updated_case_summary,
+                _mentor_stage,
+                _mentor_open_question,
+                _mentor_turn_count,
+                _PRI_MAX_CONSULT_TURNS,
+            )
+            if _recovered:
+                _recovered = enforce_dialogue_contract(
+                    payload=_recovered,
+                    user_message=body,
+                    last_open_question=_mentor_open_question,
+                    open_question_key=_mentor_open_question_key,
+                    expected_answer_type=_mentor_expected_answer,
+                    stage=_mentor_stage,
+                    case_summary=_updated_case_summary,
+                )
+                content = _sanitize_outbound_text((_recovered.get("content") or "").strip())
+                _next_open_question = (_recovered.get("question") or "").strip()
+                _next_expected_answer = (_recovered.get("expected_answer_type") or "").strip()
+                _next_open_question_key = (_recovered.get("open_question_key") or "").strip()
+                _updated_case_summary = normalize_case_summary(
+                    _recovered.get("case_summary", _updated_case_summary)
+                )
+                _next_stage = normalize_consultant_stage(
+                    _recovered.get("consultant_stage") or _next_stage
                 )
         _append_mentor_memory(user_phone, "Pri", content)
         _save_mentor_state(

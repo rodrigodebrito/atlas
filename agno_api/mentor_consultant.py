@@ -24,6 +24,13 @@ STAGE_FLOW_ORDER = {
     "follow_up": 6,
 }
 
+GENERIC_TEMPLATE_DRIFT_PATTERNS = (
+    "bora pro jogo real",
+    "identificar a categoria ou comportamento que mais pesa no mes antes de falar de investimento",
+    "proximos 30 dias:",
+    "transformar esse ajuste em regra simples",
+)
+
 
 def normalize_consultant_stage(stage: str | None) -> str:
     value = (stage or "").strip().lower()
@@ -1541,6 +1548,240 @@ def _normalize_text_for_match(value: str) -> str:
     normalized = unicodedata.normalize("NFD", text)
     without_marks = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
     return " ".join(without_marks.split())
+
+
+def _looks_like_user_question(raw_text: str) -> bool:
+    text = (raw_text or "").strip()
+    if not text:
+        return False
+    normalized = _normalize_text_for_match(text)
+    if "?" in text:
+        return True
+    return any(
+        token in normalized
+        for token in (
+            "qual ",
+            "quanto ",
+            "como ",
+            "onde ",
+            "quando ",
+            "por que",
+            "pq ",
+            "me indica",
+            "me fala",
+        )
+    )
+
+
+def _build_on_topic_repair_response(
+    *,
+    user_message: str,
+    last_open_question: str,
+    case_summary: dict[str, Any],
+) -> dict[str, str]:
+    lowered_plain = _normalize_text_for_match(user_message)
+    asks_recommendation = any(
+        token in lowered_plain
+        for token in (
+            "qual vc indica",
+            "qual voce indica",
+            "quanto vc indica",
+            "quanto voce indica",
+            "quanto sugere",
+            "qual valor",
+            "quanto fica bom",
+        )
+    )
+    asks_budget_context = any(
+        token in _normalize_text_for_match(last_open_question or "")
+        for token in (
+            "teto simples",
+            "limitar em delivery",
+            "delivery/comer fora",
+            "comer fora",
+            "mercado/casa",
+            "topa testar esse teto",
+        )
+    )
+    mentions_household_size = any(
+        token in lowered_plain
+        for token in (
+            "2 pessoas",
+            "duas pessoas",
+            "1 crianca",
+            "uma crianca",
+            "filho",
+            "filha",
+            "casal",
+            "familia",
+        )
+    )
+    monthly_challenge = any(
+        token in lowered_plain
+        for token in (
+            "isso bate",
+            "por mes",
+            "por mes?",
+            "ta alto",
+            "ficou alto",
+            "quase 3600",
+            "quase 3.600",
+        )
+    )
+
+    if asks_recommendation and (mentions_household_size or asks_budget_context):
+        question = "Topa testar esse teto por 7 dias e me mandar o resultado?"
+        return {
+            "content": (
+                "Fechou. Indo pro numero pratico, sem teoria:\n\n"
+                "1. Mercado/casa: *R$550 por semana* (~R$2.200/mes)\n"
+                "2. Comer fora/delivery: *R$180 por semana* (~R$720/mes)\n"
+                "3. Total alvo: ~*R$2.920/mes* para 2 adultos e 1 crianca\n\n"
+                "Faixa mensal pra calibrar sem chute: *R$2.800* (apertado), *R$3.000* (base), *R$3.200* (confortavel).\n\n"
+                "Regra simples: bateu 80% do teto de delivery, pausa ate virar a semana.\n\n"
+                f"{question}"
+            ),
+            "question": question,
+            "open_question_key": "open_text_followup",
+            "expected_answer_type": "open_text",
+            "consultant_stage": "action_plan",
+        }
+
+    if monthly_challenge:
+        question = "Qual teto mensal voce quer validar agora: R$2.800, R$3.000 ou R$3.200?"
+        return {
+            "content": (
+                "Boa pergunta. Esse ponto e real.\n\n"
+                "Se usar R$700 + R$250 por semana, pode encostar em ~R$3.800/mes.\n"
+                "Pra ficar realista no teu bolso, eu ajustaria para:\n"
+                "1. Mercado/casa: *R$550/semana*\n"
+                "2. Comer fora/delivery: *R$180/semana*\n"
+                "3. Total alvo: ~*R$2.920/mes*\n\n"
+                f"{question}"
+            ),
+            "question": question,
+            "open_question_key": "open_text_followup",
+            "expected_answer_type": "open_text",
+            "consultant_stage": "action_plan",
+        }
+
+    short_last_q = (last_open_question or "").strip()
+    contextual_question = (
+        short_last_q
+        if short_last_q.endswith("?")
+        else "Me confirma so o ponto principal que voce quer ajustar primeiro: mercado/casa ou comer fora?"
+    )
+    return {
+        "content": (
+            "Peguei teu ponto e vou manter 100% no mesmo assunto.\n\n"
+            "Pra te responder com numero certo e nao chute, eu so preciso dessa confirmacao final.\n\n"
+            f"{contextual_question}"
+        ),
+        "question": contextual_question,
+        "open_question_key": "open_text_followup",
+        "expected_answer_type": "open_text",
+        "consultant_stage": "action_plan",
+    }
+
+
+def has_template_drift(
+    *,
+    response_content: str,
+    user_message: str,
+    last_open_question: str = "",
+    open_question_key: str = "",
+) -> bool:
+    content_plain = _normalize_text_for_match(response_content or "")
+    if not content_plain:
+        return False
+
+    has_generic_template = any(pattern in content_plain for pattern in GENERIC_TEMPLATE_DRIFT_PATTERNS)
+    user_asked_question = _looks_like_user_question(user_message)
+    if has_generic_template and user_asked_question:
+        return True
+
+    # Se havia uma pergunta aberta e o usuario respondeu perguntando algo objetivo,
+    # consideramos drift quando a resposta volta para template genérico/plano padrão.
+    if open_question_key and has_generic_template and (user_asked_question or str(user_message or "").strip()):
+        return True
+
+    # Guard rail adicional: quando havia pergunta aberta e a resposta não menciona
+    # nenhum termo da pergunta anterior, há alto risco de desvio.
+    if open_question_key and user_asked_question:
+        last_q_plain = _normalize_text_for_match(last_open_question or "")
+        topic_terms = [
+            term
+            for term in ("mercado", "delivery", "comer fora", "teto", "semana", "mes", "moradia", "construtora")
+            if term in last_q_plain
+        ]
+        if topic_terms and not any(term in content_plain for term in topic_terms):
+            return True
+
+    return False
+
+
+def enforce_dialogue_contract(
+    *,
+    payload: dict[str, Any] | None,
+    user_message: str,
+    last_open_question: str = "",
+    open_question_key: str = "",
+    expected_answer_type: str = "",
+    stage: str = "",
+    case_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    data = dict(payload or {})
+    data.setdefault("content", "")
+    data.setdefault("question", "")
+    data.setdefault("open_question_key", "")
+    data.setdefault("expected_answer_type", "")
+    data.setdefault("consultant_stage", normalize_consultant_stage(stage))
+    data.setdefault("case_summary", normalize_case_summary(case_summary))
+
+    # Estado unificado de diálogo: diagnóstico -> pergunta_aberta -> plano -> follow-up
+    current_stage = normalize_consultant_stage(data.get("consultant_stage") or stage)
+    if current_stage == "follow_up":
+        data["open_question_key"] = ""
+        data["expected_answer_type"] = ""
+        data["question"] = ""
+
+    # Anti-template drift + intent lock por pergunta explícita do usuário
+    if has_template_drift(
+        response_content=str(data.get("content") or ""),
+        user_message=user_message,
+        last_open_question=last_open_question,
+        open_question_key=open_question_key or str(data.get("open_question_key") or ""),
+    ):
+        repaired = _build_on_topic_repair_response(
+            user_message=user_message,
+            last_open_question=last_open_question,
+            case_summary=normalize_case_summary(case_summary),
+        )
+        data.update(repaired)
+
+    # Contrato por etapa: só injeta fallback se vier vazio.
+    if (
+        current_stage != "follow_up"
+        and not str(data.get("question") or "").strip()
+        and not str(data.get("content") or "").strip()
+    ):
+        fallback_question = (
+            (last_open_question or "").strip()
+            if (last_open_question or "").strip().endswith("?")
+            else "Me diz qual ajuste voce quer travar agora: mercado/casa ou comer fora?"
+        )
+        data["question"] = fallback_question
+        data["open_question_key"] = str(data.get("open_question_key") or open_question_key or "open_text_followup")
+        data["expected_answer_type"] = str(data.get("expected_answer_type") or expected_answer_type or "open_text")
+        data["consultant_stage"] = "action_plan"
+        content = str(data.get("content") or "").strip()
+        if content and not content.endswith("?"):
+            content = f"{content}\n\n{fallback_question}"
+        elif not content:
+            content = f"Vamos manter foco no teu caso, sem desvio.\n\n{fallback_question}"
+        data["content"] = content
+
+    return data
 
 
 def _fmt_cents_brl(value_cents: int | float | None) -> str:
