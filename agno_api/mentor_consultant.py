@@ -56,6 +56,10 @@ def normalize_case_summary(summary: Any) -> dict[str, Any]:
         "intent_step": int(data.get("intent_step") or 0),
         "followup_pending": bool(data.get("followup_pending") or False),
         "followup_days": int(data.get("followup_days") or 0),
+        "objective_key": str(data.get("objective_key") or "").strip().lower(),
+        "objective_status": str(data.get("objective_status") or "").strip().lower(),
+        "objective_last_user_answer": str(data.get("objective_last_user_answer") or "").strip()[:240],
+        "objective_next_action": str(data.get("objective_next_action") or "").strip()[:240],
     }
 
 
@@ -111,6 +115,17 @@ def merge_case_summary(
 
     if normalized_key == "category_other_breakdown":
         _push_note(merged, f"Categoria Outros citada pelo usuario: {(user_message or '').strip()[:100]}")
+
+    # Memoria estruturada do objetivo ativo: sempre conecta resposta atual ao objetivo.
+    current_objective = str(merged.get("active_intent") or merged.get("objective_key") or "").strip().lower()
+    if current_objective:
+        merged["objective_key"] = current_objective
+        merged["objective_status"] = "in_progress"
+        merged["objective_last_user_answer"] = (user_message or "").strip()[:240]
+    elif normalized_key:
+        merged["objective_key"] = normalized_key
+        merged["objective_status"] = "in_progress"
+        merged["objective_last_user_answer"] = (user_message or "").strip()[:240]
 
     merged["main_issue_hypothesis"] = _infer_main_issue_hypothesis(merged)
     return merged
@@ -1804,6 +1819,24 @@ def enforce_dialogue_contract(
         data["open_question_key"] = ""
         data["expected_answer_type"] = ""
         data["question"] = ""
+
+    # Intent lock hard-stop: quando existe objetivo ativo, tenta resolver pelo handler
+    # antes de qualquer fallback/template.
+    summary_payload = normalize_case_summary(data.get("case_summary") or case_summary)
+    active_intent = str(summary_payload.get("active_intent") or "").strip().lower()
+    if active_intent and str(user_message or "").strip():
+        intent_payload = _handle_active_intent(
+            intent=active_intent,
+            text=user_message,
+            lowered_plain=_normalize_text_for_match(user_message),
+            summary=summary_payload,
+        )
+        if intent_payload and str(intent_payload.get("content") or "").strip():
+            data.update(intent_payload)
+            data["case_summary"] = normalize_case_summary(
+                intent_payload.get("case_summary", summary_payload)
+            )
+            return data
 
     # Anti-template drift + intent lock por pergunta explícita do usuário
     if has_template_drift(

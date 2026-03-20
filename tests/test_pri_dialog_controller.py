@@ -164,3 +164,27 @@ def test_active_intent_weekly_budget_accepts_numeric_only_target():
     assert "Alvo mensal validado: ~R$2000." in result["content"]
     assert summary.get("monthly_target_cents") == 200000
     assert summary.get("followup_pending") is True
+
+
+def test_enforce_contract_honors_active_intent_before_template_fallback():
+    case_summary = normalize_case_summary({"active_intent": "weekly_budget_cap"})
+    payload = {
+        "content": GENERIC_TEMPLATE,
+        "question": "Você quer que eu te proponha um teto mais conservador (~R$2.900/mês) ou mais confortável (~R$3.200/mês)?",
+        "open_question_key": "open_text_followup",
+        "expected_answer_type": "open_text",
+        "consultant_stage": "action_plan",
+        "case_summary": case_summary,
+    }
+    repaired = enforce_dialogue_contract(
+        payload=payload,
+        user_message="2000",
+        last_open_question=payload["question"],
+        open_question_key="open_text_followup",
+        expected_answer_type="open_text",
+        stage="action_plan",
+        case_summary=case_summary,
+    )
+    assert repaired["consultant_stage"] == "follow_up"
+    assert "Alvo mensal validado: ~R$2000." in repaired["content"]
+    assert "Bora pro jogo real" not in repaired["content"]
