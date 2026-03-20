@@ -2452,6 +2452,8 @@ async def test_period_overview_routes_pri_analise_o_meu_mes_directly(atlas, monk
     assert "entradas" in content
     assert "saidas" in content
     assert "saldo" in content
+    assert "plano pratico" in content
+    assert "pergunta da pri" in content
 
 
 @pytest.mark.asyncio

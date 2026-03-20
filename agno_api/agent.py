@@ -12567,6 +12567,7 @@ def get_period_overview(
     detailed: bool = False,
     max_lines_per_category: int = 5,
     expand_category: str = "",
+    consultant_mode: bool = False,
 ) -> str:
     conn = _get_conn()
     cur = conn.cursor()
@@ -12829,9 +12830,27 @@ def get_period_overview(
             lines.append(f"📆 *Média por dia (gastos):* {_fmt_brl(avg_day_expense)}")
         if exp_cat_sorted:
             lines.extend(["", "📂 *Categorias no período*"])
-            for c_name, c_total in exp_cat_sorted:
+            max_categories = 4 if consultant_mode else len(exp_cat_sorted)
+            shown_categories = exp_cat_sorted[:max_categories]
+            for c_name, c_total in shown_categories:
                 pct = round((c_total / total_expense) * 100) if total_expense else 0
                 lines.append(f"• {c_name}: {_fmt_brl(c_total)} ({pct}%)")
+            if consultant_mode and len(exp_cat_sorted) > max_categories:
+                lines.append(f"• … e mais {len(exp_cat_sorted) - max_categories} categorias menores")
+
+            if consultant_mode and shown_categories:
+                top_name, top_value = shown_categories[0]
+                top_pct = round((top_value / total_expense) * 100) if total_expense else 0
+                lines.extend(
+                    [
+                        "",
+                        "🎯 *Plano prático (agora)*",
+                        f"• Ataca *{top_name}* primeiro: ele sozinho pesa *{top_pct}%* do mês.",
+                        "• Trava um teto semanal para essa categoria e revisa em 7 dias.",
+                        "",
+                        f"👉 *Pergunta da Pri:* você consegue começar cortando *{_fmt_brl(int(top_value * 0.15))}* em {top_name} neste mês?",
+                    ]
+                )
     lines.extend(["", _build_insight()])
     _append_panel(lines)
     conn.close()
@@ -12941,6 +12960,7 @@ def _resolve_period_overview_query(user_phone: str, text: str) -> str | None:
         detailed,
         5,
         "",
+        bool(asks_analysis),
     )
     _period_overview_context[user_phone] = {
         "period": period,
