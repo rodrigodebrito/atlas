@@ -56,6 +56,9 @@ def normalize_case_summary(summary: Any) -> dict[str, Any]:
         "intent_step": int(data.get("intent_step") or 0),
         "followup_pending": bool(data.get("followup_pending") or False),
         "followup_days": int(data.get("followup_days") or 0),
+        "monthly_target_cents": int(data.get("monthly_target_cents") or 0),
+        "weekly_market_cap_reais": int(data.get("weekly_market_cap_reais") or 0),
+        "weekly_delivery_cap_reais": int(data.get("weekly_delivery_cap_reais") or 0),
         "objective_key": str(data.get("objective_key") or "").strip().lower(),
         "objective_status": str(data.get("objective_status") or "").strip().lower(),
         "objective_last_user_answer": str(data.get("objective_last_user_answer") or "").strip()[:240],
@@ -1517,7 +1520,7 @@ def _handle_active_intent(
     if has_numeric_hint or any(token in lowered_plain for token in ("sim", "fechado", "ok", "topo", "vamos", "pode", "3.000", "3000", "2.800", "2800", "3.200", "3200")):
         monthly_target_cents = amount_cents if amount_cents > 0 else int(summary.get("monthly_target_cents") or 0)
         digits_only = "".join(ch for ch in lowered_plain if ch.isdigit())
-        if digits_only and len(digits_only) >= 4:
+        if amount_cents <= 0 and digits_only and len(digits_only) >= 4:
             try:
                 explicit_cents = int(digits_only) * 100
                 if explicit_cents > monthly_target_cents:
@@ -1888,23 +1891,61 @@ def _fmt_cents_brl(value_cents: int | float | None) -> str:
 def _extract_brl_amount_cents(text: str) -> int:
     import re
 
-    raw = str(text or "").lower()
-    patterns = [
-        r"r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?|\d+(?:,\d{1,2})?)",
-        r"(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?|\d+(?:,\d{1,2})?)\s*(mil)?",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, raw)
-        if not match:
-            continue
-        number = (match.group(1) or "").strip()
-        multiplier = 1000 if len(match.groups()) > 1 and (match.group(2) or "").strip() else 1
-        normalized = number.replace(".", "").replace(",", ".")
+    raw = str(text or "").lower().strip()
+    if not raw:
+        return 0
+
+    def _parse_number(number: str, is_thousand_word: bool) -> int:
+        s = (number or "").strip().replace(" ", "")
+        if not s:
+            return 0
+
+        # "1.234,56" => 1234.56
+        if "." in s and "," in s:
+            s = s.replace(".", "").replace(",", ".")
+        elif "," in s:
+            # "2800,50" => 2800.50
+            s = s.replace(",", ".")
+        elif "." in s:
+            # "2.800" (milhar) -> 2800 ; "2.8" (decimal) -> 2.8
+            if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", s):
+                s = s.replace(".", "")
+
         try:
-            value = float(normalized) * multiplier
-            return int(round(value * 100))
+            value = float(s)
         except Exception:
-            continue
+            return 0
+
+        if is_thousand_word:
+            value *= 1000
+        return int(round(value * 100))
+
+    # Prefer explicit "R$"
+    currency_match = re.search(
+        r"r\$\s*(\d[\d\.,]*)\s*(mil)?\b",
+        raw,
+    )
+    if currency_match:
+        amount = _parse_number(
+            currency_match.group(1) or "",
+            bool((currency_match.group(2) or "").strip()),
+        )
+        if amount > 0:
+            return amount
+
+    # Generic amount in text (e.g., "2000", "2,8 mil")
+    generic_match = re.search(
+        r"(?<!\d)(\d[\d\.,]*)\s*(mil)?\b",
+        raw,
+    )
+    if generic_match:
+        amount = _parse_number(
+            generic_match.group(1) or "",
+            bool((generic_match.group(2) or "").strip()),
+        )
+        if amount > 0:
+            return amount
+
     return 0
 
 

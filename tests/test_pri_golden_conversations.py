@@ -106,3 +106,130 @@ def test_golden_followup_checkin_keeps_context():
     assert "ajuste agora em modo conservador" in r1["content"].lower()
     assert r1["consultant_stage"] == "action_plan"
     assert GENERIC_DRIFT_SNIPPET.lower() not in r1["content"].lower()
+
+
+def test_golden_weekly_flow_numeric_with_dot_format():
+    state = _base_weekly_intent_state()
+    _, state = _step(user_message="agressivo", state=state)
+    r2, state = _step(user_message="2.800", state=state)
+    assert r2["consultant_stage"] == "follow_up"
+    assert "alvo mensal validado: ~r$2800." in r2["content"].lower()
+
+
+def test_golden_weekly_flow_numeric_with_comma_format():
+    state = _base_weekly_intent_state()
+    _, state = _step(user_message="conservador", state=state)
+    r2, state = _step(user_message="R$ 3.000,00", state=state)
+    assert r2["consultant_stage"] == "follow_up"
+    assert "alvo mensal validado: ~r$3000." in r2["content"].lower()
+
+
+def test_golden_weekly_flow_affirmative_without_number_uses_saved_target():
+    state = _base_weekly_intent_state()
+    _, state = _step(user_message="agressivo", state=state)
+    r2, state = _step(user_message="fechado", state=state)
+    assert r2["consultant_stage"] == "follow_up"
+    assert "alvo mensal validado: ~r$2600." in r2["content"].lower()
+
+
+def test_golden_weekly_flow_prevents_generic_drift_after_profile():
+    state = _base_weekly_intent_state()
+    _, state = _step(user_message="agressivo", state=state)
+    r2, state = _step(user_message="isso bate quase 3600 por mes, nao e muito?", state=state)
+    assert GENERIC_DRIFT_SNIPPET.lower() not in r2["content"].lower()
+    content_lower = r2["content"].lower()
+    assert ("r$2.920" in content_lower) or ("r$2920" in content_lower)
+
+
+def test_golden_weekly_flow_profile_confortavel():
+    state = _base_weekly_intent_state()
+    r1, state = _step(user_message="confortavel", state=state)
+    assert "perfil *confortavel*" in r1["content"].lower() or "perfil *confortável*" in r1["content"].lower()
+    assert "r$3200/mes" in r1["content"].lower()
+
+
+def test_golden_followup_more_time_14_days():
+    state = _base_weekly_intent_state()
+    state["case_summary"] = normalize_case_summary(
+        {"active_intent": "weekly_budget_cap", "followup_pending": True, "followup_days": 7}
+    )
+    r1, state = _step(user_message="vamos em 14 dias", state=state)
+    assert "14 dias" in r1["content"].lower()
+    assert state["case_summary"].get("followup_days") == 14
+
+
+def test_golden_followup_more_time_30_days():
+    state = _base_weekly_intent_state()
+    state["case_summary"] = normalize_case_summary(
+        {"active_intent": "weekly_budget_cap", "followup_pending": True, "followup_days": 7}
+    )
+    r1, state = _step(user_message="melhor em 30 dias", state=state)
+    assert "30 dias" in r1["content"].lower()
+    assert state["case_summary"].get("followup_days") == 30
+
+
+def test_golden_checkin_deu_certo_requests_mode_choice():
+    state = _base_weekly_intent_state()
+    state["case_summary"] = normalize_case_summary(
+        {"active_intent": "weekly_budget_cap", "followup_pending": True, "followup_days": 7}
+    )
+    r1, state = _step(user_message="deu certo", state=state)
+    assert "modo conservador" in r1["content"].lower()
+    assert r1["consultant_stage"] == "action_plan"
+
+
+def test_golden_checkin_deu_ruim_requests_mode_choice():
+    state = _base_weekly_intent_state()
+    state["case_summary"] = normalize_case_summary(
+        {"active_intent": "weekly_budget_cap", "followup_pending": True, "followup_days": 7}
+    )
+    r1, state = _step(user_message="deu ruim", state=state)
+    assert "modo conservador" in r1["content"].lower()
+    assert GENERIC_DRIFT_SNIPPET.lower() not in r1["content"].lower()
+
+
+def test_golden_active_intent_with_question_not_lost():
+    state = _base_weekly_intent_state()
+    r1, state = _step(user_message="qual vc indica pra casal e filho?", state=state)
+    assert "2 adultos e 1 crian" in r1["content"].lower()
+    assert r1["open_question_key"] == "open_text_followup"
+
+
+def test_golden_numeric_after_monthly_challenge_closes_plan():
+    state = _base_weekly_intent_state()
+    _, state = _step(user_message="isso ta alto por mes", state=state)
+    r2, state = _step(user_message="3200", state=state)
+    assert "alvo mensal validado: ~r$3200." in r2["content"].lower()
+    assert r2["consultant_stage"] == "follow_up"
+
+
+def test_golden_profile_then_yes_closes_followup():
+    state = _base_weekly_intent_state()
+    _, state = _step(user_message="conservador", state=state)
+    r2, state = _step(user_message="sim", state=state)
+    assert r2["consultant_stage"] == "follow_up"
+    assert "alvo mensal validado: ~r$3000." in r2["content"].lower()
+
+
+def test_golden_followup_pending_keeps_intent_after_numeric_close():
+    state = _base_weekly_intent_state()
+    r1, state = _step(user_message="2000", state=state)
+    assert r1["consultant_stage"] == "follow_up"
+    assert state["case_summary"].get("active_intent") == "weekly_budget_cap"
+    assert state["case_summary"].get("followup_pending") is True
+
+
+def test_golden_fallback_question_remains_on_budget_topic():
+    state = _base_weekly_intent_state()
+    r1, state = _step(user_message="nao sei", state=state)
+    assert "teto mais conservador" in r1["question"].lower()
+    assert "calibrar um teto" in r1["content"].lower()
+
+
+def test_golden_sequence_three_turn_success():
+    state = _base_weekly_intent_state()
+    _, state = _step(user_message="qual vc indica p 2 adultos e 1 crianca?", state=state)
+    _, state = _step(user_message="agressivo", state=state)
+    r3, state = _step(user_message="2800", state=state)
+    assert r3["consultant_stage"] == "follow_up"
+    assert "alvo mensal validado: ~r$2800." in r3["content"].lower()
