@@ -11178,18 +11178,24 @@ function onEditPaymentMethodChange() {{
   const method = (document.getElementById('editPaymentMethod').value || '').toUpperCase();
   const cardWrap = document.getElementById('editCardWrap');
   const statusWrap = document.getElementById('editStatusWrap');
+  const statusSelect = document.getElementById('editStatus');
   if (method === 'CREDIT') {{
     cardWrap.style.display = 'block';
     statusWrap.style.display = 'none';
+    statusSelect.disabled = true;
     if (!document.getElementById('editInstallments').value) {{
       document.getElementById('editInstallments').value = '1';
     }}
   }} else {{
     cardWrap.style.display = 'none';
     statusWrap.style.display = 'block';
+    statusSelect.disabled = false;
     document.getElementById('editCardSelect').value = '';
     document.getElementById('editNewCardHint').style.display = 'none';
     document.getElementById('editInstallments').value = '1';
+    if (method === 'PIX' || method === 'DEBIT' || method === 'CASH') {{
+      statusSelect.value = 'PAID';
+    }}
   }}
 }}
 
@@ -11422,10 +11428,11 @@ async def edit_transaction_api(tx_id: str, request: _Request, t: str = ""):
         body = await request.json()
         updates = []
         params = []
+        payment_method_value = None
 
         def _strip_status_tag(notes_value: str) -> str:
             raw = (notes_value or "").strip()
-            raw = _re.sub(r"\s*\[STATUS:(PAID|PENDING)\]\s*", " ", raw, flags=_re.IGNORECASE).strip()
+            raw = re.sub(r"\s*\[STATUS:(PAID|PENDING)\]\s*", " ", raw, flags=re.IGNORECASE).strip()
             return raw
 
         def _merge_status_tag(notes_value: str, status_value: str) -> str:
@@ -11452,6 +11459,7 @@ async def edit_transaction_api(tx_id: str, request: _Request, t: str = ""):
             pm = (body.get("payment_method") or "").strip().upper()
             if pm not in {"CASH", "PIX", "DEBIT", "CREDIT"}:
                 return _JSONResponse({"error": "Meio de pagamento inválido"}, status_code=400)
+            payment_method_value = pm
             updates.append("payment_method = ?")
             params.append(pm)
         if "card_id" in body:
@@ -11479,8 +11487,14 @@ async def edit_transaction_api(tx_id: str, request: _Request, t: str = ""):
                 inst = 24
             updates.append("installments = ?")
             params.append(inst)
-        if "payment_status" in body:
+        status_v = None
+        if payment_method_value in {"PIX", "DEBIT", "CASH"}:
+            # Regra de negócio: meios à vista sempre ficam como pago.
+            status_v = "PAID"
+        elif "payment_status" in body:
             status_v = (body.get("payment_status") or "").strip().upper()
+
+        if status_v is not None:
             if status_v not in {"PAID", "PENDING"}:
                 return _JSONResponse({"error": "Status inválido"}, status_code=400)
             conn_notes = _get_conn()
