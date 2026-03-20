@@ -10311,6 +10311,25 @@ body{{
   transition:border-color 0.2s;
 }}
 .modal input:focus,.modal select:focus{{border-color:var(--green)}}
+
+/* Dropdown theming (dark) */
+select{{
+  color:var(--text);
+  background-color:var(--surface2);
+  color-scheme: dark;
+}}
+select option{{
+  color:var(--text);
+  background-color:#2a2b40;
+}}
+select option:checked{{
+  color:#ffffff;
+  background-color:#4a4b66;
+}}
+select option:disabled{{
+  color:var(--text3);
+  background-color:#2a2b40;
+}}
 .modal-btns{{display:flex;gap:10px;margin-top:20px}}
 .modal-btns button{{
   flex:1;padding:14px;border-radius:var(--radius-sm);border:none;font-size:15px;
