@@ -12826,7 +12826,7 @@ def get_period_overview(
             f"🗓️ *Peso no caixa:* {_fmt_brl(total_expense_cash)}",
             f"{'✅' if balance >= 0 else '⚠️'} *Saldo:* {_fmt_brl(balance)}",
         ]
-        if show_daily_avg:
+        if show_daily_avg and not consultant_mode:
             lines.append(f"📆 *Média por dia (gastos):* {_fmt_brl(avg_day_expense)}")
         if exp_cat_sorted:
             lines.extend(["", "📂 *Categorias no período*"])
@@ -12839,18 +12839,51 @@ def get_period_overview(
                 lines.append(f"• … e mais {len(exp_cat_sorted) - max_categories} categorias menores")
 
             if consultant_mode and shown_categories:
-                top_name, top_value = shown_categories[0]
+                top_name, top_value = exp_cat_sorted[0]
                 top_pct = round((top_value / total_expense) * 100) if total_expense else 0
+                top_norm = _normalize_pt_text(top_name)
+                fixed_like = any(
+                    k in top_norm
+                    for k in ("moradia", "pagamento fatura", "pagamento conta", "cartao", "financiamento", "aluguel")
+                )
+                actionable_name = top_name
+                actionable_value = top_value
+                for c_name, c_total in exp_cat_sorted:
+                    c_norm = _normalize_pt_text(c_name)
+                    if any(
+                        k in c_norm
+                        for k in ("alimentacao", "transporte", "assinaturas", "outros", "vestuario", "cuidados pessoais", "saude", "pets")
+                    ):
+                        actionable_name = c_name
+                        actionable_value = c_total
+                        break
+
+                cut_target_cents = min(max(int(actionable_value * 0.12), 5000), 45000)
                 lines.extend(
                     [
                         "",
                         "🎯 *Plano prático (agora)*",
-                        f"• Ataca *{top_name}* primeiro: ele sozinho pesa *{top_pct}%* do mês.",
-                        "• Trava um teto semanal para essa categoria e revisa em 7 dias.",
-                        "",
-                        f"👉 *Pergunta da Pri:* você consegue começar cortando *{_fmt_brl(int(top_value * 0.15))}* em {top_name} neste mês?",
                     ]
                 )
+                if fixed_like:
+                    lines.extend(
+                        [
+                            f"• O maior peso está em *{top_name}* ({top_pct}%). Isso pede renegociação, não corte cego.",
+                            "• Escolhe 1 conta fixa para negociar esta semana (aluguel/financiamento/entrada da obra).",
+                            f"• Enquanto negocia, trava um teto em *{actionable_name}* para proteger o caixa no curto prazo.",
+                            "",
+                            f"👉 *Pergunta da Pri:* qual conta fixa você tenta renegociar primeiro e qual meta de redução você topa buscar?",
+                        ]
+                    )
+                else:
+                    lines.extend(
+                        [
+                            f"• Ataca *{actionable_name}* primeiro: ele sozinho já pesa *{top_pct}%* do mês.",
+                            "• Trava um teto semanal para essa categoria e revisa em 7 dias.",
+                            "",
+                            f"👉 *Pergunta da Pri:* você consegue começar cortando *{_fmt_brl(cut_target_cents)}* em {actionable_name} neste mês?",
+                        ]
+                    )
     lines.extend(["", _build_insight()])
     _append_panel(lines)
     conn.close()

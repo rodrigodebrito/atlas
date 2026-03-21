@@ -2457,6 +2457,60 @@ async def test_period_overview_routes_pri_analise_o_meu_mes_directly(atlas, monk
 
 
 @pytest.mark.asyncio
+async def test_period_overview_consultant_mode_uses_renegotiation_for_fixed_heavy_category(atlas, monkeypatch):
+    phone = "+5511911115603"
+    user_id = f"user_{uuid.uuid4().hex}"
+    month = atlas._now_br().strftime("%Y-%m")
+
+    conn = atlas._get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, phone, name, monthly_income_cents) VALUES (?, ?, ?, ?)",
+            (user_id, phone, "Rodrigo Teste", 1200000),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'INCOME', 1800000, 'Freelance', 'Uber', ?)""",
+            (str(uuid.uuid4()), user_id, f"{month}-02T10:00:00"),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 821143, 'Moradia', 'Aluguel', ?)""",
+            (str(uuid.uuid4()), user_id, f"{month}-05T10:00:00"),
+        )
+        cur.execute(
+            """INSERT INTO transactions
+               (id, user_id, type, amount_cents, category, merchant, occurred_at)
+               VALUES (?, ?, 'EXPENSE', 258152, 'Alimentação', 'Supermercado', ?)""",
+            (str(uuid.uuid4()), user_id, f"{month}-08T12:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(atlas, "_onboard_if_new", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(atlas, "_check_pending_action", lambda *_args, **_kwargs: None)
+
+    async def _should_not_route(*_args, **_kwargs):
+        raise AssertionError("mini-router não deveria rodar para análise mensal Pri")
+
+    monkeypatch.setattr(atlas, "_mini_route", _should_not_route)
+    monkeypatch.setattr(atlas, "atlas_agent", _StubAtlasAgent([]))
+
+    result = await atlas.chat_endpoint(user_phone=phone, message="Pri quero que você analise o meu mês")
+    content = atlas._normalize_pt_text(result["content"])
+
+    assert "plano pratico" in content
+    assert "renegoci" in content
+    assert "pergunta da pri" in content
+    assert "qual conta fixa voce tenta renegociar primeiro" in content
+    assert "cortando r$" not in content
+
+
+@pytest.mark.asyncio
 async def test_period_overview_detalhar_gastos_semana_grouped_by_category_with_lines(atlas, monkeypatch):
     phone = "+5511911115601"
     user_id = f"user_{uuid.uuid4().hex}"
