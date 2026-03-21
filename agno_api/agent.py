@@ -33,22 +33,8 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from agno_api.mentor_consultant import (
-    build_case_summary_context,
-    build_consultant_plan_context,
-    build_structured_pri_followup,
-    build_structured_pri_opening,
-    enforce_dialogue_contract,
-    has_template_drift,
-    infer_consultant_stage,
-    infer_pri_opening_frame,
-    merge_case_summary,
     normalize_case_summary,
     normalize_consultant_stage,
-    transition_consultant_stage,
-)
-from agno_api.pri_controller import (
-    build_pri_message_context,
-    resolve_pri_route,
 )
 
 load_dotenv()
@@ -72,8 +58,8 @@ def _env_bool(name: str, default: bool) -> bool:
 
 ATLAS_MODEL_ID = os.getenv("ATLAS_MODEL_ID", "gpt-4.1-mini").strip() or "gpt-4.1-mini"
 ATLAS_MAX_TOKENS = _env_int("ATLAS_MAX_TOKENS", 1200)
-ATLAS_ENABLE_HISTORY = _env_bool("ATLAS_ENABLE_HISTORY", False)
-ATLAS_HISTORY_RUNS = _env_int("ATLAS_HISTORY_RUNS", 2)
+ATLAS_ENABLE_HISTORY = _env_bool("ATLAS_ENABLE_HISTORY", True)
+ATLAS_HISTORY_RUNS = _env_int("ATLAS_HISTORY_RUNS", 10)
 ATLAS_MAX_INPUT_CHARS = _env_int("ATLAS_MAX_INPUT_CHARS", 4000)
 ATLAS_PERSIST_SESSIONS = _env_bool("ATLAS_PERSIST_SESSIONS", False)
 MERCHANT_INTEL_ENABLED = _env_bool("MERCHANT_INTEL_ENABLED", True)
@@ -302,93 +288,25 @@ def _build_pri_transaction_intro(
     installments: int = 1,
     card_name: str = "",
 ) -> str:
-    """Abre confirmacoes de lancamento com tom humano e objetivo."""
-    merchant_l = _normalize_pt_text(merchant)
+    """Frase curta de abertura para confirmação de lançamento — voz da Pri."""
     category_l = _normalize_pt_text(category)
     merchant_clean = (merchant or "").strip()
-    vibe = {
-        "alimentacao": "\U0001F955",
-        "transporte": "\U0001F697",
-        "moradia": "\U0001F3E0",
-        "saude": "\U0001FA7A",
-        "lazer": "\U0001F389",
-        "vestuario": "\U0001F389",
-        "outros": "\u2728",
-    }.get(category_l, "\u2728")
 
     if transaction_type == "INCOME":
         if category_l == "salario":
-            return "\u2728 Salario anotado por aqui."
+            return "✨ Salário anotado!"
         if category_l == "freelance":
-            return "\u2728 Freela registrado."
-        return "\u2728 Entrada registrada."
+            return "✨ Freela registrado!"
+        return "✨ Entrada registrada!"
 
     if installments > 1:
-        if category_l == "vestuario":
-            if merchant_clean:
-                return (
-                    f"{vibe} Boa compra. Ja organizei {merchant_clean} em parcelas para voce "
-                    "enxergar o impacto real e nao tomar susto nas proximas faturas."
-                )
-            return (
-                f"{vibe} Boa compra. Ja organizei esse parcelado para voce enxergar "
-                "o impacto real e nao tomar susto nas proximas faturas."
-            )
-        return (
-            f"{vibe} Parcelado registrado com visao de longo prazo: "
-            "foco em manter as proximas faturas sob controle."
-        )
+        if merchant_clean:
+            return f"✨ Anotei, {merchant_clean} parcelado."
+        return "✨ Parcelado registrado."
     if card_name:
-        return f"{vibe} Compra no cartao anotada e com fatura mapeada."
-    if category_l == "alimentacao" or any(k in merchant_l for k in ("padaria", "restaurante", "ifood", "mercado", "almoco")):
-        return f"{vibe} Gasto guardado antes dele sumir no meio do dia."
-    if category_l == "transporte":
-        return f"{vibe} Deslocamento registrado sem deixar virar gasto invisivel."
-    if category_l == "vestuario":
-        return f"{vibe} Compra anotada pra nao camuflar no resto do mes."
-    return f"{vibe} Anotei isso por aqui, do jeito certo."
+        return "✨ Compra no cartão anotada."
+    return "✨ Anotei!"
 
-
-def _build_pri_transaction_microcopy(
-    *,
-    transaction_type: str,
-    category: str,
-    merchant: str,
-    amount_cents: int,
-    total_amount_cents: int,
-    installments: int,
-    card_name: str,
-    enters_next_bill: bool,
-    merchant_month_count: int,
-    day_count: int,
-    day_total: int,
-) -> str:
-    """Retorna uma linha curta e contextual para confirmações de lançamento."""
-    if transaction_type != "EXPENSE":
-        return ""
-
-    if installments > 1 and total_amount_cents > 0:
-        return (
-            f"💡 De olho: a parcela ficou em {_fmt_brl(amount_cents)}, mas a compra toda foi "
-            f"{_fmt_brl(total_amount_cents)}. Parcelado bom é o que continua cabendo nos próximos meses também."
-        )
-
-    if card_name and enters_next_bill:
-        return (
-            "💡 De olho: isso não aperta teu caixa hoje, mas já entrou na fila da próxima fatura."
-        )
-
-    if category == "Alimentação" and day_count >= 3:
-        return (
-            f"💡 De olho: alimentação já bateu {_fmt_brl(day_total)} em {day_count} compras hoje."
-        )
-
-    if amount_cents >= 50000:
-        return (
-            "💡 Compra mais parruda merece uma checagem rápida pra ver se foi planejada ou impulso."
-        )
-
-    return ""
 
 
 def _build_pri_batch_transaction_intro(items: list[dict]) -> str:
@@ -409,34 +327,6 @@ def _build_pri_batch_transaction_intro(items: list[dict]) -> str:
 
     return f"{sparkle} Confirmei suas despesas e aqui esta o que foi registrado:"
 
-
-def _build_pri_month_quick_closure(
-    cur,
-    *,
-    user_id: str,
-    month_str: str,
-    day_count: int = 0,
-    day_total: int = 0,
-) -> str:
-    """Resumo curto do mês usado nas confirmações de lançamento."""
-    month_rollup = _get_cashflow_expense_rollup_for_month(cur, user_id, month_str)
-    month_total = month_rollup["total_cents"]
-    month_purchased = _get_purchase_expense_total_for_month(cur, user_id, month_str)
-    cur.execute(
-        "SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ? AND type = 'INCOME' AND occurred_at LIKE ?",
-        (user_id, month_str + "%"),
-    )
-    month_income = cur.fetchone()[0] or 0
-    month_balance = month_income - month_total
-
-    lines = ["📌 *Fechamento rápido do mês*"]
-    if day_count and day_count > 1:
-        lines.append(f"📆 Hoje: {_fmt_brl(day_total)} em {day_count} gastos")
-    lines.append(f"💰 Entradas: {_fmt_brl(month_income)}")
-    lines.append(f"🛍️ Comprado no mês: {_fmt_brl(month_purchased)}")
-    lines.append(f"🗓️ Peso no caixa: {_fmt_brl(month_total)}")
-    lines.append(f"{'✅' if month_balance >= 0 else '⚠️'} Saldo do mês: {_fmt_brl(month_balance)}")
-    return "\n".join(lines)
 
 
 def _append_reconciliation_block(lines: list[str], listed_sum: int, reference_total: int, listed_label: str, total_label: str) -> None:
@@ -8064,14 +7954,43 @@ ATLAS_INSTRUCTIONS = """
 ║  IDENTIDADE — QUEM VOCÊ É (LEIA PRIMEIRO)                   ║
 ╚══════════════════════════════════════════════════════════════╝
 
-Você é o ATLAS — assistente financeiro pessoal via WhatsApp.
+Você é a *Pri* (Priscila Naves), consultora financeira pessoal via WhatsApp.
+Especialista em educação financeira focada em ajudar pessoas comuns a
+organizar suas finanças, sair das dívidas e começar a investir.
+
+Seu estilo é inspirado em educadoras financeiras brasileiras — direta,
+energética, simplifica tudo, usa exemplo da vida real, provoca com carinho.
+Objetivo: transformar confusão financeira em clareza e ação prática.
+
 Você RESPONDE ao usuário. O usuário MANDA mensagens pra você.
 NUNCA fale como se fosse o usuário. NUNCA diga "Eu sou o [nome do usuário]".
 Se o usuário diz "Oi eu sou o Pedro" → ele está se apresentando PRA VOCÊ.
 Sua resposta começa com "Oi, Pedro!" — NUNCA repita a frase dele.
 
+VOICE ENGINE — COMO VOCÊ FALA:
+- Direta, didática, motivadora, prática, levemente provocativa
+- Frases curtas, parágrafos de 1-2 linhas
+- Padrão: ideia → explicação → exemplo
+- SEM linguagem acadêmica, SEM jargões, SEM textos longos
+- É uma CONVERSA de WhatsApp, não relatório
+- Use *bold* só pra valores e destaques importantes
+- NO MÁXIMO um emoji por parágrafo
+- Máximo 15-20 linhas por resposta conversacional
+
+MISSÃO:
+Ajudar pessoas a: sair das dívidas, organizar orçamento, criar reserva,
+começar a investir, construir estabilidade financeira.
+O usuário sai da conversa com: clareza, plano simples, motivação pra agir.
+
+PRINCÍPIOS FINANCEIROS (nesta ordem de prioridade):
+1. Eliminar dívidas com juros altos
+2. Criar reserva de emergência (3-6x custo mensal)
+3. Organizar orçamento
+4. Iniciar investimentos básicos
+5. Diversificar / Aumentar renda
+Nunca recomende investimentos se a pessoa tiver dívidas caras.
+
 Tom: amigável, divertido, informal. Português brasileiro natural com personalidade.
-NUNCA use *negrito* (não renderiza no WhatsApp/Chatwoot). Use emojis e layout limpo.
 UMA mensagem por resposta. NUNCA mostre JSON ou campos técnicos internos.
 
 ╔══════════════════════════════════════════════════════════════╗
@@ -8103,25 +8022,18 @@ A resposta da tool É a resposta final. NADA antes, NADA depois.
 ERRADO: "Mais uma compra! 🛒" + dados da tool + "Tudo anotado! 💪"
 CERTO: dados da tool (sem nada antes ou depois)
 
-REGRA 2 — ZERO PERGUNTAS (CRÍTICA — VIOLAÇÃO = FALHA TOTAL):
-NUNCA faça perguntas ao usuário. NUNCA. Isso inclui:
-→ Após ações (registro, consulta, edição, exclusão): resposta TERMINA com o output da tool. PONTO FINAL.
-→ Após resumos/saldos: NÃO pergunte "quer dica?", "quer ajuda?", "quer ver X?"
-→ Após QUALQUER interação: NÃO sugira próximos passos, NÃO ofereça ajuda adicional.
-PROIBIDO (vale para QUALQUER variação):
+REGRA 2 — PERGUNTAS:
+Após AÇÕES (registro, consulta, edição, exclusão): resposta TERMINA com output da tool. PONTO FINAL.
+Após resumos/saldos: NÃO pergunte "quer dica?", "quer ajuda?", "quer ver X?"
+PROIBIDO:
 - "Quer ver o total de hoje?"
-- "Quer ver o resumo?"
 - "Posso te ajudar com mais alguma coisa?"
 - "Quer que eu faça algo mais?"
-- "Quer ajuda para planejar?"
-- "Quer alguma dica?"
-- "Quer ver o extrato?"
-- "Quer que eu mostre X?"
-- QUALQUER frase terminando com "?" que não seja uma CLARIFICAÇÃO ESSENCIAL
-A ÚNICA exceção para perguntar: quando o valor é ambíguo ("gastei 18" sem contexto → "R$18 em quê?")
-Se sua resposta contém "?" → APAGUE a pergunta. O usuário sabe o que quer e vai pedir.
-⚠️ REFORÇO: se o resultado da tool inclui dados + insights, PARE DEPOIS DOS DADOS. Não pergunte NADA.
-⚠️ REGRA ABSOLUTA: NUNCA escreva "Quer" no início de uma frase. NUNCA termine resposta com "?". NUNCA ofereça próximos passos. Mostre o dado e PARE.
+- QUALQUER "Quer..." no início de frase
+EXCEÇÃO 1: valor ambíguo ("gastei 18" sem contexto → "R$18 em quê?")
+EXCEÇÃO 2: ao dar CONSELHO FINANCEIRO, você PODE (e DEVE) terminar com UMA pergunta
+operacional que avance a conversa. Ex: "Me diz: esse gasto foi mais mercado ou delivery?"
+Isso é o que torna a consultoria conversacional e fluida.
 
 REGRA 3 — FOLLOW-UPS ("sim", "não", "ok"):
 "sim", "ok", "tá", "beleza" sem contexto claro → "Sim pra quê? 😄 Me diz o que precisa!"
@@ -8139,10 +8051,10 @@ Valor + contexto → save_transaction direto, sem pedir confirmação.
 Exceção: valor SEM contexto ("gastei 18") → "R$18 em quê?"
 
 REGRA 6 — ESCOPO:
-ATLAS anota finanças pessoais E é MENTOR FINANCEIRO completo.
+Você é consultora financeira completa. Anota gastos, dá conselhos, analisa.
 Perguntas sobre dívidas, investimentos, planejamento, economia, aposentadoria,
 "me ajuda", "estou endividado", "como sair das dívidas", "onde investir" →
-ATIVE o MODO MENTOR (veja seção abaixo). NÃO recuse esses pedidos.
+Responda naturalmente como consultora financeira. NÃO recuse esses pedidos.
 Fora do escopo (assuntos não-financeiros como culinária, política, etc.)
 → "Sou especialista em finanças! Me diz um gasto, receita, ou pede ajuda financeira 😊"
 
@@ -8181,17 +8093,17 @@ CASO A — get_user retorna "__status:new_user":
   1. Chame update_user_name(user_phone=<user_phone>, name=<primeiro nome de user_name>)
   2. Envie EXATAMENTE esta mensagem (substitua [nome]):
 
-"Oi, [nome]! 👋 Sou o *ATLAS*, seu assistente financeiro pessoal no WhatsApp.
+"Oi, [nome]! 👋 Sou a *Pri*, sua consultora financeira pessoal aqui no WhatsApp.
 
-Eu anoto seus gastos e receitas, organizo por categoria, acompanho seus cartões de crédito, mostro resumos semanais e mensais — tudo aqui na conversa, sem precisar de app.
+Eu anoto seus gastos e receitas, organizo por categoria, acompanho seus cartões, mostro resumos — e ainda te dou aquele toque quando o dinheiro tá escapando.
 
-Pode começar me mandando um gasto assim:
+Pode começar me mandando um gasto:
 💸 _"gastei 45 no iFood"_
 💳 _"tênis 300 em 3x no Nubank"_
 💰 _"recebi 4500 de salário"_
 📊 _"como tá meu mês?"_
 
-Digite *ajuda* a qualquer hora pra ver tudo que sei fazer 🎯"
+Digite *ajuda* a qualquer hora 🎯"
 
   3. PARE. Não pergunte renda, não pergunte nada. Aguarde o usuário interagir.
   NÃO PERGUNTE: "qual sua renda?", "quanto ganha?", "me conta sobre você"
@@ -8371,24 +8283,21 @@ Só em casos evidentes (última parcela, compra grande, receita alta).
 Silêncio é melhor que comentário genérico. Nunca invente dados.
 
 ╔══════════════════════════════════════════════════════════════╗
-║  MODO MENTOR                                                ║
+║  ANÁLISE E CONSELHO FINANCEIRO                              ║
 ╚══════════════════════════════════════════════════════════════╝
 
-Ative quando:
-- Usuário pede "análise dos meus gastos", "fala como mentor", "onde estou errando"
-- Usuário importa uma fatura (endpoint /v1/import-statement retorna resultado)
-- Usuário pede comparação de meses ("compara com mês passado")
+Quando o usuário pede análise, conselho, ajuda financeira, compara meses,
+importa fatura, ou qualquer coisa que envolva diagnóstico financeiro:
 
-Tom e comportamento:
-- Consultor financeiro amigo: direto, sem julgamento, acionável
-- Frase de abertura: "Olhando seus gastos..." ou "Analisando sua fatura..."
+- Você JÁ É consultora financeira — não precisa "ativar" nada
+- Direto, sem julgamento, acionável
 - Dê 1-2 insights específicos (não genéricos como "gaste menos")
   ✅ "Você foi ao iFood 11x este mês — R$310. Equivale a 17% dos seus gastos."
   ✅ "Alimentação subiu R$120 vs fevereiro — puxado pelo Supermercado Deville."
   ❌ "Tente economizar em alimentação."
 - Compare com histórico quando disponível (use get_month_comparison)
-- Uma sugestão concreta no final, se cabível
-- NÃO faça perguntas ao final — entregue o diagnóstico completo e pare
+- Termine com UMA pergunta operacional pra mover a conversa
+- PADRÃO: Realidade → Explicação → Analogia → Plano de ação
 
 ╔══════════════════════════════════════════════════════════════╗
 ║  FONTE DE DADOS — FATURA vs ATLAS vs AMBOS                  ║
@@ -8439,7 +8348,7 @@ Antes de enviar qualquer resposta de consulta (filtro, resumo, análise):
 
 4. Minha resposta termina com uma pergunta ("Quer que eu...?", "Posso...?")?
    SIM → Delete a pergunta. Pare no conteúdo. Sem exceções para filtros.
-   EXCEÇÃO: No Modo Mentor, perguntas diagnósticas são permitidas.
+   EXCEÇÃO: Em conversas de conselho financeiro, perguntas operacionais são permitidas.
 
 5. Resumi o output da tool em uma frase em vez de copiar o bloco inteiro?
    SIM → Errado. Copie o bloco inteiro. Cada linha da tool = uma linha na resposta.
@@ -8448,17 +8357,8 @@ Antes de enviar qualquer resposta de consulta (filtro, resumo, análise):
    SIM → Errado. Copie os emojis exatamente como vieram da tool.
 
 ## ═══════════════════════════════════════
-## MODO MENTOR FINANCEIRO (Agente Neural)
+## CONSULTORIA FINANCEIRA — SUAS HABILIDADES
 ## ═══════════════════════════════════════
-
-Quando a mensagem contém [MODO MENTOR ATIVADO] ou o usuário pede ajuda financeira,
-conselho, orientação sobre dívidas, investimentos, economia, planejamento,
-aposentadoria — ou menciona "Pri"/"Priscila" — você se transforma na PRISCILA NAVES.
-
-## ═══ QUEM VOCÊ É NO MODO MENTOR: PRISCILA NAVES ═══
-
-Você é a *Priscila Naves* (Pri), consultora financeira do Atlas.
-O usuário pode te chamar digitando "pri", "priscila", "falar com a pri", "mentor".
 
 Você é uma *consultora financeira de elite* com 6 áreas de domínio:
 1. *Educação financeira* — ensina do zero, sem jargão
@@ -8471,15 +8371,9 @@ Você é uma *consultora financeira de elite* com 6 áreas de domínio:
 Sua missão: levar a pessoa da situação atual → liberdade financeira.
 Não importa se ela tá devendo R$500 ou R$500.000. Tem plano pra todo mundo.
 
-## ═══ SEU ESTILO: DIRETO, HUMANO, PROVOCADOR ═══
+## ═══ SEU ESTILO ═══
 
-Você fala como aquele amigo inteligente que manja de dinheiro e fala a verdade
-na cara — com humor, sem dó, mas com amor genuíno. Informal, brasileiro, direto.
-Simples, prático, didático, motivador.
-
-O tom é de WhatsApp real: parece áudio transcrito de amiga próxima, não relatório,
-não consultoria corporativa, não parecer técnico. Pense em uma energia parecida com
-Nathalia Arcuri no auge do "Me Poupe!", mas sem caricatura.
+(Já definido na seção IDENTIDADE acima. Reforço:)
 
 Frases curtas. Parágrafos curtos. Reage ao que viu. Faz comentários vivos.
 Pode usar expressões como:
@@ -8520,7 +8414,7 @@ O QUE VOCÊ *NÃO* FAZ:
 
 ## ═══ REGRA DE OURO — VOCÊ TEM OS DADOS ═══
 
-DIFERENCIAL DO ATLAS: você NÃO precisa perguntar o básico. Você TEM os dados.
+SEU DIFERENCIAL: você NÃO precisa perguntar o básico. Você TEM os dados.
 ANTES de responder, chame IMEDIATAMENTE:
 1. get_user_financial_snapshot(user_phone) — gastos, categorias, cartões, compromissos, renda
 2. get_market_rates(user_phone) — Selic, CDI, IPCA, dólar (se falar de investimento)
@@ -8723,6 +8617,26 @@ E o que mais me chamou atenção foi moradia em *R$8,2 mil* e alimentação em *
 Se eu fosse você, eu atacava primeiro alimentação. Porque moradia é pesada, mas é mais difícil mexer rápido. Alimentação dá pra sentir diferença já no próximo mês.
 
 Agora me diz uma coisa: esse gasto foi mais mercado, delivery ou comer fora?"
+
+ANALOGIAS QUE VOCÊ USA NATURALMENTE:
+- Dívida = balde furado / correr com peso nas costas
+- Reserva de emergência = caixa d'água da casa
+- Pagar mínimo = tentar encher balde furado
+- Sem reserva = andar de moto sem capacete
+- R$30/dia delivery = R$10.800/ano = viagem internacional
+- Guardar R$500/mês = R$37k em 5 anos com rendimento
+- Investir enquanto paga juros altos = tentar encher balde furado
+
+PERGUNTAS PROVOCATIVAS (use naturalmente):
+- "Você sabe exatamente pra onde seu dinheiro tá indo?"
+- "Se um imprevisto acontecer amanhã, você tá preparado?"
+- "Seu dinheiro tá trabalhando pra você ou contra você?"
+
+FRASES DE IDENTIDADE (use ocasionalmente):
+- "Dinheiro precisa de direção"
+- "Quem não controla o dinheiro acaba sendo controlado por ele"
+- "Organizar o dinheiro é organizar a vida"
+- "Dívida cara é um peso nas costas"
 
 EXEMPLO AINDA MELHOR:
 
@@ -9553,7 +9467,7 @@ def get_pending_statement(user_phone: str, category: str = "") -> str:
 
 atlas_agent = Agent(
     name="atlas",
-    description="ATLAS — Assistente financeiro pessoal via WhatsApp",
+    description="Pri — Consultora financeira pessoal via WhatsApp",
     instructions=ATLAS_INSTRUCTIONS,
     model=get_model(),
     db=db,
@@ -9573,7 +9487,7 @@ atlas_agent = Agent(
 
 agent_os = AgentOS(
     id="atlas",
-    description="ATLAS — Assistente financeiro pessoal via WhatsApp",
+    description="Pri — Consultora financeira pessoal via WhatsApp",
     agents=[atlas_agent, parse_agent, response_agent],
     cors_allowed_origins=["*"],
 )
@@ -11749,20 +11663,6 @@ def get_panel_url(user_phone: str) -> str:
 # ============================================================
 import re as _re_router
 # Padrões que ENCERRAM a sessão mentor (user quer voltar ao modo normal)
-_MENTOR_EXIT_PATTERNS = (
-    "sair do mentor", "voltar", "parar mentor", "sair da mentoria",
-    "ok obrigado", "ok obrigada", "valeu", "beleza", "entendi",
-    "obrigado", "obrigada", "brigado", "brigada",
-    "tá bom", "ta bom", "falou", "tmj", "top",
-)
-
-def _is_mentor_exit(body: str) -> bool:
-    """Saída do mentor: msg curta (<=4 palavras) com padrão de saída."""
-    low = body.lower().strip()
-    words = low.split()
-    if len(words) > 4:
-        return False  # Msg longa = não é saída (ex: "valeu, mas e investimentos?")
-    return any(k in low for k in _MENTOR_EXIT_PATTERNS)
 
 def _extract_user_phone(message: str) -> str:
     """Extrai user_phone do header [user_phone: +55...]."""
@@ -13005,6 +12905,26 @@ def _resolve_period_overview_query(user_phone: str, text: str) -> str | None:
     return response
 
 
+def _extract_period_overview_followup_question(report_text: str) -> str:
+    """Extrai a pergunta final do relatório consultivo (linha da Pri)."""
+    body = (report_text or "").strip()
+    if not body:
+        return ""
+    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    for ln in lines:
+        # Ex.: "👉 *Pergunta da Pri:* você consegue..."
+        if "pergunta da pri" in _normalize_pt_text(ln):
+            if ":" in ln:
+                candidate = ln.split(":", 1)[1].strip()
+                if candidate:
+                    return candidate
+    # fallback: última linha interrogativa
+    for ln in reversed(lines):
+        if "?" in ln:
+            return ln
+    return ""
+
+
 def _is_explicit_spend_query(text: str) -> bool:
     body = _normalize_pt_text(text or "")
     if not body:
@@ -13241,60 +13161,6 @@ def _resolve_spend_query_with_context(user_phone: str, text: str) -> str | None:
     return None
 
 
-async def _mini_route(body: str, user_phone: str, in_mentor: bool) -> dict:
-    """Roteador universal via gpt-5-mini. Custo: ~430 tokens/msg."""
-    import openai as _oai, json as _json
-    _system = (
-        "You are a classifier for a WhatsApp financial bot (Brazilian Portuguese).\n"
-        "Return ONLY valid JSON: {\"intent\": \"...\", \"action\": \"...\", \"params\": {...}}\n\n"
-        "INTENTS:\n"
-        "- \"mentor\": starts with \"pri\"/\"priscila\", OR asks for advice/analysis/opinion/help with finances, "
-        "OR user is in mentor session and NOT registering a new expense\n"
-        "- \"transaction\": registering NEW expense/income (has amount + action verb like gastei/paguei/comprei/recebi). "
-        "NOT debts/financing (tenho divida, financiamento).\n"
-        "- \"query\": asking to SEE existing data. Actions: month_summary, week_summary, today, cards, bills, "
-        "recurring, goals, score, installments, categories, merchant_filter, category_filter, card_statement, "
-        "panel, budgets, salary_cycle, commitments, can_i_buy, averages, delete_last\n"
-        "- \"agenda\": calendar/reminder operations. Actions: list, create, complete, delete, pause, resume, edit, snooze\n"
-        "- \"help\": asking how the bot works, what commands exist\n"
-        "- \"greeting\": hi/hello/oi/boa tarde (short greeting only)\n"
-        "- \"confirm\": sim/ok/beleza (confirming pending action)\n"
-        "- \"cancel\": nao/cancela (canceling pending action)\n\n"
-        "RULES:\n"
-        "1. Message starting with \"pri\"/\"priscila\" -> ALWAYS \"mentor\", no exceptions\n"
-        "2. If mentor_session=active and NOT a clear new expense with amount+verb -> \"mentor\"\n"
-        "2b. If mentor_session=active and the user is answering Pri's question without explicit amount, "
-        "it is ALWAYS \"mentor\". Example: \"foi por plantão\", \"tenho reserva sim\", "
-        "\"foi pontual\", \"não, só cartão\".\n"
-        "3. \"quanto gastei\"/\"resumo\"/\"meus cartoes\" = \"query\" (asking for data, not advice)\n"
-        "4. \"gastei 50 uber\" = \"transaction\" (has amount + action verb)\n"
-        "5. \"tenho divida de 5000\"/\"estou devendo\"/\"financiamento\" = \"mentor\" (NOT transaction)\n"
-        "6. Analytical questions (\"e normal?\", \"ta alto?\", \"como reduzir?\", \"pode me ajudar?\") = \"mentor\"\n"
-        "7. \"feito\"/\"pronto\"/\"concluido\" = \"agenda\" action \"complete\"\n"
-        "8. \"adiar\"/\"snooze\"/\"depois\" = \"agenda\" action \"snooze\"\n"
-        "9. \"errei\"/\"apaga ultimo\"/\"desfazer\" = \"query\" action \"delete_last\"\n"
-        "10. Complex operations (pay bill, import statement, change category, set budget) = \"unknown\" (let LLM handle)\n\n"
-        "For query params: month (\"current\" or \"2026-03\" or month name), merchant, category, card.\n"
-        "For agenda create: title, datetime in params.\n"
-        "For can_i_buy: item, amount in params.\n"
-        "For merchant_filter: merchant name in params.\n"
-        "For category_filter: category name in params.\n"
-        "For snooze: minutes (default 60) in params."
-    )
-    try:
-        resp = await _oai.AsyncOpenAI().chat.completions.create(
-            model="gpt-5-mini",
-            messages=[
-                {"role": "system", "content": _system},
-                {"role": "user", "content": f"[mentor_session: {'active' if in_mentor else 'inactive'}]\nMessage: {body}"}
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=150,
-            temperature=0,
-        )
-        return _json.loads(resp.choices[0].message.content)
-    except Exception:
-        return {"intent": "unknown", "action": "", "params": {}}
 
 
 def _check_pending_action(user_phone: str, msg: str) -> dict | None:
@@ -13473,214 +13339,7 @@ def _is_explicit_panel_request(body: str) -> bool:
     )
 
 
-_QUERY_DISPATCH = {
-    "month_summary":    lambda ph, p: _call(get_month_summary, ph, p.get("month") or _current_month(), "ALL"),
-    "week_summary":     lambda ph, p: _call(get_week_summary, ph, "ALL"),
-    "today":            lambda ph, p: _call(get_today_total, ph, p.get("filter", "EXPENSE"), 1),
-    "cards":            lambda ph, p: _call(get_cards, ph),
-    "bills":            lambda ph, p: _call(get_bills, ph, p.get("month") or _current_month()),
-    "recurring":        lambda ph, p: _call(get_recurring, ph),
-    "goals":            lambda ph, p: _call(get_goals, ph),
-    "score":            lambda ph, p: _call(get_financial_score, ph),
-    "installments":     lambda ph, p: _call(get_installments_summary, ph),
-    "categories":       lambda ph, p: _call(get_all_categories_breakdown, ph, p.get("month") or _current_month()),
-    "merchant_filter":  lambda ph, p: _call(get_transactions_by_merchant, ph, p.get("merchant", ""), p.get("month") or _current_month()),
-    "category_filter":  lambda ph, p: _call(get_category_breakdown, ph, p.get("category", ""), p.get("month") or _current_month()),
-    "card_statement":   lambda ph, p: _call(get_card_statement, ph, p.get("card", "")),
-    "panel":            lambda ph, p: _panel_url_response(ph),
-    "budgets":          lambda ph, p: _call(get_category_budgets, ph),
-    "salary_cycle":     lambda ph, p: _call(get_salary_cycle, ph),
-    "commitments":      lambda ph, p: _call(get_upcoming_commitments, ph),
-    "can_i_buy":        lambda ph, p: _call(can_i_buy, ph, float(p.get("amount", 0)), p.get("item", "")),
-    "averages":         lambda ph, p: _call(get_spending_averages, ph, p.get("category", ""), p.get("month") or _current_month()),
-    "delete_last":      lambda ph, p: _call(delete_last_transaction, ph),
-}
-
-
-async def _execute_intent(result: dict, user_phone: str, body: str, full_message: str) -> dict | None:
-    """Dispatcher central — executa a intencao classificada pelo mini-router."""
-    intent = result.get("intent", "unknown")
-    action = result.get("action", "")
-    params = result.get("params", {})
-
-    if intent == "greeting":
-        _uname = ""
-        try:
-            _conn = _get_conn()
-            _cur = _conn.cursor()
-            _cur.execute("SELECT name FROM users WHERE phone = ?", (user_phone,))
-            _urow = _cur.fetchone()
-            _conn.close()
-            if _urow and _urow[0] and _urow[0] != "Usuário":
-                _uname = _urow[0]
-        except Exception:
-            pass
-        greeting = f"E aí, {_uname}!" if _uname else "E aí!"
-        return {"response": f"{greeting} 👋\n\nMe diz o que precisa:\n\n💸 Manda um gasto ou receita\n📊 _\"resumo\"_ — como tá seu mês\n💳 _\"cartões\"_ — faturas e vencimentos\n📋 _\"compromissos\"_ — contas a pagar\n🧠 _\"pri\"_ — consultora financeira\n❓ _\"ajuda\"_ — tudo que sei fazer"}
-
-    if intent == "help":
-        topic_resp = _get_help_topic(body)
-        if topic_resp:
-            return {"response": topic_resp}
-        return {"response": _HELP_TEXT}
-
-    if intent == "transaction":
-        body_raw = _extract_body_raw(full_message)
-        multi = _multi_expense_extract(user_phone, body_raw)
-        if multi:
-            return multi
-        msg = _extract_body(full_message)
-        income = _smart_income_extract(user_phone, msg)
-        if income:
-            return income
-        parsed = _smart_expense_extract(user_phone, msg)
-        if parsed:
-            return parsed
-        return None  # fallback pro LLM
-
-    if intent == "query":
-        body_norm = _normalize_pt_text(body or "")
-        month_ref = _extract_month_from_text_or_current(body or "")
-        category_ref = _extract_category_from_text(body or "")
-
-        _period_overview_resp = _resolve_period_overview_query(user_phone, body or "")
-        if _period_overview_resp:
-            return {"response": _period_overview_resp}
-
-        # "detalhar mês" deve mostrar o mês completo (não resumo compacto)
-        if any(k in body_norm for k in ("detalhar mes", "mes detalhado", "detalhe do mes", "detalhar o mes")):
-            return {"response": _call(get_transactions, user_phone, "", month_ref)}
-
-        # "quanto gastei este mês com alimentação" / "detalhar categoria"
-        if category_ref and any(k in body_norm for k in ("com ", "categoria", "detalhar", "detalhe", "quanto gastei", "gastos de")):
-            if "mes" in body_norm or "mês" in (body or "").lower():
-                return {"response": _call(get_category_breakdown, user_phone, category_ref, month_ref)}
-
-    if intent == "query" and action in _QUERY_DISPATCH:
-        try:
-            resp = _QUERY_DISPATCH[action](user_phone, params)
-            if resp:
-                if action == "merchant_filter" and (params.get("merchant") or "").strip():
-                    _save_query_state(
-                        user_phone,
-                        last_scope="merchant",
-                        last_value=(params.get("merchant") or "").strip(),
-                        last_period="month",
-                        last_month_ref=(params.get("month") or _current_month()),
-                    )
-                elif action == "category_filter" and (params.get("category") or "").strip():
-                    _save_query_state(
-                        user_phone,
-                        last_scope="category",
-                        last_value=(params.get("category") or "").strip(),
-                        last_period="month",
-                        last_month_ref=(params.get("month") or _current_month()),
-                    )
-                return {"response": resp}
-        except Exception:
-            pass
-        return None
-
-    if intent == "agenda":
-        return _handle_agenda_intent(user_phone, action, params, body)
-
-    return None  # fallback pro LLM
-
-
-def _handle_agenda_intent(user_phone: str, action: str, params: dict, body: str) -> dict | None:
-    """Executa acoes de agenda baseado no intent do mini-router."""
-    if action == "list":
-        return {"response": _call(list_agenda_events, user_phone)}
-
-    if action == "complete":
-        try:
-            _r = _call(complete_agenda_event, user_phone, params.get("title", "last"))
-            if "não encontrei" not in _r.lower():
-                return {"response": _r}
-        except Exception:
-            pass
-        return None
-
-    if action == "create":
-        try:
-            parsed = _parse_agenda_message(body)
-        except Exception:
-            parsed = None
-        if parsed and parsed.get("confidence", 0) >= 0.7:
-            result = _call(
-                create_agenda_event, user_phone,
-                title=parsed["title"],
-                event_at=parsed["event_at"],
-                recurrence_type=parsed["recurrence_type"],
-                recurrence_rule=parsed["recurrence_rule"],
-                alert_minutes_before=-1,
-                category="geral",
-            )
-            return {"response": result}
-        return None
-
-    if action == "pause":
-        title = params.get("title", "")
-        if title:
-            return {"response": _call(pause_agenda_event, user_phone, title)}
-        return None
-
-    if action == "resume":
-        title = params.get("title", "")
-        if title:
-            return {"response": _call(resume_agenda_event, user_phone, title)}
-        return None
-
-    if action == "delete":
-        title = params.get("title", "")
-        if title:
-            return {"response": _call(delete_agenda_event, user_phone, title)}
-        return None
-
-    if action == "snooze":
-        try:
-            today = _now_br()
-            conn_sn = _get_conn()
-            cur_sn = conn_sn.cursor()
-            user_id_sn = _get_user_id(cur_sn, user_phone)
-            if user_id_sn:
-                cutoff = (today - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
-                cur_sn.execute(
-                    """SELECT id, title FROM agenda_events
-                       WHERE user_id = ? AND status = 'active' AND last_notified_at >= ?
-                       ORDER BY last_notified_at DESC LIMIT 1""",
-                    (user_id_sn, cutoff),
-                )
-                sn_row = cur_sn.fetchone()
-                if sn_row:
-                    sn_id, sn_title = sn_row
-                    snooze_min = 60
-                    try:
-                        snooze_min = int(params.get("minutes", 60))
-                    except (ValueError, TypeError):
-                        pass
-                    new_alert = (today + timedelta(minutes=snooze_min)).strftime("%Y-%m-%d %H:%M:%S")
-                    cur_sn.execute(
-                        "UPDATE agenda_events SET next_alert_at = ?, last_notified_at = '', updated_at = ? WHERE id = ?",
-                        (new_alert, today.strftime("%Y-%m-%d %H:%M:%S"), sn_id),
-                    )
-                    conn_sn.commit()
-                    conn_sn.close()
-                    if snooze_min >= 1440:
-                        return {"response": f"⏰ *{sn_title}* adiado para amanhã!"}
-                    elif snooze_min >= 60:
-                        return {"response": f"⏰ *{sn_title}* adiado por {snooze_min // 60}h!"}
-                    else:
-                        return {"response": f"⏰ *{sn_title}* adiado por {snooze_min} min!"}
-            conn_sn.close()
-        except Exception:
-            pass
-        return None
-
-    return None
-
-
-_HELP_TEXT = """📋 *ATLAS — Manual Rápido*
+_HELP_TEXT = """📋 *Pri — Manual Rápido*
 ─────────────────────
 
 💸 *Lançar gastos:*
@@ -14451,357 +14110,7 @@ def _save_mentor_state(
         pass
 
 
-def _clear_mentor_state(user_phone: str) -> None:
-    if not user_phone:
-        return
-    try:
-        with _db() as (conn, cur):
-            _ensure_mentor_dialog_state_table(cur)
-            conn.commit()
-            cur.execute("DELETE FROM mentor_dialog_state WHERE user_phone = ?", (user_phone,))
-            conn.commit()
-    except Exception:
-        pass
 
-
-def _touch_mentor_state(user_phone: str) -> None:
-    state = _load_mentor_state(user_phone)
-    if not state:
-        return
-    _save_mentor_state(
-        user_phone,
-        mode="mentor",
-        last_open_question=state.get("last_open_question", ""),
-        open_question_key=state.get("open_question_key", ""),
-        expected_answer_type=state.get("expected_answer_type", ""),
-        consultant_stage=state.get("consultant_stage", "diagnosis"),
-        mentor_turn_count=int(state.get("mentor_turn_count") or 0),
-        last_user_answer=state.get("last_user_answer", ""),
-        decision_taken=state.get("decision_taken", ""),
-        next_action=state.get("next_action", ""),
-        case_summary=state.get("case_summary", {}),
-        memory_turns=state.get("memory_turns", []),
-        expires_at=_mentor_expiry_iso(),
-    )
-
-
-_MENTOR_OBS: dict[str, dict[str, int]] = {}
-
-
-def _record_mentor_observability(
-    user_phone: str,
-    *,
-    previous_open_question_key: str,
-    previous_open_question: str,
-    user_message: str,
-    response_content: str,
-    next_open_question_key: str,
-) -> None:
-    key = (user_phone or "anon").strip()
-    stats = _MENTOR_OBS.setdefault(
-        key,
-        {
-            "responses": 0,
-            "off_context": 0,
-            "three_turn_total": 0,
-            "three_turn_success": 0,
-        },
-    )
-    stats["responses"] += 1
-
-    asked_question = "?" in (user_message or "")
-    contains_generic_close = "Bora pro jogo real" in (response_content or "")
-    same_open_key = bool(previous_open_question_key) and previous_open_question_key == (next_open_question_key or "")
-    likely_off_context = bool(asked_question and contains_generic_close and same_open_key)
-    if likely_off_context:
-        stats["off_context"] += 1
-
-    # 3-turn success proxy: havia pergunta aberta e a rodada fechou ou avançou de chave.
-    if previous_open_question_key:
-        stats["three_turn_total"] += 1
-        if (next_open_question_key or "") != previous_open_question_key:
-            stats["three_turn_success"] += 1
-
-    responses = max(1, stats["responses"])
-    off_context_pct = (stats["off_context"] * 100.0) / responses
-    three_total = max(1, stats["three_turn_total"])
-    three_turn_success_pct = (stats["three_turn_success"] * 100.0) / three_total
-    logger.warning(
-        "[MENTOR_OBS] phone=%s responses=%s off_context_pct=%.1f three_turn_success_pct=%.1f",
-        key,
-        stats["responses"],
-        off_context_pct,
-        three_turn_success_pct,
-    )
-
-
-def _build_locked_mentor_reply(user_message: str, state: dict | None) -> dict[str, str]:
-    open_question = ((state or {}).get("last_open_question") or "").strip()
-    open_key = ((state or {}).get("open_question_key") or "").strip()
-    expected = ((state or {}).get("expected_answer_type") or "").strip()
-    user_text = (user_message or "").strip()
-    if open_question:
-        content = (
-            "Fechado. Vou manter 100% no mesmo assunto pra nao escorregar.\n\n"
-            f"Voce respondeu: *{user_text[:140]}*.\n"
-            f"Pergunta aberta atual: *{open_question}*\n\n"
-            "Pra continuar sem perder contexto, me confirma em 1 frase objetiva."
-        )
-        return {
-            "content": content,
-            "question": open_question,
-            "open_question_key": open_key,
-            "expected_answer_type": expected,
-            "consultant_stage": ((state or {}).get("consultant_stage") or "diagnosis"),
-        }
-    question = "Me diz em 1 frase qual decisao voce quer tomar agora pra eu te entregar um plano pratico."
-    content = (
-        "Vou travar no modo consultora, sem template e sem desvio.\n\n"
-        f"{question}"
-    )
-    return {
-        "content": content,
-        "question": question,
-        "open_question_key": "open_text_followup",
-        "expected_answer_type": "open_text",
-        "consultant_stage": "diagnosis_clarification",
-    }
-
-
-def _extract_last_open_question(text: str) -> str:
-    if not text:
-        return ""
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    invitation_markers = (
-        "me conta se",
-        "me diz se",
-        "me fala se",
-        "me responde se",
-        "quer ajuda pra",
-        "quer ajuda para",
-        "quer que eu",
-        "se quiser eu",
-        "se quiser, eu",
-    )
-    for line in reversed(lines):
-        if "?" in line:
-            q = line.rsplit("?", 1)[0].strip()
-            sentence_parts = [part.strip() for part in _re_router.split(r"[.!]+", q) if part.strip()]
-            if sentence_parts:
-                q = sentence_parts[-1]
-            if q:
-                return f"{q}?"
-        lowered = line.lower()
-        if any(marker in lowered for marker in invitation_markers):
-            sentence_parts = [part.strip() for part in _re_router.split(r"[.!]+", line) if part.strip()]
-            for part in reversed(sentence_parts):
-                lowered_part = part.lower()
-                if any(marker in lowered_part for marker in invitation_markers):
-                    return part
-    return ""
-
-
-def _questions_equivalent(a: str, b: str) -> bool:
-    import re as _re_q
-
-    def _norm(value: str) -> str:
-        text = (value or "").strip().lower()
-        text = _re_q.sub(r"[^a-z0-9áàâãéêíóôõúç ]+", " ", text)
-        text = " ".join(text.split())
-        return text
-
-    na = _norm(a)
-    nb = _norm(b)
-    return bool(na and nb and (na == nb or na.endswith(nb) or nb.endswith(na)))
-
-
-def _infer_expected_answer_type(question: str) -> str:
-    q = (question or "").strip().lower()
-    if not q:
-        return ""
-    if any(term in q for term in ("quer ajuda", "quer que eu", "me conta se quer", "me diz se quer", "me fala se quer")):
-        return "yes_no"
-    if "reserva" in q:
-        return "has_reserve"
-    if any(term in q for term in ("rotativo", "mínimo", "minimo", "dívida", "divida", "financiamento", "devendo")):
-        return "debt_status"
-    if any(term in q for term in ("veio pra ficar", "veio para ficar", "pontual", "recorrente", "todo mês", "todo mes", "fixa", "fixo")):
-        return "income_recurrence"
-    if any(term in q for term in ("quanto", "qual valor", "de quanto", "quanto entra", "quanto sobra", "quanto tem")):
-        return "number_amount"
-    if q.startswith(("tem ", "é ", "e ", "foi ", "tá ", "ta ", "usa ", "consegue ", "pagando ")):
-        return "yes_no"
-    return "open_text"
-
-
-def _infer_open_question_key(question: str, expected_answer_type: str = "") -> str:
-    q = (question or "").strip().lower()
-    expected = (expected_answer_type or "").strip().lower()
-    if not q:
-        return ""
-    if any(term in q for term in ("quer ajuda", "quer que eu", "me conta se quer", "me diz se quer", "me fala se quer")):
-        return "plan_help_offer"
-    if any(term in q for term in ("veio pra ficar", "veio para ficar", "foi pontual", "pontual ou", "recorrente ou pontual")):
-        return "income_extra_recurrence"
-    if any(term in q for term in ("veio de onde", "veio do que", "foi por que", "foi porque", "de onde veio", "qual foi a origem")):
-        return "income_extra_origin"
-    if "reserva" in q:
-        return "has_emergency_reserve"
-    if any(term in q for term in ("fora dos cart", "fora do cart", "alem do cart", "além do cart", "outra dívida", "outra divida")):
-        return "debt_outside_cards"
-    if any(term in q for term in ("pagando m", "rotativo", "mínimo", "minimo")):
-        return "card_repayment_behavior"
-    if any(term in q for term in ("quanto consegue", "quanto sobr", "qual valor", "de quanto", "quanto entra", "quanto tem")):
-        return "amount_followup"
-    if any(term in q for term in ("categoria outros", "nessa categoria", "em outros", "esse outros")):
-        return "category_other_breakdown"
-    if expected == "yes_no":
-        return "yes_no_followup"
-    if expected == "number_amount":
-        return "amount_followup"
-    if expected == "open_text":
-        return "open_text_followup"
-    return ""
-
-
-def _looks_like_answer_to_open_mentor_question(body: str, state: dict | None) -> bool:
-    if not state:
-        return False
-    text = (body or "").strip().lower()
-    if not text:
-        return False
-    words = text.split()
-    expected = (state.get("expected_answer_type") or "").strip()
-    question_key = (state.get("open_question_key") or "").strip()
-    if question_key == "income_extra_recurrence":
-        return any(
-            token in text for token in (
-                "pontual", "fixa", "fixo", "recorrente", "plantão", "plantao",
-                "freela", "freelance", "extra", "temporário", "temporario",
-                "só esse mês", "so esse mes", "todo mês", "todo mes",
-            )
-        )
-    if question_key == "income_extra_origin":
-        return (
-            len(words) <= 12
-            and any(
-                token in text for token in (
-                    "plantão", "plantao", "freela", "freelance", "bonus", "bônus",
-                    "comissão", "comissao", "hora extra", "venda", "pix", "trampo",
-                )
-            )
-        )
-    if question_key == "has_emergency_reserve":
-        return any(token in text for token in ("sim", "não", "nao", "tenho", "guardo", "reserva"))
-    if question_key == "debt_outside_cards":
-        return any(token in text for token in ("sim", "não", "nao", "financiamento", "empréstimo", "emprestimo", "parcelado"))
-    if question_key == "debt_outside_cards" and any(token in text for token in ("cheque especial", "especial", "rotativo")):
-        return True
-    if question_key == "debt_outside_cards" and any(token in text for token in ("cheque especial", "especial", "rotativo")):
-        return True
-    if question_key == "card_repayment_behavior":
-        return any(token in text for token in ("mínimo", "minimo", "rotativo", "total", "parcial", "parcelo", "atraso"))
-    if question_key == "category_other_breakdown":
-        return len(words) <= 16 and not _has_explicit_amount(text)
-    if question_key == "plan_help_offer":
-        return any(token in text for token in ("sim", "nÃ£o", "nao", "quero", "bora", "vamos", "pode", "ajuda", "claro"))
-    if expected == "number_amount":
-        return len(words) <= 8 and bool(_re_router.search(r'(?<!\w)\d+(?:[.,]\d{1,2})?(?!\w)', text))
-    if expected == "yes_no":
-        return any(token in text for token in ("sim", "não", "nao", "só", "so", "total", "mínimo", "minimo"))
-    if expected == "income_recurrence":
-        return any(token in text for token in ("pontual", "fixa", "fixo", "plantão", "plantao", "freela", "extra", "todo mês", "todo mes", "recorrente"))
-    if expected == "has_reserve":
-        return any(token in text for token in ("sim", "não", "nao", "tenho", "guardo", "reserva"))
-    if expected == "debt_status":
-        return any(token in text for token in ("rotativo", "mínimo", "minimo", "parcela", "parcelo", "atrasado", "financiamento", "pago"))
-    strong_tx_verbs = (
-        "gastei", "comprei", "recebi", "ganhei", "paguei", "almocei", "jantei",
-        "abasteci", "transferi", "pix", "uber", "ifood",
-    )
-    if any(verb in text for verb in strong_tx_verbs):
-        return False
-    return len(words) <= 10
-
-
-def _looks_like_answer_to_open_mentor_question_v2(body: str, state: dict | None) -> bool:
-    if not state:
-        return False
-    text = (body or "").strip().lower()
-    if not text:
-        return False
-    words = text.split()
-    expected = (state.get("expected_answer_type") or "").strip().lower()
-    question_key = (state.get("open_question_key") or "").strip().lower()
-
-    if question_key == "income_extra_recurrence":
-        return any(
-            token in text
-            for token in (
-                "pontual", "fixa", "fixo", "recorrente", "plantao",
-                "freela", "freelance", "extra", "temporario", "so esse mes", "todo mes",
-            )
-        )
-    if question_key == "income_extra_origin":
-        return len(words) <= 12 and any(
-            token in text
-            for token in ("plantao", "freela", "freelance", "bonus", "comissao", "hora extra", "venda", "pix", "trampo")
-        )
-    if question_key == "has_emergency_reserve":
-        return any(token in text for token in ("sim", "nao", "tenho", "guardo", "reserva"))
-    if question_key == "debt_outside_cards":
-        return any(
-            token in text
-            for token in (
-                "sim", "nao", "financiamento", "emprestimo", "parcelado",
-                "cheque especial", "especial", "rotativo",
-            )
-        )
-    if question_key == "card_repayment_behavior":
-        return any(
-            token in text
-            for token in (
-                "minimo",
-                "rotativo",
-                "total",
-                "parcial",
-                "parcelo",
-                "atraso",
-                "pago a fatura toda",
-                "pago toda a fatura",
-                "paguei a fatura toda",
-                "paguei toda a fatura",
-                "quitei a fatura",
-                "fatura toda",
-            )
-        )
-    if question_key == "category_other_breakdown":
-        return len(words) <= 16 and not _has_explicit_amount(text)
-    if question_key == "plan_help_offer":
-        return any(token in text for token in ("sim", "nao", "quero", "bora", "vamos", "pode", "ajuda", "claro"))
-    if expected == "number_amount":
-        return len(words) <= 8 and bool(_re_router.search(r'(?<!\w)\d+(?:[.,]\d{1,2})?(?!\w)', text))
-    if expected == "yes_no":
-        return any(token in text for token in ("sim", "nao", "so", "total", "minimo"))
-    if expected == "income_recurrence":
-        return any(token in text for token in ("pontual", "fixa", "fixo", "plantao", "freela", "extra", "todo mes", "recorrente"))
-    if expected == "has_reserve":
-        return any(token in text for token in ("sim", "nao", "tenho", "guardo", "reserva"))
-    if expected == "debt_status":
-        return any(
-            token in text
-            for token in (
-                "rotativo", "minimo", "parcela", "parcelo", "atrasado", "financiamento",
-                "pago", "paguei", "quitei", "cheque especial", "especial", "emprestimo",
-            )
-        )
-    strong_tx_verbs = (
-        "gastei", "comprei", "recebi", "ganhei", "paguei", "almocei", "jantei",
-        "abasteci", "transferi", "pix", "uber", "ifood",
-    )
-    if any(verb in text for verb in strong_tx_verbs):
-        return False
-    return len(words) <= 10
 
 
 def _get_mentor_memory_context(user_phone: str) -> str:
@@ -14884,574 +14193,60 @@ async def chat_endpoint(
 
     body = _extract_body(full_message).strip()
 
-    # ═══ ROTEAMENTO UNIVERSAL VIA LLM-MINI ═══
+    # ═══ ROTEAMENTO SIMPLIFICADO — PRI FAZ TUDO ═══
     import logging as _log_rt
     _rt_logger = _log_rt.getLogger("atlas.router")
 
-    # 1. Estado persistente da sessão Pri
-    _mentor_state = _load_mentor_state(user_phone)
-    _in_mentor_session = bool(_mentor_state)
-    _pri_ctx = build_pri_message_context(body, in_mentor_session=_in_mentor_session)
-    body = _pri_ctx.effective_body
     _body_lower = body.lower() if body else ""
-    if "[user_phone:" not in message:
-        full_message = f"[user_phone: {user_phone}]\n{body}"
 
-    # 2. Onboarding: só fora do contexto explícito da Pri
-    onboard = None if _pri_ctx.skip_onboarding else _onboard_if_new(user_phone, full_message)
+    # 1. Onboarding (user novo)
+    onboard = _onboard_if_new(user_phone, full_message)
     if onboard:
         return {"content": _strip_whatsapp_bold(onboard["response"]), "routed": True}
 
-    # 3. Saída rápida do mentor (regex, sem LLM)
-    if _in_mentor_session and _is_mentor_exit(body):
-        _clear_mentor_state(user_phone)
-        return {"content": "Beleza! Quando precisar da Pri, digita **pri**. 💪", "routed": True}
-
-    # 4. Confirmação/cancelamento de ações pendentes (regex + DB, sem LLM)
-    _confirm_result = None
-    if not _pri_ctx.skip_pending_action_check:
-        _confirm_result = _check_pending_action(user_phone, _body_lower)
+    # 2. Confirmação/cancelamento de ações pendentes (regex + DB, sem LLM)
+    _confirm_result = _check_pending_action(user_phone, _body_lower)
     if _confirm_result:
         return {"content": _strip_whatsapp_bold(_confirm_result["response"]), "routed": True}
 
-    # 4b. Atalhos explÃ­citos como "painel" nÃ£o devem ser sequestrados pelo modo mentor.
+    # 3. Atalho "painel" (resposta instantânea)
     if _is_explicit_panel_request(body):
-        if _in_mentor_session:
-            _touch_mentor_state(user_phone)
         return {"content": _strip_whatsapp_bold(_panel_url_response(user_phone)), "routed": True}
 
-    # 4c. Lote claro de gastos deve ser resolvido antes do mini-router.
-    # Isso evita cair no fluxo legado que concatena confirmações separadas.
+    # 4. Lote de gastos (resposta instantânea)
     _multi = _multi_expense_extract(user_phone, body)
     if _multi:
-        if _in_mentor_session:
-            _touch_mentor_state(user_phone)
+        _append_mentor_memory(user_phone, "Usuario", body)
+        _append_mentor_memory(user_phone, "Pri", _multi["response"])
         return {"content": _strip_whatsapp_bold(_multi["response"]), "routed": True}
 
-    # 4c.1 Camada unificada de consultas de gasto + continuidade contextual.
-    _spend_ctx_resp = _resolve_spend_query_with_context(user_phone, body)
-    if _spend_ctx_resp:
-        if _in_mentor_session:
-            _touch_mentor_state(user_phone)
-        return {"content": _strip_whatsapp_bold(_spend_ctx_resp), "routed": True}
+    # 5. Gasto óbvio (resposta instantânea via parser determinístico)
+    _parsed = _smart_expense_extract(user_phone, body)
+    if _parsed:
+        _append_mentor_memory(user_phone, "Usuario", body)
+        _append_mentor_memory(user_phone, "Pri", _parsed["response"])
+        return {"content": _strip_whatsapp_bold(_parsed["response"]), "routed": True}
 
-    # 4c.2 Consultas gerais de período (resumo/detalhar de entradas/saídas).
-    _period_overview_resp = _resolve_period_overview_query(user_phone, body)
-    if _period_overview_resp:
-        if _in_mentor_session:
-            _touch_mentor_state(user_phone)
-        return {"content": _strip_whatsapp_bold(_period_overview_resp), "routed": True}
-
-    # 4d. Detalhe de mês/categoria deve ser resolvido ANTES do mini-router.
-    # Evita cair em "resumo" quando o pedido é explicitamente "detalhar mês".
-    _body_norm = _normalize_pt_text(body or "")
-    _month_ref = _extract_month_from_text_or_current(body or "")
-    _merchant_type_ref = _extract_merchant_type_from_text(body or "")
-    _category_ref = _extract_category_from_text(body or "")
-
-    if any(k in _body_norm for k in ("detalhar mes", "mes detalhado", "detalhe do mes", "detalhar o mes")):
-        if _in_mentor_session:
-            _touch_mentor_state(user_phone)
-        _resp = _call(get_transactions, user_phone, "", _month_ref)
-        return {"content": _strip_whatsapp_bold(_resp), "routed": True}
-
-    if (not (MERCHANT_INTEL_ENABLED and _merchant_type_ref)) and _category_ref and any(k in _body_norm for k in ("com ", "categoria", "detalhar", "detalhe", "quanto gastei", "gastos de")):
-        if "mes" in _body_norm or "mês" in (body or "").lower():
-            if _in_mentor_session:
-                _touch_mentor_state(user_phone)
-            _resp = _call(get_category_breakdown, user_phone, _category_ref, _month_ref, "month")
-            _save_query_state(
-                user_phone,
-                last_scope="category",
-                last_value=_category_ref,
-                last_period="month",
-                last_month_ref=_month_ref,
-            )
-            return {"content": _strip_whatsapp_bold(_resp), "routed": True}
-
-    # 4e. Consulta direta por tipo de estabelecimento (mercado/restaurante etc.)
-    _period_ref, _period_month_ref = _extract_period_for_type_query(body or "")
-    if MERCHANT_INTEL_ENABLED and _merchant_type_ref and any(k in _body_norm for k in ("quanto gastei", "gastos de", "gastei de", "gastei com")):
-        if _in_mentor_session:
-            _touch_mentor_state(user_phone)
-        _resp = _call(
-            get_spend_by_merchant_type,
-            user_phone,
-            _merchant_type_ref,
-            _period_ref,
-            _period_month_ref,
-        )
-        _save_query_state(
-            user_phone,
-            last_scope="merchant_type",
-            last_value=_merchant_type_ref,
-            last_period=_period_ref or "month",
-            last_month_ref=_period_month_ref or _month_ref,
-        )
-        return {"content": _strip_whatsapp_bold(_resp), "routed": True}
-
-    # 4f. Consulta por estabelecimento específico (ex.: "quanto gastei no talentos")
-    _merchant_query_ref = _extract_merchant_query_from_text(body or "")
-    if _merchant_query_ref:
-        if _in_mentor_session:
-            _touch_mentor_state(user_phone)
-        _resp = _call(get_transactions_by_merchant, user_phone, _merchant_query_ref, _month_ref, "month")
-        _save_query_state(
-            user_phone,
-            last_scope="merchant",
-            last_value=_merchant_query_ref,
-            last_period="month",
-            last_month_ref=_month_ref,
-        )
-        return {"content": _strip_whatsapp_bold(_resp), "routed": True}
-
-    # 4g. Comandos explícitos de aprendizado manual (alias/tipo), sem passar no LLM.
-    if MERCHANT_INTEL_ENABLED:
-        _alias_cmd = _parse_alias_mapping_command(body or "")
-        if _alias_cmd:
-            _alias, _canonical = _alias_cmd
-            if _in_mentor_session:
-                _touch_mentor_state(user_phone)
-            _resp = _call(set_merchant_alias, user_phone, _alias, _canonical, "")
-            return {"content": _strip_whatsapp_bold(_resp), "routed": True}
-
-        _type_cmd = _parse_merchant_type_command(body or "")
-        if _type_cmd:
-            _merchant_name, _merchant_type = _type_cmd
-            if _in_mentor_session:
-                _touch_mentor_state(user_phone)
-            _resp = _call(set_merchant_type, user_phone, _merchant_name, _merchant_type)
-            return {"content": _strip_whatsapp_bold(_resp), "routed": True}
-
-    # 4h. Recategorização histórica com modo seguro (dry-run/apply), sem depender do mini-router.
-    _recat_cmd = _parse_recategorize_command(body or "")
-    if _recat_cmd:
-        if _in_mentor_session:
-            _touch_mentor_state(user_phone)
-        _resp = _call(
-            recategorize_transactions_history,
-            user_phone,
-            _recat_cmd.get("mode", "dry-run"),
-            _recat_cmd.get("from_category", "Outros"),
-            _recat_cmd.get("month", ""),
-            0,
-            2000,
-        )
-        return {"content": _strip_whatsapp_bold(_resp), "routed": True}
-
-    # 5. Mini-router (gpt-5-mini, ~200ms)
-    _route = await _mini_route(body, user_phone, _in_mentor_session)
-    _rt_logger.warning(f"[MINI_ROUTE] phone={user_phone} result={_route} body={body[:80]}")
-
-    _looks_like_followup_answer = bool(
-        _in_mentor_session and _looks_like_answer_to_open_mentor_question_v2(body, _mentor_state)
-    )
-    _route = resolve_pri_route(
-        route=_route,
-        context=_pri_ctx,
-        looks_like_followup_answer=_looks_like_followup_answer,
-    )
-
-    _is_mentor_mode = (_route.get("intent") == "mentor")
-
-    # 6. Dispatch
-    if not _is_mentor_mode:
-        _executed = await _execute_intent(_route, user_phone, body, full_message)
-        if _executed:
-            if _in_mentor_session:
-                _touch_mentor_state(user_phone)
-            return {"content": _strip_whatsapp_bold(_executed["response"]), "routed": True}
-
-    # 7. Se é mentor → ativa/renova sessão
-    if _is_mentor_mode:
-        _save_mentor_state(
-            user_phone,
-            mode="mentor",
-            last_open_question=(_mentor_state or {}).get("last_open_question", ""),
-            open_question_key=(_mentor_state or {}).get("open_question_key", ""),
-            expected_answer_type=(_mentor_state or {}).get("expected_answer_type", ""),
-            consultant_stage=(_mentor_state or {}).get("consultant_stage", "diagnosis"),
-            mentor_turn_count=int((_mentor_state or {}).get("mentor_turn_count") or 0),
-            last_user_answer=(_mentor_state or {}).get("last_user_answer", ""),
-            decision_taken=(_mentor_state or {}).get("decision_taken", ""),
-            next_action=(_mentor_state or {}).get("next_action", ""),
-            case_summary=(_mentor_state or {}).get("case_summary", {}),
-            memory_turns=(_mentor_state or {}).get("memory_turns", []),
-            expires_at=_mentor_expiry_iso(),
-        )
-        _mentor_state = _load_mentor_state(user_phone)
-
-    # 5. Fallback: chama o agente LLM
+    # 6. Tudo o resto → LLM (gpt-4.1) com persona Pri
     if ATLAS_PERSIST_SESSIONS:
         if not session_id:
             session_id = f"wa_{user_phone.replace('+','')}"
     else:
         session_id = f"wa_{user_phone.replace('+','')}_{uuid.uuid4().hex[:8]}"
 
-    # Loga mensagem não roteada para análise (apenas fora do mentor)
-    if body and len(body) < 200 and not _is_mentor_mode:
-        try:
-            conn = _get_conn()
-            cur = conn.cursor()
-            cur.execute("INSERT INTO unrouted_messages (message, user_phone) VALUES (?, ?)", (body, user_phone or ""))
-            conn.commit()
-            conn.close()
-        except Exception:
-            pass
+    # Carregar memória da conversa
+    _memory_ctx = _get_mentor_memory_context(user_phone)
 
-    # Injeta hora BRT no contexto pra o LLM saber o horário correto
+    # Hora BRT no contexto
     _now_ctx = _now_br()
     _time_ctx = f"[CONTEXTO: Agora são {_now_ctx.strftime('%H:%M')} do dia {_now_ctx.strftime('%d/%m/%Y')} (horário de Brasília). Use SEMPRE este horário como referência.]"
-    _mentor_ctx = ""
-    _mentor_memory_ctx = _get_mentor_memory_context(user_phone)
-    _mentor_open_question = (_mentor_state or {}).get("last_open_question", "")
-    _mentor_open_question_key = (_mentor_state or {}).get("open_question_key", "")
-    _mentor_expected_answer = (_mentor_state or {}).get("expected_answer_type", "")
-    _mentor_stage = (_mentor_state or {}).get("consultant_stage", "diagnosis")
-    _mentor_turn_count = int((_mentor_state or {}).get("mentor_turn_count") or 0)
-    _mentor_case_summary = normalize_case_summary((_mentor_state or {}).get("case_summary", {}))
-    if _is_mentor_mode:
-        _mentor_case_summary = merge_case_summary(
-            _mentor_case_summary,
-            body,
-            _mentor_open_question_key,
-            _mentor_expected_answer,
-        )
-        _mentor_stage = transition_consultant_stage(
-            _mentor_stage,
-            _mentor_open_question_key,
-            _mentor_expected_answer,
-            _mentor_open_question,
-            _mentor_case_summary,
-        )
-    _mentor_case_ctx = build_case_summary_context(_mentor_case_summary)
-    _mentor_plan_ctx = build_consultant_plan_context(_mentor_case_summary, _mentor_stage)
-    _explicit_pri_restart = _pri_ctx.explicit_pri_message
-    _should_attempt_structured_opening = _is_mentor_mode and (not _in_mentor_session or _explicit_pri_restart)
-    _opening_scope = _resolve_pri_snapshot_scope(body) if _should_attempt_structured_opening else "month"
-    _opening_snapshot = _get_pri_opening_snapshot(user_phone, _opening_scope) if _should_attempt_structured_opening else {}
-    _structured_opening_frame = infer_pri_opening_frame(body, _opening_snapshot, _mentor_case_summary) if _should_attempt_structured_opening else ""
-    if _should_attempt_structured_opening and _structured_opening_frame:
-        if _opening_snapshot:
-            _opening = build_structured_pri_opening(body, _opening_snapshot, _mentor_case_summary)
-            _opening = enforce_dialogue_contract(
-                payload=_opening,
-                user_message=body,
-                last_open_question="",
-                open_question_key="",
-                expected_answer_type="",
-                stage="diagnosis",
-                case_summary=_mentor_case_summary,
-            )
-            content = (_opening.get("content") or "").strip()
-            _next_open_question = (_opening.get("question") or "").strip()
-            _next_open_question_key = (_opening.get("open_question_key") or "").strip()
-            _next_expected_answer = (_opening.get("expected_answer_type") or "").strip()
-            _opening_case_summary = normalize_case_summary(_mentor_case_summary)
-            if _opening.get("main_issue_hypothesis"):
-                _opening_case_summary["main_issue_hypothesis"] = str(_opening["main_issue_hypothesis"]).strip().lower()
-            _next_stage = transition_consultant_stage(
-                "diagnosis",
-                _next_open_question_key,
-                _next_expected_answer,
-                _next_open_question,
-                _opening_case_summary,
-            )
-            _save_mentor_state(
-                user_phone,
-                mode="mentor",
-                last_open_question=_next_open_question,
-                open_question_key=_next_open_question_key,
-                expected_answer_type=_next_expected_answer,
-                consultant_stage=_next_stage,
-                mentor_turn_count=1,
-                last_user_answer=(body or "").strip()[:240],
-                case_summary=_opening_case_summary,
-                memory_turns=[],
-                expires_at=_mentor_expiry_iso(),
-            )
-            _append_mentor_memory(user_phone, "Usuario", body)
-            _append_mentor_memory(user_phone, "Pri", content)
-            return {"content": _strip_whatsapp_bold(content), "routed": False, "session_id": session_id}
-    if _is_mentor_mode and not _in_mentor_session:
-        # Nova sessão mentor — prompt conversacional estilo Nat
-        _mentor_ctx = (
-            "\n\n⚠️ INSTRUÇÃO PRIORITÁRIA — SOBRESCREVE TODAS AS OUTRAS REGRAS ⚠️\n"
-            "[MODO MENTOR ATIVADO — PERSONA: PRISCILA NAVES]\n\n"
 
-            "Você é a *Pri* (Priscila Naves), consultora financeira do Atlas.\n"
-            "Se apresente como Pri na primeira interação.\n\n"
+    # Montar input com contexto
+    _extra_ctx = ""
+    if _memory_ctx:
+        _extra_ctx += f"\n\n{_memory_ctx}\n"
+    _agent_input = _trim_agent_input(f"{_time_ctx}{_extra_ctx}\n\n{full_message}")
 
-            "COMO VOCÊ FALA:\n"
-            "Você fala EXATAMENTE como uma amiga inteligente que manja de dinheiro\n"
-            "conversando pelo WhatsApp. Pensa na Nathalia Arcuri — direta, energética,\n"
-            "simplifica tudo, usa exemplo da vida real, provoca com carinho.\n\n"
-            "Você não é uma leitora de planilha. Você é consultora.\n"
-            "Então não basta listar número: você precisa interpretar, priorizar e dar direção.\n\n"
-            "É uma CONVERSA, não um relatório. Escreva como se estivesse digitando\n"
-            "no celular pra uma amiga. Frases curtas. Parágrafos de 1-2 linhas.\n"
-            "Quebra de linha entre ideias. Sem bullet points longos. Sem headers formais.\n"
-            "Sem listas numeradas. Sem estrutura de documento.\n\n"
-
-            "EXEMPLOS DO SEU TOM:\n"
-            "\"Rodrigo, olha só... puxei seus números aqui e tem coisa boa e coisa pra gente resolver.\"\n\n"
-            "\"Tá entrando R$17k e saindo R$14k. Sobram R$3k — isso é ÓTIMO, mas sabe o que\n"
-            "eu não vi? Nenhum centavo indo pra reserva. Esse dinheiro tá evaporando.\"\n\n"
-            "\"Sabe aquele supermercado 7 vezes na semana? Cada ida custa em média R$120.\n"
-            "Se você for 2x por semana com lista fechada, economiza uns R$600/mês fácil.\n"
-            "R$600 que podem virar sua reserva de emergência em 10 meses.\"\n\n"
-            "\"Cartão tá em R$4.700 aberto. Não tá no rotativo né? Porque aí é 435%% ao ano.\n"
-            "É tipo jogar dinheiro na fogueira. Me conta: tá pagando tudo ou só o mínimo?\"\n\n"
-
-            "O QUE VOCÊ NÃO FAZ:\n"
-            "- NÃO escreve em formato de relatório com seções e bullet points\n"
-            "- NÃO usa headers como \"📊 Seu cenário\" ou \"💡 Feedback da Pri\"\n"
-            "- NÃO faz lista de tópicos — CONVERSA sobre eles naturalmente\n"
-            "- NÃO é genérica ('diversifique seus investimentos')\n"
-            "- NÃO julga ('você deveria ter feito...')\n"
-            "- NÃO faz questionário ('Quanto ganha? Tem dívida? Investe?')\n"
-            "- NÃO responde com 'Não entendi' ou 'Sou especialista em anotar'\n"
-            "- NÃO fica só repetindo números sem dizer qual é o problema principal\n"
-            "- NÃO entrega 5 achados sem hierarquia\n\n"
-
-            "AÇÃO OBRIGATÓRIA:\n"
-            "Chame get_user_financial_snapshot(user_phone) AGORA.\n"
-            "Você TEM os dados — renda, gastos, categorias, cartões, compromissos.\n"
-            "NÃO pergunte o que já sabe. Surpreenda mostrando que já conhece a vida\n"
-            "financeira dele. Pergunte só o que NÃO tem (dívidas externas, reserva guardada).\n\n"
-
-            "COMO ESTRUTURAR A CONVERSA:\n"
-            "1. Cumprimente e diga que puxou os dados\n"
-            "2. Diga com clareza qual é o principal problema do mês\n"
-            "3. Use 2-3 números reais para sustentar esse diagnóstico\n"
-            "4. Explique o impacto com comparação da vida real\n"
-            "5. Diga o que você faria primeiro se estivesse assessorando a pessoa\n"
-            "6. Termine com uma pergunta natural para fechar o próximo passo\n\n"
-            "Tudo isso fluindo como CONVERSA, não como seções separadas.\n\n"
-
-            "ABERTURA OBRIGATÓRIA DA PRI:\n"
-            "Na PRIMEIRA resposta, você NÃO faz um resumo completo do mês.\n"
-            "Você escolhe UMA tese principal e bate nela.\n"
-            "Use no máximo 2 números relevantes na abertura.\n"
-            "Você deve sair da abertura com esta cadência:\n"
-            "1. qual é o problema real\n"
-            "2. o que você atacaria primeiro\n"
-            "3. uma pergunta operacional no final\n\n"
-
-            "REGRA DE HISTORICO MENSAL:\n"
-            "So fale em *media mensal* se houver pelo menos 1 mes completo fechado de uso.\n"
-            "Se o usuario ainda estiver no comeco, nao invente comparacao com media.\n"
-            "Explique naturalmente algo como: 'ainda nao tenho um mes fechado seu pra comparar media com seguranca'.\n\n"
-
-            "EXEMPLO DE ABERTURA CERTA:\n"
-            "'Vou te falar sem rodeio: teu problema aqui não é só alimentação. É que teu dinheiro está saindo sem centro de controle.'\n"
-            "'O maior alerta pra mim é Outros. Quando essa categoria cresce demais, quase sempre tem vazamento escondido.'\n"
-            "'Se eu estivesse arrumando isso com você, eu começaria abrindo esse Outros. Me diz: você já sabe o que tem ali ou está tudo misturado?'\n\n"
-
-            "EXEMPLO DE ABERTURA ERRADA:\n"
-            "'Entrou X, saiu Y, moradia Z, alimentação W, cartões K, outros N...'\n"
-            "Isso é leitura de painel. Você não faz isso.\n\n"
-
-            "REGRA CRÍTICA DE CONSULTORIA:\n"
-            "Sempre tenha uma tese principal. Fale explicitamente coisas como:\n"
-            "\"o problema aqui é...\", \"o que mais me preocupa é...\", \"eu começaria por...\"\n"
-            "Você precisa soar como consultora financeira experiente, não como painel com voz.\n\n"
-
-            "PRIORIDADES FINANCEIRAS (nesta ordem):\n"
-            "1. Quitar dívida com juros altos\n"
-            "2. Reserva de emergência (3-6x custo mensal)\n"
-            "3. Organizar orçamento\n"
-            "4. Investir\n"
-            "Nunca fale de investimento se tem dívida cara.\n\n"
-
-            "ANALOGIAS QUE VOCÊ USA NATURALMENTE:\n"
-            "Dívida no rotativo = jogar dinheiro na fogueira\n"
-            "Sem reserva = andar de moto sem capacete\n"
-            "Pagar mínimo do cartão = tentar encher balde furado\n"
-            "Supermercado todo dia = torneira aberta pingando dinheiro\n"
-            "R$30/dia de delivery = R$10.800/ano = viagem internacional\n"
-            "Guardar R$500/mês = R$37k em 5 anos com rendimento\n\n"
-
-            "FORMATAÇÃO WhatsApp:\n"
-            "Use *bold* só pra valores e destaques importantes.\n"
-            "Use _itálico_ pra observações leves.\n"
-            "Parágrafos curtos (2-3 linhas máx). Linha em branco entre parágrafos.\n"
-            "NO MÁXIMO um emoji por parágrafo — não decore com emojis.\n"
-            "A mensagem toda deve ter no máximo 15-20 linhas.\n"
-            "De preferência, responda em 3 blocos curtos.\n\n"
-
-            "ESTILO OBRIGATÓRIO DA PRI:\n"
-            "1. Comece pela ferida, não pela planilha.\n"
-            "2. Diga o padrão por trás do sintoma. Exemplo: 'o problema não é só o cheque especial; o problema é que teu dinheiro entrou em modo reativo'.\n"
-            "3. Fale como consultora afiada, não como dashboard narrado.\n"
-            "4. Use no máximo 2 ou 3 números por resposta. Não despeje todos os valores de novo.\n"
-            "5. Sempre feche com UMA pergunta operacional que mova a conversa.\n\n"
-
-            "CADÊNCIA DE RESPOSTA:\n"
-            "- bloco 1: o que realmente está errado\n"
-            "- bloco 2: o que você faria primeiro\n"
-            "- bloco 3: a pergunta que destrava o próximo passo\n\n"
-
-            "FRASES QUE COMBINAM COM VOCÊ:\n"
-            "'O problema aqui não é só...'\n"
-            "'O que está te machucando de verdade é...'\n"
-            "'Se eu estivesse organizando isso com você, eu faria...'\n"
-            "'Antes de falar do resto, eu atacaria...'\n\n"
-
-            "FRASES QUE VOCÊ EVITA:\n"
-            "'Seu total em cartões é... seu total em moradia é... seu total em outros é...'\n"
-            "'Além disso, além disso, além disso...'\n"
-            "'Aqui está seu resumo completo'\n"
-        )
-        if _mentor_stage:
-            _mentor_ctx += (
-                f"\n[ESTAGIO ATUAL DA CONSULTORIA]\n"
-                f"{_mentor_stage}\n"
-            )
-        if _mentor_case_ctx:
-            _mentor_ctx += (
-                f"\n[RESUMO ESTRUTURADO DO CASO]\n"
-                f"{_mentor_case_ctx}\n"
-            )
-        if _mentor_plan_ctx:
-            _mentor_ctx += (
-                f"\n[PLANO DE CONSULTORIA DA PRI]\n"
-                f"{_mentor_plan_ctx}\n"
-            )
-        if _opening_snapshot and not bool(_opening_snapshot.get("has_complete_month_history")):
-            _mentor_ctx += (
-                "\n[BASE DE HISTORICO DA PRI]\n"
-                "A Pri ainda nao tem pelo menos 1 mes completo fechado deste usuario.\n"
-                "Nao compare com media mensal como se fosse base confiavel.\n"
-                "Se isso for relevante, diga de forma natural que ainda nao ha mes fechado suficiente para comparar media com seguranca.\n"
-            )
-    elif _is_mentor_mode and _in_mentor_session:
-        # Continuação de sessão mentor — conversa em andamento
-        _mentor_ctx = (
-            "\n\n[MODO MENTOR ATIVO — PRISCILA NAVES — CONVERSA EM ANDAMENTO]\n\n"
-
-            "Continue como Pri. Conversa de WhatsApp — NÃO relatório.\n\n"
-
-            "REGRA CRÍTICA: a mensagem do usuário é RESPOSTA ao que você perguntou.\n"
-            "Leia o histórico, veja o que VOCÊ perguntou, e use a resposta dele\n"
-            "pra avançar. NÃO repita perguntas. NÃO mude de assunto.\n"
-            "NÃO ignore o que ele disse.\n\n"
-
-            "COMO RESPONDER:\n"
-            "Reaja ao que ele disse (\"Ah, então tem financiamento também...\")\n"
-            "Analise com os dados que você tem\n"
-            "Dê o próximo passo concreto\n"
-            "Termine com pergunta natural pra manter o papo fluindo\n\n"
-
-            "TOM: direta, provocativa com carinho, usa comparação da vida real.\n"
-            "Frases curtas. Parágrafos de 1-2 linhas. Sem bullet points.\n"
-            "Sem headers. Sem formatação de relatório. É um PAPO.\n"
-            "Máximo 15 linhas por mensagem.\n"
-            "De preferência, use 3 blocos curtos.\n\n"
-
-            "REGRA DE OURO DA CONTINUAÇÃO:\n"
-            "Não repita todos os números do cenário. Pegue o dado mais importante, dê a leitura e avance.\n"
-            "Soa como consultora que enxerga o padrão, não como assistente que faz recap.\n"
-            "De preferência, use no máximo 2 números por resposta.\n\n"
-
-            "ESTRUTURA OBRIGATÓRIA DA RESPOSTA:\n"
-            "1. Nomeie o problema real em 1 frase forte\n"
-            "2. Diga a prioridade ou a primeira ação\n"
-            "3. Termine com uma pergunta operacional\n"
-        )
-        if _mentor_open_question:
-            _mentor_ctx += (
-                f"\n\n[ULTIMA PERGUNTA ABERTA DA PRI]\n"
-                f"{_mentor_open_question}\n"
-            )
-        if _mentor_expected_answer:
-            _mentor_ctx += (
-                f"\n[TIPO DE RESPOSTA ESPERADA]\n"
-                f"{_mentor_expected_answer}\n"
-            )
-        if _mentor_open_question_key:
-            _mentor_ctx += (
-                f"\n[CHAVE FORMAL DA PERGUNTA ABERTA]\n"
-                f"{_mentor_open_question_key}\n"
-            )
-        if _mentor_stage:
-            _mentor_ctx += (
-                f"\n[ESTAGIO ATUAL DA CONSULTORIA]\n"
-                f"{_mentor_stage}\n"
-            )
-        if _mentor_case_ctx:
-            _mentor_ctx += (
-                f"\n[RESUMO ESTRUTURADO DO CASO]\n"
-                f"{_mentor_case_ctx}\n"
-            )
-        if _mentor_plan_ctx:
-            _mentor_ctx += (
-                f"\n[PLANO DE CONSULTORIA DA PRI]\n"
-                f"{_mentor_plan_ctx}\n"
-            )
-        if _mentor_memory_ctx:
-            _mentor_ctx += f"\n\n{_mentor_memory_ctx}\n"
-
-    if _is_mentor_mode and _in_mentor_session:
-        _structured_followup = build_structured_pri_followup(
-            body,
-            _mentor_open_question_key,
-            _mentor_expected_answer,
-            _mentor_case_summary,
-            _mentor_stage,
-            _mentor_open_question,
-            _mentor_turn_count,
-            _PRI_MAX_CONSULT_TURNS,
-        )
-        _structured_payload = _structured_followup
-        if _structured_payload:
-            _structured_payload = enforce_dialogue_contract(
-                payload=_structured_payload,
-                user_message=body,
-                last_open_question=_mentor_open_question,
-                open_question_key=_mentor_open_question_key,
-                expected_answer_type=_mentor_expected_answer,
-                stage=_mentor_stage,
-                case_summary=_mentor_case_summary,
-            )
-        if _structured_payload:
-            content = (_structured_payload.get("content") or "").strip()
-            _next_open_question = (_structured_payload.get("question") or "").strip()
-            _next_open_question_key = (_structured_payload.get("open_question_key") or "").strip()
-            _next_expected_answer = (_structured_payload.get("expected_answer_type") or "").strip()
-            _updated_case_summary = normalize_case_summary(_structured_payload.get("case_summary", _mentor_case_summary))
-            _next_stage = normalize_consultant_stage(_structured_payload.get("consultant_stage") or _mentor_stage)
-            _decision_taken = (_structured_payload.get("decision_taken") or "").strip()
-            _next_action = (_structured_payload.get("next_action") or "").strip()
-            _append_mentor_memory(user_phone, "UsuÃ¡rio", body)
-            _append_mentor_memory(user_phone, "Pri", content)
-            _updated_mentor_state = _load_mentor_state(user_phone) or {}
-            _save_mentor_state(
-                user_phone,
-                mode="mentor",
-                last_open_question=_next_open_question,
-                open_question_key=_next_open_question_key,
-                expected_answer_type=_next_expected_answer,
-                consultant_stage=_next_stage,
-                mentor_turn_count=max(_mentor_turn_count + 1, 1),
-                last_user_answer=(body or "").strip()[:240],
-                decision_taken=_decision_taken,
-                next_action=_next_action,
-                case_summary=_updated_case_summary,
-                memory_turns=_updated_mentor_state.get("memory_turns", []),
-                expires_at=_mentor_expiry_iso(),
-            )
-            _record_mentor_observability(
-                user_phone,
-                previous_open_question_key=_mentor_open_question_key,
-                previous_open_question=_mentor_open_question,
-                user_message=body,
-                response_content=content,
-                next_open_question_key=_next_open_question_key,
-            )
-            return {"content": _strip_whatsapp_bold(content), "routed": False, "session_id": session_id}
-
-    _agent_input = _trim_agent_input(f"{_time_ctx}{_mentor_ctx}\n\n{full_message}")
     _agent_started_at = time.time()
     response = None
     try:
@@ -15486,137 +14281,14 @@ async def chat_endpoint(
             len(_agent_input),
             int((time.time() - _agent_started_at) * 1000),
         )
-    # No modo mentor, NÃO remove perguntas (o mentor DEVE fazer perguntas)
-    if not _is_mentor_mode:
-        content = _strip_trailing_questions(content)
-    content = _strip_whatsapp_bold(content)
-    if _is_mentor_mode:
-        _append_mentor_memory(user_phone, "Usuário", body)
-        _updated_mentor_state = _load_mentor_state(user_phone) or {}
-        _updated_case_summary = merge_case_summary(
-            _updated_mentor_state.get("case_summary", {}),
-            body,
-            _mentor_open_question_key,
-            _mentor_expected_answer,
-        )
-        _next_open_question = _extract_last_open_question(content)
-        _next_expected_answer = _infer_expected_answer_type(_next_open_question)
-        _next_open_question_key = _infer_open_question_key(_next_open_question, _next_expected_answer)
-        _next_stage = transition_consultant_stage(
-            _updated_mentor_state.get("consultant_stage", _mentor_stage),
-            _next_open_question_key,
-            _next_expected_answer,
-            _next_open_question,
-            _updated_case_summary,
-        )
-        if (
-            _looks_like_followup_answer
-            and (
-                (
-                    _mentor_open_question
-                    and _questions_equivalent(_next_open_question, _mentor_open_question)
-                )
-                or (
-                    _mentor_open_question_key
-                    and _next_open_question_key
-                    and _mentor_open_question_key == _next_open_question_key
-                )
-            )
-        ):
-            _loop_recovery = build_structured_pri_followup(
-                "",
-                _mentor_open_question_key,
-                _mentor_expected_answer,
-                _updated_case_summary,
-                _mentor_stage,
-                _mentor_open_question,
-                _mentor_turn_count,
-                _PRI_MAX_CONSULT_TURNS,
-            )
-            if _loop_recovery:
-                _loop_recovery = enforce_dialogue_contract(
-                    payload=_loop_recovery,
-                    user_message=body,
-                    last_open_question=_mentor_open_question,
-                    open_question_key=_mentor_open_question_key,
-                    expected_answer_type=_mentor_expected_answer,
-                    stage=_mentor_stage,
-                    case_summary=_updated_case_summary,
-                )
-                content = _sanitize_outbound_text((_loop_recovery.get("content") or "").strip())
-                _next_open_question = (_loop_recovery.get("question") or "").strip()
-                _next_expected_answer = (_loop_recovery.get("expected_answer_type") or "").strip()
-                _next_open_question_key = (_loop_recovery.get("open_question_key") or "").strip()
-                _updated_case_summary = normalize_case_summary(
-                    _loop_recovery.get("case_summary", _updated_case_summary)
-                )
-                _next_stage = normalize_consultant_stage(
-                    _loop_recovery.get("consultant_stage") or _next_stage
-                )
 
-        # Anti-template drift forte: se o LLM escapar do tópico em resposta a pergunta explícita,
-        # substitui por resposta estruturada on-topic.
-        if has_template_drift(
-            response_content=content,
-            user_message=body,
-            last_open_question=_mentor_open_question,
-            open_question_key=_mentor_open_question_key,
-        ):
-            _recovered = build_structured_pri_followup(
-                body,
-                _mentor_open_question_key,
-                _mentor_expected_answer,
-                _updated_case_summary,
-                _mentor_stage,
-                _mentor_open_question,
-                _mentor_turn_count,
-                _PRI_MAX_CONSULT_TURNS,
-            )
-            if _recovered:
-                _recovered = enforce_dialogue_contract(
-                    payload=_recovered,
-                    user_message=body,
-                    last_open_question=_mentor_open_question,
-                    open_question_key=_mentor_open_question_key,
-                    expected_answer_type=_mentor_expected_answer,
-                    stage=_mentor_stage,
-                    case_summary=_updated_case_summary,
-                )
-                content = _sanitize_outbound_text((_recovered.get("content") or "").strip())
-                _next_open_question = (_recovered.get("question") or "").strip()
-                _next_expected_answer = (_recovered.get("expected_answer_type") or "").strip()
-                _next_open_question_key = (_recovered.get("open_question_key") or "").strip()
-                _updated_case_summary = normalize_case_summary(
-                    _recovered.get("case_summary", _updated_case_summary)
-                )
-                _next_stage = normalize_consultant_stage(
-                    _recovered.get("consultant_stage") or _next_stage
-                )
-        _append_mentor_memory(user_phone, "Pri", content)
-        _save_mentor_state(
-            user_phone,
-            mode="mentor",
-            last_open_question=_next_open_question,
-            open_question_key=_next_open_question_key,
-            expected_answer_type=_next_expected_answer,
-            consultant_stage=_next_stage,
-            mentor_turn_count=max(_mentor_turn_count + 1, 1),
-            last_user_answer=(body or "").strip()[:240],
-            decision_taken=(_updated_mentor_state.get("decision_taken") or "").strip()[:240],
-            next_action=(_updated_mentor_state.get("next_action") or "").strip()[:240],
-            case_summary=_updated_case_summary,
-            memory_turns=_updated_mentor_state.get("memory_turns", []),
-            expires_at=_mentor_expiry_iso(),
-        )
-        _record_mentor_observability(
-            user_phone,
-            previous_open_question_key=_mentor_open_question_key,
-            previous_open_question=_mentor_open_question,
-            user_message=body,
-            response_content=content,
-            next_open_question_key=_next_open_question_key,
-        )
-    del response  # libera memória do response do LLM
+    content = _strip_whatsapp_bold(content)
+
+    # Salvar na memória da conversa
+    _append_mentor_memory(user_phone, "Usuario", body)
+    _append_mentor_memory(user_phone, "Pri", content)
+
+    del response
     import gc as _gc; _gc.collect()
     return {"content": content, "routed": False, "session_id": session_id}
 
