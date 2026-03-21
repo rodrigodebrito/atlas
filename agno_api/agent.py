@@ -1740,6 +1740,12 @@ def get_month_summary(user_phone: str, month: str = "", filter_type: str = "ALL"
             lines.append("")
             lines.append(pri_insight)
 
+    lines.append("")
+    lines.append("📌 *Quer ver mais?*")
+    lines.append("• _\"detalhar gastos\"_ — lista completa de despesas")
+    lines.append("• _\"detalhar receitas\"_ — lista de entradas")
+    lines.append("• _\"detalhar tudo\"_ — extrato completo")
+
     try:
         panel_url = get_panel_url(user_phone)
         if panel_url:
@@ -2795,6 +2801,12 @@ def get_today_total(user_phone: str, filter_type: str = "EXPENSE", days: int = 1
         lines.append("")
         lines.append(f"{'✅' if balance >= 0 else '⚠️'} *Saldo do período:* {_fmt_brl(balance)}")
 
+    lines.append("")
+    lines.append("📌 *Quer ver mais?*")
+    lines.append("• _\"detalhar gastos\"_ — lista completa de despesas")
+    lines.append("• _\"detalhar receitas\"_ — lista de entradas")
+    lines.append("• _\"detalhar tudo\"_ — extrato completo")
+
     try:
         panel_url = get_panel_url(user_phone)
         if panel_url:
@@ -2955,6 +2967,15 @@ def get_transactions(user_phone: str, date: str = "", month: str = "") -> str:
 
     lines.append("")
     lines.append(f"{'✅' if saldo >= 0 else '⚠️'} *Saldo: R${saldo/100:,.2f}*".replace(",", "."))
+
+    if len(rows) > 20:
+        lines.append(f"\n_Mostrando {len(rows)} transações. Para o relatório completo:_")
+        try:
+            panel_url = get_panel_url(user_phone)
+            if panel_url:
+                lines.append(f"📊 *Painel:* {panel_url}")
+        except Exception:
+            pass
 
     return "\n".join(lines)
 
@@ -5176,6 +5197,12 @@ def get_week_summary(user_phone: str, filter_type: str = "ALL") -> str:
         balance = total_in - total_out
         lines.append("")
         lines.append(f"{'✅' if balance >= 0 else '⚠️'} *Saldo da semana:* {_fmt_brl(balance)}")
+
+    lines.append("")
+    lines.append("📌 *Quer ver mais?*")
+    lines.append("• _\"detalhar gastos\"_ — lista completa de despesas")
+    lines.append("• _\"detalhar receitas\"_ — lista de entradas")
+    lines.append("• _\"detalhar tudo\"_ — extrato completo")
 
     try:
         panel_url = get_panel_url(user_phone)
@@ -8156,6 +8183,45 @@ Detecte automaticamente:
 Pergunte APENAS se: "cartão" ou "crédito" + valor ≥ R$200 + sem informar parcelas.
 
 ╔══════════════════════════════════════════════════════════════╗
+║  RELATÓRIOS — FLUXO SUMMARY → DETAIL → DASHBOARD            ║
+╚══════════════════════════════════════════════════════════════╝
+
+Quando o usuário pede relatório (mês, semana, hoje), siga este fluxo:
+
+NÍVEL 1 — RESUMO (resposta padrão):
+"como tá meu mês", "resumo", "como foi minha semana", "gastos de hoje"
+→ Use get_month_summary / get_week_summary / get_today_total
+→ A tool JÁ retorna: totais + categorias + maiores lançamentos + opções de navegação + painel
+→ Copie EXATAMENTE o output. NÃO remova as opções de navegação do rodapé.
+
+NÍVEL 2 — DETALHAMENTO (quando o usuário pede mais):
+"detalhar gastos" / "mostrar despesas" / "lista de gastos"
+→ get_transactions(month=YYYY-MM) com contexto de que é só EXPENSE
+→ OU get_month_summary(filter_type="EXPENSE") para filtro rápido
+
+"detalhar receitas" / "mostrar entradas" / "lista de receitas"
+→ get_month_summary(filter_type="INCOME")
+→ OU get_transactions com filtro INCOME
+
+"detalhar tudo" / "extrato completo" / "todas transações" / "relatório completo"
+→ get_transactions(month=YYYY-MM) — lista completa
+
+NÍVEL 3 — DASHBOARD (dados pesados):
+"painel" / link do dashboard
+→ Sempre incluído nas tools. Para listas grandes (>20 transações), redirecione pro painel.
+
+DETECÇÃO DE INTENÇÃO:
+- "meu mês" / "resumo" / "como tá" → NÍVEL 1 (summary)
+- "detalhar" / "mostrar tudo" / "lista completa" / "todos os gastos" → NÍVEL 2 (detail)
+- "só gastos" / "só despesas" → NÍVEL 2 com filter_type="EXPENSE"
+- "só receitas" / "só entradas" → NÍVEL 2 com filter_type="INCOME"
+- "painel" / "dashboard" → NÍVEL 3
+
+REGRA: NÃO pergunte "o que você quer ver?" — as opções já estão no rodapé da tool.
+REGRA: Máximo 2 interações pra chegar ao dado. Summary → Detail → pronto.
+REGRA: O rodapé de navegação faz parte do output da tool. NUNCA remova.
+
+╔══════════════════════════════════════════════════════════════╗
 ║  ROTEAMENTO — REGRAS CRÍTICAS                               ║
 ╚══════════════════════════════════════════════════════════════╝
 
@@ -8171,14 +8237,16 @@ REGISTRAR:
 - DATA: "ontem"→hoje-1 | "dia X"→YYYY-MM-X | sem data→omitir occurred_at
 
 CONSULTAS — escolha a tool CERTA:
-- MÊS inteiro → get_month_summary (NUNCA get_transactions)
+- MÊS inteiro / "como tá meu mês" → get_month_summary (resumo — NUNCA get_transactions)
 - SEMANA → get_week_summary
 - HOJE/N DIAS → get_today_total com days=N
+- "detalhar gastos" / "só despesas" → get_month_summary(filter_type="EXPENSE")
+- "detalhar receitas" / "só entradas" → get_month_summary(filter_type="INCOME")
+- "detalhar tudo" / "extrato" / "todas transações" → get_transactions(month=YYYY-MM)
 - NOME de loja/app → get_transactions_by_merchant (NUNCA get_today_total)
 - CATEGORIA específica → get_category_breakdown
 - MÉDIA/CONSUMO MÉDIO → get_spending_averages (category=opcional)
 - EXTRATO CARTÃO → get_card_statement
-- LISTA DETALHADA (só se pedir "transações"/"lista") → get_transactions
 
 AGENDA / LEMBRETES:
 - "me lembra amanhã às 14h reunião" → create_agenda_event(title="Reunião", event_at="YYYY-MM-DD 14:00")
