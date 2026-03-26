@@ -8875,7 +8875,6 @@ atlas_agent = Agent(
         will_i_have_leftover,           # "vai sobrar?"
         create_agenda_event,            # "lembra amanhã 14h" (NLU)
         list_agenda_events,             # consultas de agenda em conversa
-        get_period_overview,            # períodos flexíveis
     ],
     add_datetime_to_context=False,
     store_tool_messages=False,
