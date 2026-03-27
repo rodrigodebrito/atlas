@@ -11686,8 +11686,17 @@ def _append_panel_link(text: str, user_phone: str) -> str:
 def _handle_month_summary(user_phone: str, body: str, body_lower: str):
     """Step 8: 'meu mês', 'resumo', 'como tá meu mês', 'resumo de março'"""
     if not _re_router.search(
-        r"(como\s+(ta|t[aá]|foi|anda|est[aá]).*m[eê]s|meu\s+m[eê]s|resumo(\s+d[eo]\s+\w+)?$|"
-        r"resumo\s+mensal|como\s+foi\s+(esse|este|o)\s+m[eê]s)",
+        r"(como\s+(ta|t[aá]|foi|anda|est[aá]|esta|vai).*m[eê]s"
+        r"|meu\s+m[eê]s"
+        r"|resumo(\s+d[eo]\s+\w+)?$"
+        r"|resumo\s+mensal"
+        r"|como\s+foi\s+(esse|este|o)\s+m[eê]s"
+        r"|como\s+est[aá]\s+(o\s+)?m[eê]s"
+        r"|como\s+esta\s+(o\s+)?m[eê]s"
+        r"|e\s+o\s+m[eê]s"
+        r"|gastos?\s+d(o|esse|este)\s+m[eê]s"
+        r"|quanto\s+gastei\s+(no|nesse|neste|esse|este)\s+m[eê]s"
+        r"|resumo\s+d[eo]\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro))",
         body_lower,
     ):
         return None
@@ -11697,9 +11706,18 @@ def _handle_month_summary(user_phone: str, body: str, body_lower: str):
 
 
 def _handle_week_summary(user_phone: str, body: str, body_lower: str):
-    """Step 9: 'minha semana', 'como foi minha semana'"""
+    """Step 9: 'minha semana', 'como foi minha semana', 'como esta a semana'"""
     if not _re_router.search(
-        r"(minha\s+semana|como\s+(ta|t[aá]|foi|anda).*semana|resumo\s+(da\s+)?semana|semana\s+toda)",
+        r"(minha\s+semana"
+        r"|como\s+(ta|t[aá]|foi|anda|est[aá]|esta|vai).*(semana|semanal)"
+        r"|resumo\s+(da\s+)?semana"
+        r"|semana\s+toda"
+        r"|e\s+a\s+semana"
+        r"|gastos?\s+da\s+semana"
+        r"|quanto\s+gastei\s+(na|essa|nessa|esta|nesta)\s+semana"
+        r"|como\s+est[aá]\s+(a\s+)?semana"
+        r"|como\s+esta\s+(a\s+)?semana"
+        r"|resumo\s+semanal)",
         body_lower,
     ):
         return None
@@ -11710,8 +11728,15 @@ def _handle_week_summary(user_phone: str, body: str, body_lower: str):
 def _handle_today(user_phone: str, body: str, body_lower: str):
     """Step 10: 'hoje', 'gastos de hoje', 'o que gastei hoje'"""
     if not _re_router.search(
-        r"(gastos?\s+de\s+hoje|o\s+que\s+gastei\s+hoje|quanto\s+gastei\s+hoje|hoje$|"
-        r"como\s+(ta|t[aá]|foi)\s+hoje)",
+        r"(gastos?\s+de\s+hoje"
+        r"|o\s+que\s+gastei\s+hoje"
+        r"|quanto\s+gastei\s+hoje"
+        r"|hoje$"
+        r"|como\s+(ta|t[aá]|foi|est[aá]|esta)\s+hoje"
+        r"|e\s+hoje"
+        r"|gastos?\s+hoje"
+        r"|como\s+est[aá]\s+hoje"
+        r"|como\s+esta\s+hoje)",
         body_lower,
     ):
         return None
@@ -11722,8 +11747,12 @@ def _handle_today(user_phone: str, body: str, body_lower: str):
 def _handle_cards(user_phone: str, body: str, body_lower: str):
     """Step 11: 'cartões', 'meus cartões', 'faturas', 'minhas parcelas'"""
     if not _re_router.search(
-        r"^(meus\s+)?cart[oõ]es[\s\?\!\.]*$|^faturas?[\s\?\!\.]*$|^minhas?\s+parcelas?[\s\?\!\.]*$|"
-        r"^meus\s+cart[oõ]es[\s\?\!\.]*$|^lista\s+de\s+cart[oõ]es[\s\?\!\.]*$",
+        r"^(meus?\s+)?cart[oõ]es[\s\?\!\.]*$"
+        r"|^faturas?[\s\?\!\.]*$"
+        r"|^minhas?\s+parcelas?[\s\?\!\.]*$"
+        r"|^lista\s+de\s+cart[oõ]es[\s\?\!\.]*$"
+        r"|^minhas?\s+faturas?[\s\?\!\.]*$"
+        r"|^meus?\s+cart[oõ]es\s+de\s+cr[eé]dito[\s\?\!\.]*$",
         body_lower,
     ):
         return None
@@ -11734,8 +11763,14 @@ def _handle_cards(user_phone: str, body: str, body_lower: str):
 def _handle_commitments(user_phone: str, body: str, body_lower: str):
     """Step 12: 'compromissos', 'contas a pagar', 'o que vence'"""
     if not _re_router.search(
-        r"(compromissos?|contas?\s+a\s+pagar|o\s+que\s+vence|proxim[oa]s?\s+contas?|"
-        r"contas?\s+do\s+m[eê]s|vencimentos?)",
+        r"(compromissos?"
+        r"|contas?\s+a\s+pagar"
+        r"|o\s+que\s+vence"
+        r"|proxim[oa]s?\s+contas?"
+        r"|contas?\s+do\s+m[eê]s"
+        r"|vencimentos?"
+        r"|o\s+que\s+tenho\s+pra\s+pagar"
+        r"|meus?\s+compromissos?)",
         body_lower,
     ):
         return None
@@ -11746,8 +11781,10 @@ def _handle_commitments(user_phone: str, body: str, body_lower: str):
 def _handle_categories(user_phone: str, body: str, body_lower: str):
     """Step 13: 'categorias', 'por categoria', 'breakdown'"""
     if not _re_router.search(
-        r"^(por\s+)?categorias?[\s\?\!\.]*$|^breakdown[\s\?\!\.]*$|"
-        r"^gastos?\s+por\s+categoria[\s\?\!\.]*$",
+        r"^(por\s+)?categorias?[\s\?\!\.]*$"
+        r"|^breakdown[\s\?\!\.]*$"
+        r"|^gastos?\s+por\s+categoria[\s\?\!\.]*$"
+        r"|^minhas?\s+categorias?[\s\?\!\.]*$",
         body_lower,
     ):
         return None
